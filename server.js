@@ -95,6 +95,35 @@ async function history(){
   return{ok:false,fetchedAt:new Date().toISOString(),source:'Yahoo Finance ^TWII daily',rows:[],errors:[e.message]};
  }
 }
+async function yahooQuote(symbol){
+ const intradayUrl='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=5m&range=5d&includePrePost=true';
+ const dailyUrl='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=1d&range=10d';
+ const [intraday,daily]=await Promise.all([getJSON(intradayUrl),getJSON(dailyUrl)]);
+ const ir=intraday?.chart?.result?.[0], dr=daily?.chart?.result?.[0];
+ if(!ir)throw new Error('No intraday result '+symbol);
+ const meta=ir.meta||{}, ts=ir.timestamp||[], closes=ir.indicators?.quote?.[0]?.close||[];
+ let last=null,lastTs=null;
+ for(let i=closes.length-1;i>=0;i--){if(Number.isFinite(closes[i])){last=closes[i];lastTs=ts[i]||null;break}}
+ const dailyCloses=(dr?.indicators?.quote?.[0]?.close||[]).filter(Number.isFinite);
+ const latestDaily=dailyCloses.length?dailyCloses.at(-1):null;
+ const priorDaily=dailyCloses.length>=2?dailyCloses.at(-2):null;
+ const period=meta.currentTradingPeriod||{};
+ let session='前一交易日',sessionWeight=.65;
+ if(lastTs&&period.pre?.start&&lastTs>=period.pre.start&&lastTs<period.regular?.start){session='盤前';sessionWeight=1;}
+ else if(lastTs&&period.regular?.start&&lastTs>=period.regular.start&&lastTs<=period.regular.end){session='盤中';sessionWeight=1;}
+ else if(lastTs&&period.post?.start&&lastTs>=period.post.start&&lastTs<=period.post.end){session='盤後';sessionWeight=.9;}
+ // If there is no live/pre/post tick, use the latest completed regular session rather than returning no data.
+ let prevClose=null;
+ if(session==='盤前'||session==='盤中'||session==='盤後'){
+   prevClose=n(meta.chartPreviousClose??meta.previousClose)??priorDaily;
+ }else{
+   last=latestDaily??n(meta.regularMarketPrice)??last;
+   prevClose=priorDaily??n(meta.chartPreviousClose??meta.previousClose);
+ }
+ if(!(last>0)||!(prevClose>0))throw new Error('Insufficient quote history '+symbol);
+ const changePct=(last-prevClose)/prevClose*100;
+ return{symbol,last,prevClose,changePct,session,sessionWeight,marketState:meta.marketState||null,currency:meta.currency||null,asOf:lastTs?new Date(lastTs*1000).toISOString():null};
+}
 async function overseas(){
  const syms={NASDAQ:'^IXIC',SOX:'^SOX',TSM:'TSM'},quotes={},errors=[];
  for(const[k,s]of Object.entries(syms)){try{quotes[k]=await yahooQuote(s)}catch(e){errors.push(k+':'+e.message)}}
@@ -128,7 +157,7 @@ function mime(f){if(f.endsWith('.html'))return'text/html; charset=utf-8';if(f.en
 http.createServer(async(req,res)=>{
  try{
   const u=new URL(req.url,'http://'+req.headers.host);
-  if(u.pathname==='/health')return send(res,200,JSON.stringify({ok:true,version:'12.3.0',now:new Date().toISOString(),cacheKeys:[...cache.keys()]}));
+  if(u.pathname==='/health')return send(res,200,JSON.stringify({ok:true,version:'12.3.1',now:new Date().toISOString(),cacheKeys:[...cache.keys()]}));
   if(u.pathname==='/api/market'){try{return send(res,200,JSON.stringify(await live()))}catch(e){return send(res,502,JSON.stringify({ok:false,error:e.message,fetchedAt:new Date().toISOString()}))}}
   if(u.pathname==='/api/context'){try{return send(res,200,JSON.stringify(await cached('context',60000,context)))}catch(e){return send(res,502,JSON.stringify({ok:false,error:e.message}))}}
   if(u.pathname==='/api/history'){try{return send(res,200,JSON.stringify(await cached('history',1800000,history)))}catch(e){return send(res,502,JSON.stringify({ok:false,error:e.message}))}}
