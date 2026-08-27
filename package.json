@@ -1,6 +1,6 @@
 {
-  "name": "tw-stock-dashboard-v12-2-trend-night",
-  "version": "12.2.0",
+  "name": "tw-stock-dashboard-v12-3-night-momentum",
+  "version": "12.3.0",
   "private": true,
   "scripts": {
     "start": "node server.js"

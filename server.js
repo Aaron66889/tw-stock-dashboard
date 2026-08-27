@@ -3,6 +3,38 @@ const {URL}=require('url');
 const PORT=process.env.PORT||3000, PUBLIC=path.join(__dirname,'public');
 const ETF=['0050','0056','00878','00919'];
 const cache=new Map();
+const nightSamples=[];
+function addNightSample(price){
+ const now=Date.now();
+ if(!(price>0))return;
+ const last=nightSamples[nightSamples.length-1];
+ if(!last||now-last.at>=7000)nightSamples.push({at:now,price});
+ while(nightSamples.length&&now-nightSamples[0].at>16*60*1000)nightSamples.shift();
+}
+function nightMomentum(last,high){
+ const now=Date.now();
+ function delta(mins){
+  const target=now-mins*60000; let best=null;
+  for(const x of nightSamples){if(x.at<=target)best=x;else break}
+  if(!best&&nightSamples.length&&now-nightSamples[0].at>=mins*60000*0.75)best=nightSamples[0];
+  return best?{points:last-best.price,pct:(last-best.price)/best.price*100,base:best.price}:null;
+ }
+ const d1=delta(1),d3=delta(3),d5=delta(5),d15=delta(15);
+ const recent=d3||d1; const offHigh=high>0?last-high:null;
+ let direction='資料累積中',tone='neutral';
+ if(recent){
+  const pts=recent.points, pct=recent.pct;
+  if(pts<=-100||pct<=-0.22){direction='加速下殺';tone='bear';}
+  else if(pts<=-35||pct<=-0.08){direction='短線走弱';tone='bear';}
+  else if(offHigh!=null&&offHigh<=-35&&pts<15){direction='高檔回落';tone='softBear';}
+  else if(pts>=100||pct>=0.22){direction='持續走強';tone='bull';}
+  else if(pts>=35||pct>=0.08){direction='短線走強';tone='bull';}
+  else if(offHigh!=null&&offHigh<=-20){direction='高檔震盪偏弱';tone='softBear';}
+  else direction='區間震盪';
+ }
+ return{direction,tone,d1,d3,d5,d15,sampleCount:nightSamples.length};
+}
+
 
 function send(res,status,body,type='application/json; charset=utf-8'){
  res.writeHead(status,{'Content-Type':type,'Cache-Control':'no-store','Access-Control-Allow-Origin':'*','X-Content-Type-Options':'nosniff'});
@@ -86,7 +118,8 @@ async function nightFuture(){
   let changePct=fieldNum(text,'漲幅');
   if(changePct==null&&last!=null&&prevClose>0)changePct=(last-prevClose)/prevClose*100;
   if(!(last>0)&&!(bid>0)&&!(ask>0))throw new Error('Yahoo WTX fields not found');
-  return{ok:true,available:true,fetchedAt:new Date().toISOString(),source:'Yahoo股市 WTX&',sourceUrl:url,last,prevClose,open,high,low,volume,openInterest:oi,bid,ask,change,changePct};
+  addNightSample(last); const momentum=nightMomentum(last,high);
+  return{ok:true,available:true,fetchedAt:new Date().toISOString(),source:'Yahoo股市 WTX&',sourceUrl:url,last,prevClose,open,high,low,volume,openInterest:oi,bid,ask,change,changePct,momentum};
  }catch(e){
   return{ok:false,available:false,fetchedAt:new Date().toISOString(),source:'Yahoo股市 WTX&',sourceUrl:url,reason:e.message};
  }
@@ -95,7 +128,7 @@ function mime(f){if(f.endsWith('.html'))return'text/html; charset=utf-8';if(f.en
 http.createServer(async(req,res)=>{
  try{
   const u=new URL(req.url,'http://'+req.headers.host);
-  if(u.pathname==='/health')return send(res,200,JSON.stringify({ok:true,version:'10.0.0',now:new Date().toISOString(),cacheKeys:[...cache.keys()]}));
+  if(u.pathname==='/health')return send(res,200,JSON.stringify({ok:true,version:'12.3.0',now:new Date().toISOString(),cacheKeys:[...cache.keys()]}));
   if(u.pathname==='/api/market'){try{return send(res,200,JSON.stringify(await live()))}catch(e){return send(res,502,JSON.stringify({ok:false,error:e.message,fetchedAt:new Date().toISOString()}))}}
   if(u.pathname==='/api/context'){try{return send(res,200,JSON.stringify(await cached('context',60000,context)))}catch(e){return send(res,502,JSON.stringify({ok:false,error:e.message}))}}
   if(u.pathname==='/api/history'){try{return send(res,200,JSON.stringify(await cached('history',1800000,history)))}catch(e){return send(res,502,JSON.stringify({ok:false,error:e.message}))}}
@@ -105,4 +138,4 @@ http.createServer(async(req,res)=>{
   if(!f.startsWith(PUBLIC)||!fs.existsSync(f)||fs.statSync(f).isDirectory())return send(res,404,'Not found','text/plain; charset=utf-8');
   return send(res,200,fs.readFileSync(f),mime(f));
  }catch(e){return send(res,500,JSON.stringify({ok:false,error:e.message}))}
-}).listen(PORT,()=>console.log('TW Stock V10 Final http://localhost:'+PORT));
+}).listen(PORT,()=>console.log('TW Stock V12.3 Night Momentum http://localhost:'+PORT));

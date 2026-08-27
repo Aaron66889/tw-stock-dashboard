@@ -1,7 +1,7 @@
 <!doctype html><html lang="zh-Hant"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#111827"><link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
-<title>台股戰情正式版 V12.2</title>
+<title>台股戰情正式版 V12.3</title>
 <style>
 :root{--bg:#f3f4f6;--card:#fff;--text:#15171a;--muted:#6b7280;--line:#e5e7eb;--green:#17794c;--red:#c23b3b;--amber:#a86500;--panel:#f7f8fa}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif}button{font:inherit}
@@ -18,7 +18,7 @@ main{max-width:1040px;margin:auto;padding:16px 14px 80px}.top{display:flex;justi
 footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
 @media(max-width:760px){.marketgrid,.stats,.quad{grid-template-columns:1fr 1fr}.signals{grid-template-columns:1fr}.hgrid{grid-template-columns:1fr 1fr}.index{font-size:35px}.top{align-items:flex-start}.pills{max-width:54%}}
 </style></head><body><main>
-<div class="top"><div><div class="eyebrow">台股戰情 · 正式版 V12.2</div><h1 id="modeTitle">今天台股怎麼了？</h1><div class="note" id="modeNote">自動辨識盤前／盤中／盤後／夜間模式</div></div><div class="pills"><span id="mode" class="pill">判斷時段</span><span id="status" class="pill warn">連線中</span><span class="pill">台股 10 秒</span><button id="refresh" class="refresh">更新</button></div></div>
+<div class="top"><div><div class="eyebrow">台股戰情 · 正式版 V12.3</div><h1 id="modeTitle">今天台股怎麼了？</h1><div class="note" id="modeNote">自動辨識盤前／盤中／盤後／夜間模式</div></div><div class="pills"><span id="mode" class="pill">判斷時段</span><span id="status" class="pill warn">連線中</span><span class="pill">台股 10 秒</span><button id="refresh" class="refresh">更新</button></div></div>
 <div id="error" class="error"></div>
 
 <div class="nav">
@@ -45,10 +45,11 @@ footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
  <div class="quad">
   <div class="box"><div class="k">WTX& 台指期近一</div><div id="nightHomePrice" class="v">讀取中</div></div>
   <div class="box"><div class="k">夜盤漲跌</div><div id="nightHomeChange" class="v">—</div></div>
-  <div class="box"><div class="k">夜盤高點</div><div id="nightHomeHigh" class="v">—</div></div>
-  <div class="box"><div class="k">距夜盤高點</div><div id="nightHomeOffHigh" class="v">—</div></div>
+  <div class="box"><div class="k">即時走勢</div><div id="nightHomeTrend" class="v">累積中</div></div>
+  <div class="box"><div class="k">自高點回落</div><div id="nightHomeOffHigh" class="v">—</div></div>
  </div>
  <div id="nightHomePlain" class="reading"><b>白話：</b>正在讀取台指夜盤。</div>
+ <div id="nightMomentumDetail" class="explain">短線動能：正在累積 1／3／5／15 分鐘資料。</div>
  <div class="what">這是看什麼？</div>
  <div class="explain">台股收盤後，台指期夜盤會先反映歐美市場與重大消息。它比單看 NASDAQ 更直接，但仍不能單獨代表明天一定漲跌。</div>
 </section>
@@ -147,7 +148,7 @@ footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
 </section>
 </div>
 
-<footer>正式版 V12.2：修正中期趨勢歷史資料，改用加權指數 6 個月日線計算 5／20／60 日方向；夜間模式首頁直接顯示 WTX& 台指期近一、漲跌、高點與回吐程度。資料僅供資訊整理，不構成投資建議。</footer>
+<footer>正式版 V12.3：夜盤判讀拆分「相對昨收漲跌」與「即時走勢」，每 10 秒累積 WTX& 價格，計算 1／3／5／15 分鐘動能與自高點回落點數；中期趨勢沿用 5／20／60 日方向。資料僅供資訊整理，不構成投資建議。</footer>
 </main>
 <script>
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
@@ -282,25 +283,30 @@ async function loadNightFuture(){
     $('nightHomePrice').textContent=d.last.toLocaleString('zh-TW');
     $('nightHomeChange').textContent=ch==null?'—':pct(ch);
     $('nightHomeChange').className='v '+(ch==null?'amber':ch>=0?'green':'red');
-    $('nightHomeHigh').textContent=d.high??'—';
-    $('nightHomeOffHigh').textContent=off==null?'—':off.toFixed(2)+'%';
-    let plain='夜盤目前接近中性。';
-    if(ch!=null&&ch>=0.6)plain='夜盤目前明顯偏強，代表台股收盤後市場定價轉得更樂觀；仍要搭配美股與台積電 ADR 看是否同方向。';
-    else if(ch!=null&&ch>0)plain='夜盤目前小幅上漲，對明天屬輕微順風，但還不足以單獨判斷明天會收漲。';
-    else if(ch!=null&&ch<=-0.6)plain='夜盤目前明顯偏弱，代表台股收盤後外部壓力增加；若費半與台積電 ADR 也同步走弱，明日偏空信號會更強。';
-    else if(ch!=null&&ch<0)plain='夜盤目前小幅走弱，明日環境略偏逆風，但仍需觀察美股後續。';
-    if(off!=null&&off<-0.6)plain+=' 而且夜盤已從高點明顯回落，代表盤後買盤正在降溫。';
+    const offPts=d.high>0?d.last-d.high:null;
+    $('nightHomeOffHigh').textContent=offPts==null?'—':((offPts<0?'回落 ':'高於 ')+Math.abs(offPts).toLocaleString('zh-TW')+' 點'+(off==null?'':'（'+off.toFixed(2)+'%）'));
+    const mom=d.momentum||{}, dir=mom.direction||'資料累積中';
+    $('nightHomeTrend').textContent=dir;
+    $('nightHomeTrend').className='v '+(mom.tone==='bull'?'green':(mom.tone==='bear'||mom.tone==='softBear')?'red':'amber');
+    const fmtMom=(x)=>x?((x.points>=0?'+':'')+Math.round(x.points)+'點 / '+(x.pct>=0?'+':'')+x.pct.toFixed(2)+'%'):'累積中';
+    $('nightMomentumDetail').textContent='短線動能：1分 '+fmtMom(mom.d1)+' ｜ 3分 '+fmtMom(mom.d3)+' ｜ 5分 '+fmtMom(mom.d5)+' ｜ 15分 '+fmtMom(mom.d15);
+    let position=ch==null?'相對昨收位置不明':ch>=0?'相對昨收仍上漲 '+pct(ch):'相對昨收下跌 '+pct(ch);
+    let plain=position+'，即時走勢為「'+dir+'」。';
+    if(dir.includes('回落')||dir.includes('走弱')||dir.includes('下殺'))plain+=' 也就是說，雖然夜盤可能仍高於昨收，但目前價格動能正在往下，不能再寫成「小幅上漲」。';
+    else if(dir.includes('走強'))plain+=' 短線價格動能正在往上。';
+    else if(dir.includes('震盪'))plain+=' 目前沒有明確單邊動能。';
+    else plain+=' 需要先累積一段即時價格，才能判斷真正方向。';
     $('nightHomePlain').innerHTML='<b>白話：</b>'+plain;
   }else{
     $('nightFut').textContent='暫時取不到';$('nightFut').className='v amber';
     $('nightDetail').textContent=d.reason||'Yahoo WTX& 暫無資料';
-    $('nightHomePrice').textContent='資料不足';$('nightHomeChange').textContent='—';
+    $('nightHomePrice').textContent='資料不足';$('nightHomeChange').textContent='—';$('nightHomeTrend').textContent='資料不足';
     $('nightHomePlain').innerHTML='<b>白話：</b>目前抓不到 WTX&，所以今晚不拿假資料補夜盤判讀。';
   }
   forecastFromSignals();
  }catch(e){
   latestNightFuture=null;$('nightFut').textContent='資料不足';$('nightDetail').textContent='稍後自動重試';
-  $('nightHomePrice').textContent='資料不足';$('nightHomePlain').innerHTML='<b>白話：</b>夜盤來源暫時連線失敗，稍後自動重試。';
+  $('nightHomePrice').textContent='資料不足';$('nightHomeTrend').textContent='資料不足';$('nightHomePlain').innerHTML='<b>白話：</b>夜盤來源暫時連線失敗，稍後自動重試。';
   forecastFromSignals();
  }
 }
@@ -408,6 +414,6 @@ async function loadOverseas(){
 async function updateLive(){clearTimeout(marketTimer);try{const r=await fetch('/api/market?x='+Date.now(),{cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||r.status);renderLive(d)}catch(e){$('status').textContent='行情失敗';$('status').className='pill bad';$('error').style.display='block';$('error').textContent='台股行情更新失敗：'+e.message+'。10秒後自動重試，舊資料不會冒充即時。'}marketTimer=setTimeout(updateLive,10000)}
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.page).classList.add('active')});
 $('refresh').onclick=()=>{updateLive();loadContext();loadOverseas();loadHistory();loadNightFuture()};
-setMode();setInterval(setMode,30000);loadHistory();loadContext();loadOverseas();loadNightFuture();slowTimer=setInterval(loadContext,60000);overseasTimer=setInterval(()=>{loadOverseas();loadNightFuture();},60000);updateLive();
+setMode();setInterval(setMode,30000);loadHistory();loadContext();loadOverseas();loadNightFuture();slowTimer=setInterval(loadContext,60000);overseasTimer=setInterval(loadOverseas,60000);setInterval(loadNightFuture,10000);updateLive();
 if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script></body></html>
