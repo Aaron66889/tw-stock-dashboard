@@ -1,6 +1,6 @@
 {
-  "name": "tw-stock-dashboard-v12-portfolio-manager",
-  "version": "12.0.0",
+  "name": "tw-stock-dashboard-v12-2-trend-night",
+  "version": "12.2.0",
   "private": true,
   "scripts": {
     "start": "node server.js"

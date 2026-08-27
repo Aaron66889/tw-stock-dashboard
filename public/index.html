@@ -1,7 +1,7 @@
 <!doctype html><html lang="zh-Hant"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#111827"><link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
-<title>台股戰情正式版 V12.1</title>
+<title>台股戰情正式版 V12.2</title>
 <style>
 :root{--bg:#f3f4f6;--card:#fff;--text:#15171a;--muted:#6b7280;--line:#e5e7eb;--green:#17794c;--red:#c23b3b;--amber:#a86500;--panel:#f7f8fa}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif}button{font:inherit}
@@ -18,7 +18,7 @@ main{max-width:1040px;margin:auto;padding:16px 14px 80px}.top{display:flex;justi
 footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
 @media(max-width:760px){.marketgrid,.stats,.quad{grid-template-columns:1fr 1fr}.signals{grid-template-columns:1fr}.hgrid{grid-template-columns:1fr 1fr}.index{font-size:35px}.top{align-items:flex-start}.pills{max-width:54%}}
 </style></head><body><main>
-<div class="top"><div><div class="eyebrow">台股戰情 · 正式版 V12.1</div><h1 id="modeTitle">今天台股怎麼了？</h1><div class="note" id="modeNote">自動辨識盤前／盤中／盤後／夜間模式</div></div><div class="pills"><span id="mode" class="pill">判斷時段</span><span id="status" class="pill warn">連線中</span><span class="pill">台股 10 秒</span><button id="refresh" class="refresh">更新</button></div></div>
+<div class="top"><div><div class="eyebrow">台股戰情 · 正式版 V12.2</div><h1 id="modeTitle">今天台股怎麼了？</h1><div class="note" id="modeNote">自動辨識盤前／盤中／盤後／夜間模式</div></div><div class="pills"><span id="mode" class="pill">判斷時段</span><span id="status" class="pill warn">連線中</span><span class="pill">台股 10 秒</span><button id="refresh" class="refresh">更新</button></div></div>
 <div id="error" class="error"></div>
 
 <div class="nav">
@@ -40,6 +40,19 @@ footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
  <div class="verdict"><strong id="verdict">🟡 等待大盤資料</strong><div id="plain" class="plain">行情進來後，這裡直接翻成白話。</div></div>
  <div class="fresh">最後更新：<span id="updated">—</span>｜即時來源：證交所 MIS</div>
 </section>
+<section id="nightHomeCard" class="card" style="display:none">
+ <div class="sectiontitle">🌙 台指夜盤現在怎麼走？</div>
+ <div class="quad">
+  <div class="box"><div class="k">WTX& 台指期近一</div><div id="nightHomePrice" class="v">讀取中</div></div>
+  <div class="box"><div class="k">夜盤漲跌</div><div id="nightHomeChange" class="v">—</div></div>
+  <div class="box"><div class="k">夜盤高點</div><div id="nightHomeHigh" class="v">—</div></div>
+  <div class="box"><div class="k">距夜盤高點</div><div id="nightHomeOffHigh" class="v">—</div></div>
+ </div>
+ <div id="nightHomePlain" class="reading"><b>白話：</b>正在讀取台指夜盤。</div>
+ <div class="what">這是看什麼？</div>
+ <div class="explain">台股收盤後，台指期夜盤會先反映歐美市場與重大消息。它比單看 NASDAQ 更直接，但仍不能單獨代表明天一定漲跌。</div>
+</section>
+
 
 <section class="signals">
  <div class="card"><div class="title">中期趨勢</div><div id="midTrend" class="score amber">🟡 資料載入中</div><div class="what">這是看什麼？</div><div class="explain">看未來幾週的大方向有沒有壞。單日大漲大跌不會直接翻轉。</div></div>
@@ -134,7 +147,7 @@ footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
 </section>
 </div>
 
-<footer>正式版 V12.1：新增持股新增、編輯、刪除與本機保存；沿用 V11 的 WTX&、大盤、海外市場與明日模型。資料僅供資訊整理，不構成投資建議。</footer>
+<footer>正式版 V12.2：修正中期趨勢歷史資料，改用加權指數 6 個月日線計算 5／20／60 日方向；夜間模式首頁直接顯示 WTX& 台指期近一、漲跌、高點與回吐程度。資料僅供資訊整理，不構成投資建議。</footer>
 </main>
 <script>
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
@@ -208,9 +221,26 @@ function renderLive(d){
 function parseDateish(s){if(!s)return null;const z=String(s),m=z.match(/(\d{3,4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);if(!m)return null;let y=+m[1];if(y<1911)y+=1911;return new Date(y,+m[2]-1,+m[3])}
 function extractSeries(rows){if(!Array.isArray(rows))return[];const out=[];for(const r of rows){let date=null,idx=null;for(const v of Object.values(r||{})){if(!date)date=parseDateish(v)}for(const [k,v] of Object.entries(r||{})){if(/指數|收盤|發行量加權|TAIEX|close/i.test(k)){const x=Number(String(v).replace(/,/g,''));if(Number.isFinite(x)&&x>1000){idx=x;break}}}if(date&&idx)out.push({date,idx})}return out.sort((a,b)=>a.date-b.date)}
 async function loadHistory(){
- try{const r=await fetch('/api/history?x='+Date.now(),{cache:'no-store'}),d=await r.json(); latestHistory=d;if(!r.ok||!d.ok)throw Error('history');const s=extractSeries(d.hist);if(s.length<6)throw Error('few');const last=s.at(-1).idx,d5=s[Math.max(0,s.length-6)].idx,d20=s[Math.max(0,s.length-21)].idx,r5=(last-d5)/d5*100,r20=(last-d20)/d20*100;$('d5').textContent=pct(r5);$('d5').className='v '+(r5>=0?'green':'red');$('d20').textContent=pct(r20);$('d20').className='v '+(r20>=0?'green':'red');
- let label='🟡 震盪',cls='amber';if(r20>3&&r5>=0){label='🟢 偏多';cls='green'}else if(r20<-3&&r5<=0){label='🔴 偏空';cls='red'}$('midTrend').textContent=label;$('midTrend').className='score '+cls;$('quality').textContent='🟢 歷史資料正常';forecastFromSignals();}
- catch(e){$('d5').textContent='資料不足';$('d20').textContent='資料不足';$('midTrend').textContent='🟡 資料不足';$('quality').textContent='🟠 降級運作';}
+ try{
+  const r=await fetch('/api/history?x='+Date.now(),{cache:'no-store'}),d=await r.json();latestHistory=d;
+  if(!r.ok||!d.ok||!Array.isArray(d.rows)||d.rows.length<60)throw Error('history');
+  const s=d.rows.filter(x=>Number.isFinite(Number(x.close))).map(x=>Number(x.close));
+  const last=s.at(-1), d5=s.at(-6), d20=s.at(-21), d60=s.at(-61);
+  const r5=(last-d5)/d5*100, r20=(last-d20)/d20*100, r60=(last-d60)/d60*100;
+  $('d5').textContent=pct(r5);$('d5').className='v '+(r5>=0?'green':'red');
+  $('d20').textContent=pct(r20);$('d20').className='v '+(r20>=0?'green':'red');
+  let label='🟡 震盪',cls='amber';
+  if(r20>2 && r60>0 && r5>-2){label='🟢 中期偏多';cls='green'}
+  else if(r20< -2 && r60<0 && r5<2){label='🔴 中期偏空';cls='red'}
+  else if(r20>=0 && r60>=0){label='🟡 多頭整理';cls='amber'}
+  else if(r20<0 && r60>0){label='🟠 中期轉弱';cls='amber'}
+  $('midTrend').textContent=label;$('midTrend').className='score '+cls;
+  $('quality').textContent='🟢 歷史資料正常';
+  forecastFromSignals();
+ }catch(e){
+  $('d5').textContent='資料不足';$('d20').textContent='資料不足';
+  $('midTrend').textContent='🟡 資料不足';$('quality').textContent='🟠 降級運作';
+ }
 }
 function findNumByKeys(o,ps){if(!o)return null;for(const[k,v]of Object.entries(o)){if(ps.some(p=>p.test(k))){const x=Number(String(v).replace(/,/g,''));if(Number.isFinite(x))return x}}return null}
 function parseBreadth(a){if(!Array.isArray(a)||!a.length)return null;const r=a.at(-1),up=findNumByKeys(r,[/上漲/i,/漲家/i]),down=findNumByKeys(r,[/下跌/i,/跌家/i]),flat=findNumByKeys(r,[/持平/i,/平盤/i])||0;if(up==null||down==null)return null;return{up,down,ratio:up/(up+down+flat)}}
@@ -239,18 +269,40 @@ let latestNightFuture=null;
 async function loadNightFuture(){
  try{
   const r=await fetch('/api/night-future?x='+Date.now(),{cache:'no-store'}),d=await r.json();latestNightFuture=d;
+  const now=taipeiNow(),mins=now.getHours()*60+now.getMinutes();
+  const showNight=(mins>=900||mins<300);
+  $('nightHomeCard').style.display=showNight?'block':'none';
   if(d.available&&d.last>0){
     const ch=d.changePct!=null?d.changePct:(d.prevClose>0?(d.last-d.prevClose)/d.prevClose*100:null);
     $('nightFut').textContent=(ch==null?'':pct(ch)+' · ')+d.last.toLocaleString('zh-TW');
     $('nightFut').className='v '+(ch==null?'amber':ch>=0?'green':'red');
     const off=d.high>0?(d.last-d.high)/d.high*100:null;
     $('nightDetail').textContent='高 '+(d.high??'—')+' / 低 '+(d.low??'—')+(off==null?'':' · 距高點 '+off.toFixed(2)+'%');
+
+    $('nightHomePrice').textContent=d.last.toLocaleString('zh-TW');
+    $('nightHomeChange').textContent=ch==null?'—':pct(ch);
+    $('nightHomeChange').className='v '+(ch==null?'amber':ch>=0?'green':'red');
+    $('nightHomeHigh').textContent=d.high??'—';
+    $('nightHomeOffHigh').textContent=off==null?'—':off.toFixed(2)+'%';
+    let plain='夜盤目前接近中性。';
+    if(ch!=null&&ch>=0.6)plain='夜盤目前明顯偏強，代表台股收盤後市場定價轉得更樂觀；仍要搭配美股與台積電 ADR 看是否同方向。';
+    else if(ch!=null&&ch>0)plain='夜盤目前小幅上漲，對明天屬輕微順風，但還不足以單獨判斷明天會收漲。';
+    else if(ch!=null&&ch<=-0.6)plain='夜盤目前明顯偏弱，代表台股收盤後外部壓力增加；若費半與台積電 ADR 也同步走弱，明日偏空信號會更強。';
+    else if(ch!=null&&ch<0)plain='夜盤目前小幅走弱，明日環境略偏逆風，但仍需觀察美股後續。';
+    if(off!=null&&off<-0.6)plain+=' 而且夜盤已從高點明顯回落，代表盤後買盤正在降溫。';
+    $('nightHomePlain').innerHTML='<b>白話：</b>'+plain;
   }else{
     $('nightFut').textContent='暫時取不到';$('nightFut').className='v amber';
     $('nightDetail').textContent=d.reason||'Yahoo WTX& 暫無資料';
+    $('nightHomePrice').textContent='資料不足';$('nightHomeChange').textContent='—';
+    $('nightHomePlain').innerHTML='<b>白話：</b>目前抓不到 WTX&，所以今晚不拿假資料補夜盤判讀。';
   }
   forecastFromSignals();
- }catch(e){latestNightFuture=null;$('nightFut').textContent='資料不足';$('nightDetail').textContent='稍後自動重試';forecastFromSignals();}
+ }catch(e){
+  latestNightFuture=null;$('nightFut').textContent='資料不足';$('nightDetail').textContent='稍後自動重試';
+  $('nightHomePrice').textContent='資料不足';$('nightHomePlain').innerHTML='<b>白話：</b>夜盤來源暫時連線失敗，稍後自動重試。';
+  forecastFromSignals();
+ }
 }
 function forecastFromSignals(){
  const stage=currentForecastStage();
@@ -272,10 +324,10 @@ function forecastFromSignals(){
    const j=judge(lastLive.market);
    if(j){domesticScore += Math.max(-1.5,Math.min(1.5,j.ch)); domesticCount++;}
  }
- if(latestHistory?.hist){
-   const s=extractSeries(latestHistory.hist);
+ if(Array.isArray(latestHistory?.rows)&&latestHistory.rows.length>=6){
+   const s=latestHistory.rows.map(x=>Number(x.close)).filter(Number.isFinite);
    if(s.length>=6){
-     const last=s.at(-1).idx,d5=s[Math.max(0,s.length-6)].idx;
+     const last=s.at(-1),d5=s.at(-6);
      domesticScore += Math.max(-1.5,Math.min(1.5,(last-d5)/d5*100)); domesticCount++;
    }
  }

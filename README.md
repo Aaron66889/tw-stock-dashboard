@@ -59,3 +59,7 @@ npm start
 
 ## V12.1
 修正 Render 啟動時 `req is not defined` 錯誤。
+
+## V12.2
+- 中期趨勢改用 Yahoo ^TWII 6個月日線，計算5/20/60日方向。
+- 15:00~05:00 首頁直接顯示 WTX& 夜盤卡片與白話判讀。

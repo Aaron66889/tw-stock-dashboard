@@ -47,13 +47,21 @@ async function context(){
  try{institutional=await getJSON('https://www.twse.com.tw/rwd/zh/fund/T86?response=json&selectType=ALLBUT0999&_='+Date.now(),{'Referer':'https://www.twse.com.tw/'})}catch(e){errors.push('institutional:'+e.message)}
  return{ok:!!(breadth||turnover||institutional),fetchedAt:new Date().toISOString(),breadth,turnover,institutional,errors};
 }
-async function history(){let hist=null,errors=[];try{hist=await openapi('indicesReport/MI_5MINS_HIST')}catch(e){errors.push(e.message)}return{ok:!!hist,fetchedAt:new Date().toISOString(),hist,errors};}
-async function yahooQuote(symbol){
- const u='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=5m&range=1d&includePrePost=true';
- const d=await getJSON(u);const r=d?.chart?.result?.[0];if(!r)throw new Error('No result '+symbol);
- const meta=r.meta||{},q=r.indicators?.quote?.[0]||{},closes=q.close||[];let last=meta.regularMarketPrice;
- if(!(last>0)){for(let i=closes.length-1;i>=0;i--){if(Number.isFinite(closes[i])){last=closes[i];break}}}
- return{symbol,last:n(last),prevClose:n(meta.chartPreviousClose??meta.previousClose),marketState:meta.marketState||null,currency:meta.currency||null};
+async function history(){
+ try{
+  const u='https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range=6mo';
+  const d=await getJSON(u);
+  const r=d?.chart?.result?.[0];
+  if(!r)throw new Error('No ^TWII history');
+  const ts=r.timestamp||[], q=r.indicators?.quote?.[0]||{}, closes=q.close||[];
+  const rows=[];
+  for(let i=0;i<ts.length;i++){
+    if(Number.isFinite(closes[i]))rows.push({date:new Date(ts[i]*1000).toISOString().slice(0,10),close:closes[i]});
+  }
+  return{ok:rows.length>=20,fetchedAt:new Date().toISOString(),source:'Yahoo Finance ^TWII daily',rows};
+ }catch(e){
+  return{ok:false,fetchedAt:new Date().toISOString(),source:'Yahoo Finance ^TWII daily',rows:[],errors:[e.message]};
+ }
 }
 async function overseas(){
  const syms={NASDAQ:'^IXIC',SOX:'^SOX',TSM:'TSM'},quotes={},errors=[];
