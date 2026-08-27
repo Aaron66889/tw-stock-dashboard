@@ -1,0 +1,12 @@
+{
+  "name": "tw-stock-dashboard-v11-yahoo-wtx",
+  "version": "11.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "description": "Taiwan stock market dashboard PWA"
+}

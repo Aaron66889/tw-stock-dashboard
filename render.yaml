@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: tw-stock-dashboard
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health

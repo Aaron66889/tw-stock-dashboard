@@ -1,0 +1,15 @@
+{
+  "name": "台股戰情正式版 V10",
+  "short_name": "台股戰情",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f5f7",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
