@@ -56,3 +56,6 @@ npm start
 
 ## V12
 持股可新增、編輯、刪除，使用 localStorage 保存，不需要資料庫。
+
+## V12.1
+修正 Render 啟動時 `req is not defined` 錯誤。
