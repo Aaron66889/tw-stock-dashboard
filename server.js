@@ -1,7 +1,7 @@
 const http=require('http'),fs=require('fs'),path=require('path');
 const {URL}=require('url');
 const PORT=process.env.PORT||3000, PUBLIC=path.join(__dirname,'public');
-const ETF=['0050','0056','00878','00919'];
+const ETF=(String(req.query.symbols||'0050,0056,00878,00919').split(',').map(x=>x.trim()).filter(Boolean));
 const cache=new Map();
 
 function send(res,status,body,type='application/json; charset=utf-8'){

@@ -1,6 +1,6 @@
 {
-  "name": "tw-stock-dashboard-v11-yahoo-wtx",
-  "version": "11.0.0",
+  "name": "tw-stock-dashboard-v12-portfolio-manager",
+  "version": "12.0.0",
   "private": true,
   "scripts": {
     "start": "node server.js"

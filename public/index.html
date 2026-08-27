@@ -1,7 +1,7 @@
 <!doctype html><html lang="zh-Hant"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#111827"><link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
-<title>台股戰情正式版 V11</title>
+<title>台股戰情正式版 V12</title>
 <style>
 :root{--bg:#f3f4f6;--card:#fff;--text:#15171a;--muted:#6b7280;--line:#e5e7eb;--green:#17794c;--red:#c23b3b;--amber:#a86500;--panel:#f7f8fa}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif}button{font:inherit}
@@ -18,7 +18,7 @@ main{max-width:1040px;margin:auto;padding:16px 14px 80px}.top{display:flex;justi
 footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
 @media(max-width:760px){.marketgrid,.stats,.quad{grid-template-columns:1fr 1fr}.signals{grid-template-columns:1fr}.hgrid{grid-template-columns:1fr 1fr}.index{font-size:35px}.top{align-items:flex-start}.pills{max-width:54%}}
 </style></head><body><main>
-<div class="top"><div><div class="eyebrow">台股戰情 · 正式版 V11</div><h1 id="modeTitle">今天台股怎麼了？</h1><div class="note" id="modeNote">自動辨識盤前／盤中／盤後／夜間模式</div></div><div class="pills"><span id="mode" class="pill">判斷時段</span><span id="status" class="pill warn">連線中</span><span class="pill">台股 10 秒</span><button id="refresh" class="refresh">更新</button></div></div>
+<div class="top"><div><div class="eyebrow">台股戰情 · 正式版 V12</div><h1 id="modeTitle">今天台股怎麼了？</h1><div class="note" id="modeNote">自動辨識盤前／盤中／盤後／夜間模式</div></div><div class="pills"><span id="mode" class="pill">判斷時段</span><span id="status" class="pill warn">連線中</span><span class="pill">台股 10 秒</span><button id="refresh" class="refresh">更新</button></div></div>
 <div id="error" class="error"></div>
 
 <div class="nav">
@@ -68,6 +68,7 @@ footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
 </div>
 
 <div id="portfolio" class="page">
+<section class="card"><div class="row"><div><div class="sectiontitle">持股管理</div><div class="note">可直接新增、編輯、刪除；資料保存在這台裝置</div></div><button class="btn" onclick="addHolding()">＋ 新增持股</button></div><div id="holdingManager"></div></section>
 <section class="card"><div class="sectiontitle">我的 ETF 資產</div>
  <section class="stats">
   <div class="stat"><div class="k">持股總成本</div><div class="v">$350,693</div></div>
@@ -133,15 +134,33 @@ footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
 </section>
 </div>
 
-<footer>正式版 V11：已把 Yahoo 股市「台指期近一 WTX&」接入明日模型，夜盤訊號權重高於單一海外指數；同時保留 NASDAQ、費半、台積電 ADR、台股收盤結構與市場廣度。若 Yahoo WTX& 暫時取不到，系統會降級並降低信心，不會補假資料。本工具為資訊整理與風險觀察，不構成投資建議。</footer>
+<footer>正式版 V12：新增持股新增、編輯、刪除與本機保存；沿用 V11 的 WTX&、大盤、海外市場與明日模型。資料僅供資訊整理，不構成投資建議。</footer>
 </main>
 <script>
-const H=[{t:'0050',n:'元大台灣50',s:3150,c:77.37},{t:'0056',n:'元大高股息',s:750,c:33.91},{t:'00878',n:'國泰永續高股息',s:4000,c:18.06},{t:'00919',n:'群益台灣精選高息',s:500,c:18.61}];
-const totalCost=H.reduce((a,h)=>a+h.s*h.c,0), $=id=>document.getElementById(id), money=n=>'$'+Math.round(n).toLocaleString('zh-TW'), pct=n=>(n>=0?'+':'')+n.toFixed(2)+'%';
+const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
+let H=loadHoldings();
+function loadHoldings(){try{const x=JSON.parse(localStorage.getItem('twStockHoldingsV12'));return Array.isArray(x)?x:DEFAULT_H.slice()}catch(e){return DEFAULT_H.slice()}}
+function saveHoldings(){localStorage.setItem('twStockHoldingsV12',JSON.stringify(H))}
+let totalCost=H.reduce((a,h)=>a+h.s*h.c,0), $=id=>document.getElementById(id), money=n=>'$'+Math.round(n).toLocaleString('zh-TW'), pct=n=>(n>=0?'+':'')+n.toFixed(2)+'%';
 let lastLive=null,marketTimer,slowTimer,overseasTimer;
 let latestOverseas=null, latestContext=null, latestHistory=null;
 
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
+
+function renderHoldingManager(){
+ const el=$('holdingManager');if(!el)return;
+ el.innerHTML=H.length?H.map(x=>`<div style="display:grid;grid-template-columns:80px 1fr auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #263246"><b>${x.t}</b><span>${Number(x.s).toLocaleString()} 股｜均價 $${Number(x.c).toFixed(2)}</span><span><button class="btn" onclick="editHolding('${x.t}')">編輯</button> <button class="btn" onclick="deleteHolding('${x.t}')">刪除</button></span></div>`).join(''):'<div class="note">目前沒有持股。</div>';
+}
+function holdingInput(old=''){
+ const x=H.find(v=>v.t===old),t=prompt('股票代號',x?.t||'');if(t===null)return;
+ const s=prompt('持有股數',x?.s||'');if(s===null)return;
+ const c=prompt('平均成本',x?.c||'');if(c===null)return;
+ const nt=t.trim().toUpperCase(),ns=Number(s),nc=Number(c);if(!nt||!(ns>0)||!(nc>0)){alert('請輸入正確的代號、股數與平均成本');return}
+ if(!old&&H.some(v=>v.t===nt)){alert('這檔已存在，請使用編輯');return}
+ H=H.filter(v=>v.t!==old);H.push({t:nt,n:nt,s:ns,c:nc});saveHoldings();totalCost=H.reduce((a,v)=>a+v.s*v.c,0);renderHoldingManager();loadLive();
+}
+function addHolding(){holdingInput('')} function editHolding(t){holdingInput(t)}
+function deleteHolding(t){if(confirm('確定刪除 '+t+'？')){H=H.filter(v=>v.t!==t);saveHoldings();totalCost=H.reduce((a,v)=>a+v.s*v.c,0);renderHoldingManager();loadLive();}}
 function setMode(){
  const d=taipeiNow(),mins=d.getHours()*60+d.getMinutes(),day=d.getDay();
  let label,title,note;
@@ -179,7 +198,7 @@ function renderLive(d){
  html+=`<div class="holding"><div class="holdtop"><div><div class="ticker">${h.t}</div><div class="note">${h.n}</div></div><div class="ret ${r>=0?'green':'red'}">${pct(r)}</div></div><div class="hgrid"><div class="box"><div class="k">現價</div><div class="v">$${z.last.toFixed(2)}</div></div><div class="box"><div class="k">今日</div><div class="v ${day>=0?'green':'red'}">${day==null?'—':pct(day)}</div></div><div class="box"><div class="k">持有</div><div class="v">${h.s.toLocaleString()}股</div></div><div class="box"><div class="k">均價</div><div class="v">$${h.c.toFixed(2)}</div></div><div class="box"><div class="k">市值</div><div class="v">${money(m)}</div></div><div class="box"><div class="k">未實現</div><div class="v ${p>=0?'green':'red'}">${p>=0?'+':''}${money(p)}</div></div></div></div>`}
  $('holdings').innerHTML=html||'<div class="note">持股行情暫時取不到。</div>';
  if(total){const p=total-totalCost,r=p/totalCost*100;$('market').textContent=money(total);$('profit').textContent=(p>=0?'+':'')+money(p);$('profit').className='v '+(p>=0?'green':'red');$('return').textContent=pct(r);$('return').className='v '+(r>=0?'green':'red');
- $('portfolioPlain').innerHTML='<b>白話：</b>目前四檔 ETF 今日價格變動合計約 <b class="'+(todayDelta>=0?'green':'red')+'">'+(todayDelta>=0?'+':'')+money(todayDelta)+'</b>。這是價格變動，不含配息與交易成本。';
+ $('portfolioPlain').innerHTML='<b>白話：</b>目前持股今日價格變動合計約 <b class="'+(todayDelta>=0?'green':'red')+'">'+(todayDelta>=0?'+':'')+money(todayDelta)+'</b>。這是價格變動，不含配息與交易成本。';
  const weights=H.map(h=>{const z=d.quotes[h.t];return {t:h.t,v:z&&z.last>0?z.last*h.s:0}}).filter(x=>x.v>0).sort((a,b)=>b.v-a.v);
  if(weights.length){const top=weights[0],w=top.v/total*100;$('allocationPlain').innerHTML='<b>部位結構：</b>'+top.t+' 約占目前 ETF 市值 '+w.toFixed(0)+'%，是你帳戶對大盤最敏感的主要來源。這只是集中度提示，不等於叫你調整部位。';}
 }
