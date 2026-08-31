@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='R3.43-RECOVERY-BASELINE';
+const BUILD='16.8-STABILITY-ONLY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -500,10 +500,9 @@ function repairKeysFromValidation(code,validation,adjustmentAnomalies=[]){
 }
 
 function historyProgress(code){
- const months=monthKeys(code==='0050'?'2009-01-01':META[code].listed),saved=diskRead(historyFile(code)),valid=validSavedMonths(code,saved?.months||{}),have=new Set(Object.keys(valid)),missing=months.filter(m=>!have.has(m.slice(0,7))),job=HISTORY_JOBS.get(code),ready=diskRead(readyFile(code));
- const eligible=!!ready?.validation?.backtestReadyPass,pass=code==='0050'?eligible:!!ready?.validation?.fullHistoryPass,refreshDue=eligible&&readyRefreshDue(ready),readyStatus=ready?.rows?.length?(eligible?(refreshDue?'REFRESH_DUE':pass?'READY':'LONG_SAMPLE_READY'):'VALIDATION_FAIL'):null;
- const effectiveJobStatus=(code==='0050'&&eligible&&job?.status==='LONG_SAMPLE_READY')?null:job?.status;
- return{code,status:effectiveJobStatus||readyStatus||(missing.length?'IDLE':'FINALIZING'),fullHistoryPass:pass,backtestReadyPass:eligible,refreshDue,totalMonths:months.length,doneMonths:months.length-missing.length,missingMonths:missing.length,missingKeys:missing.slice(0,12).map(x=>x.slice(0,7)),percent:months.length?Math.round((months.length-missing.length)/months.length*100):0,first:ready?.validation?.first||null,last:ready?.validation?.last||null,rows:ready?.rows?.length||0,validation:ready?.validation||null,error:job?.error||null,errors:(job?.errors||[]).slice(-12)};
+ const months=monthKeys(META[code].listed),saved=diskRead(historyFile(code)),valid=validSavedMonths(code,saved?.months||{}),have=new Set(Object.keys(valid)),missing=months.filter(m=>!have.has(m.slice(0,7))),job=HISTORY_JOBS.get(code),ready=diskRead(readyFile(code));
+ const pass=!!ready?.validation?.fullHistoryPass,eligible=!!ready?.validation?.backtestReadyPass,refreshDue=eligible&&readyRefreshDue(ready),readyStatus=ready?.rows?.length?(eligible?(refreshDue?'REFRESH_DUE':pass?'READY':'LONG_SAMPLE_READY'):'VALIDATION_FAIL'):null;
+ return{code,status:job?.status||readyStatus||(missing.length?'IDLE':'FINALIZING'),fullHistoryPass:pass,backtestReadyPass:eligible,refreshDue,totalMonths:months.length,doneMonths:months.length-missing.length,missingMonths:missing.length,missingKeys:missing.slice(0,12).map(x=>x.slice(0,7)),percent:months.length?Math.round((months.length-missing.length)/months.length*100):0,first:ready?.validation?.first||null,last:ready?.validation?.last||null,rows:ready?.rows?.length||0,validation:ready?.validation||null,error:job?.error||null,errors:(job?.errors||[]).slice(-12)};
 }
 async function finalizeOfficialHistory(code){
  const saved=diskRead(historyFile(code)),byMonth=saved?.months||{},raw=Object.values(byMonth).flat().filter(x=>x.date>=META[code].listed).sort((a,b)=>a.date.localeCompare(b.date)),ded=[...new Map(raw.map(x=>[x.date,x])).values()];
@@ -520,7 +519,7 @@ function enqueueHistory(code,front=false){if(!ETF.includes(code))return historyP
 async function pumpWarmQueue(){if(WARM_ACTIVE)return;WARM_ACTIVE=true;while(WARM_QUEUE.length){const code=WARM_QUEUE.shift();try{await warmHistoryWorker(code)}catch(e){const j=HISTORY_JOBS.get(code)||{};j.status='ERROR';j.error=e.message;HISTORY_JOBS.set(code,j)}}WARM_ACTIVE=false}
 
 async function warmHistoryWorker(code){
- const months=monthKeys(code==='0050'?'2009-01-01':META[code].listed),saved=diskRead(historyFile(code))||{months:{}},byMonth=validSavedMonths(code,saved.months||{});let priorReady=diskRead(readyFile(code));if(code==='0050'&&priorReady?.normalizationVersion!=='scale-v2')priorReady=null;if(code==='0056'&&priorReady?.normalizationVersion!=='yahoo-adjusted-v1')priorReady=null;if(['00878','00919'].includes(code)&&priorReady?.normalizationVersion!=='yahoo-adjusted-v1')priorReady=null;if(priorReady?.validation?.backtestReadyPass&&readyRefreshDue(priorReady))delete byMonth[ymdTaipei().slice(0,7)];
+ const months=monthKeys(META[code].listed),saved=diskRead(historyFile(code))||{months:{}},byMonth=validSavedMonths(code,saved.months||{});let priorReady=diskRead(readyFile(code));if(code==='0050'&&priorReady?.normalizationVersion!=='scale-v2')priorReady=null;if(code==='0056'&&priorReady?.normalizationVersion!=='yahoo-adjusted-v1')priorReady=null;if(['00878','00919'].includes(code)&&priorReady?.normalizationVersion!=='yahoo-adjusted-v1')priorReady=null;if(priorReady?.validation?.backtestReadyPass&&readyRefreshDue(priorReady))delete byMonth[ymdTaipei().slice(0,7)];
  if(code==='0050'&&!priorReady?.validation?.backtestReadyPass){try{const longRows=await yahoo0050LongRows(),gm=rowsToMonths(longRows);for(const [k,v] of Object.entries(gm))if(monthRowsPlausible(code,k,v))byMonth[k]=v;diskWrite(historyFile(code),{months:byMonth,updatedAt:new Date().toISOString(),seedSource:longRows[0]?.source||'0050長期日K',seedRows:longRows.length,seedFirst:longRows[0]?.date,seedLast:longRows.at(-1)?.date});const seeded=await finalizeOfficialHistory(code);if(seeded.validation?.backtestReadyPass){const j={status:seeded.validation.fullHistoryPass?'READY':'LONG_SAMPLE_READY',startedAt:new Date().toISOString(),doneMonths:Object.keys(byMonth).length,totalMonths:months.length,rows:seeded.rows.length,finishedAt:new Date().toISOString()};HISTORY_JOBS.set(code,j);return seeded}}catch(e){const j=HISTORY_JOBS.get(code)||{errors:[]};j.status='SOURCE_BLOCKED';j.error='0050 長期資料源連線失敗；已停止逐月279次重試';j.errors=[...(j.errors||[]),'Long history seed: '+e.message];HISTORY_JOBS.set(code,j);return{ok:false,ready:false,progress:historyProgress(code)}}}
  if(['0056','00878','00919'].includes(code)&&!priorReady?.validation?.backtestReadyPass){
   {const j=HISTORY_JOBS.get(code)||{errors:[]};j.status='YAHOO_LONG_FETCH';j.startedAt=j.startedAt||new Date().toISOString();HISTORY_JOBS.set(code,j)}
@@ -888,7 +887,7 @@ async function constituents(code,date=null){
  });
 }
 async function constituentHealth(code){
- return cached('health:r328:'+code,45000,async()=>{
+ return cached('health:r328:'+code,10000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
@@ -1073,7 +1072,7 @@ function modelTradeStaticProof(){
 
 function mime(f){if(f.endsWith('.html'))return'text/html; charset=utf-8';if(f.endsWith('.css'))return'text/css; charset=utf-8';if(f.endsWith('.js'))return'application/javascript; charset=utf-8';if(f.endsWith('.json'))return'application/json; charset=utf-8';if(f.endsWith('.svg'))return'image/svg+xml';return'application/octet-stream'}
 async function safeApi(res,label,fn){try{const data=await fn();const key={'market':'live','context':'ctx','night-future':'nf','overseas':'ovs','buy-model':'bm'}[label];if(key&&data){RUNTIME[key]=data;RUNTIME.lastRefresh=new Date().toISOString()}return send(res,200,data)}catch(e){console.error(label,e);RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith(label+':')),label+':'+(e.message||String(e))].slice(-20);return send(res,200,{ok:false,status:'ERROR',source:label,error:e.message||String(e),fetchedAt:new Date().toISOString()})}}
-http.createServer(async(req,res)=>{
+const server=http.createServer(async(req,res)=>{
  const u=new URL(req.url,'http://'+req.headers.host);
  if(['/health','/api/health','/healthz','/readyz'].includes(u.pathname))return send(res,200,{ok:true,status:'healthy',version:VERSION,build:BUILD,now:new Date().toISOString(),uptimeSec:Math.round(process.uptime())});
  if(u.pathname==='/api/constituent-proof')return safeApi(res,'constituent-proof',async()=>{const rs=await Promise.all(ETF.map(async code=>{try{const c=await deadline(constituents(code),15000,null);if(!c)throw Error('official constituent source timed out');const expected=c.expected||META[code].expected,actual=c.items?.length||0,weights=c.items?.filter(x=>Number.isFinite(x.weight)).length||0,official=!!c.officialOnly&&isOfficialHostFor(code,c.sourceUrl||META[code].url);return{code,pass:!!(c.complete&&official&&actual>=expected&&weights>=expected),official,source:c.source,sourceUrl:c.sourceUrl||META[code].url,expected,actual,weightRows:weights,coveragePct:expected?Math.min(100,actual/expected*100):0,weightCoveragePct:expected?Math.min(100,weights/expected*100):0,asOf:c.asOf,note:c.note||null,errors:c.errors||[]}}catch(e){return{code,pass:false,official:true,source:META[code].source,sourceUrl:META[code].url,expected:META[code].expected,actual:0,weightRows:0,coveragePct:0,weightCoveragePct:0,note:e.message}}}));return{ok:true,build:BUILD,allPass:rs.every(x=>x.pass),constituents:rs,generatedAt:new Date().toISOString()}});
@@ -1101,4 +1100,16 @@ http.createServer(async(req,res)=>{
  if(u.pathname==='/api/backtest'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'backtest',()=>ETF.includes(code)?backtest(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/trade-performance'){return safeApi(res,'trade-performance',()=>tradePerformance(u.searchParams.get('code'),u.searchParams.get('entryDate'),u.searchParams.get('entryPrice'),u.searchParams.get('layer2Low'),u.searchParams.get('layer3Low'),u.searchParams.get('layer1High')))}
  try{let rel=u.pathname==='/'?'/index.html':u.pathname.replace(/\.\./g,''),f=path.join(PUBLIC,rel);if(!f.startsWith(PUBLIC)||!fs.existsSync(f)||fs.statSync(f).isDirectory())return send(res,404,'Not found','text/plain; charset=utf-8');const type=mime(f);res.writeHead(200,{'Content-Type':type,'Cache-Control':/\.html$|\.js$|\.css$/.test(f)?'no-store, max-age=0':'public,max-age=120','X-Content-Type-Options':'nosniff'});return res.end(fs.readFileSync(f))}catch(e){return send(res,500,'Static error','text/plain; charset=utf-8')}
-}).listen(PORT,'0.0.0.0',()=>{console.log(VERSION+' '+BUILD+' listening on '+PORT);setTimeout(refreshRuntime,12000);setInterval(refreshRuntime,120000);setTimeout(autoWarmAllHistory,3500);setInterval(autoWarmAllHistory,15*60*1000)});
+});
+server.keepAliveTimeout=120000;
+server.headersTimeout=125000;
+server.requestTimeout=30000;
+server.on('clientError',(err,socket)=>{try{if(socket.writable)socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')}catch(_){}});
+server.listen(PORT,'0.0.0.0',()=>{
+ console.log(VERSION+' '+BUILD+' listening on '+PORT);
+ // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
+ setTimeout(refreshRuntime,5000);
+ setInterval(refreshRuntime,120000);
+ setTimeout(autoWarmAllHistory,45000);
+ setInterval(autoWarmAllHistory,30*60*1000);
+});

@@ -328,3 +328,16 @@ TWSE 每月資料改為 JSON → CSV 雙路徑。JSON 暫時被擋或回非 JSON
 - 0050 歷史回退到 R3.16 已在 Render 實際成功的 Yahoo 0050.TW 長歷史路徑 + scale-v2 1拆4尺度QA。
 - 0056 / 00878 / 00919 保留後續已驗證成功的 Yahoo Adjusted OHLC 全歷史路徑與 00919 age-aware validation。
 - 本版不做新的0050 dividend-adjusted改造；先恢復可回測基準，再於此版本之上單獨處理。
+
+## 台股戰情16.8 — Stability-only
+本版只處理 Render 間歇性 502 / Bad Gateway 的伺服器層穩定性，不修改任何模型公式、0050計算、歷史資料算法、成分股算法或45項驗證邏輯。
+
+變更：
+- Node HTTP keepAliveTimeout = 120s
+- headersTimeout = 125s
+- requestTimeout = 30s
+- 冷啟動先讓服務可回應；首次 runtime refresh 延後5秒
+- 全歷史背景建立延後到45秒，避免與首次行情/模型外部連線同時爆量
+- 全歷史自動檢查週期由15分鐘改30分鐘；不改實際歷史建立算法
+- /health 原本即為純本機輕量回應，維持不連外
+- 網頁名稱：台股戰情16.8
