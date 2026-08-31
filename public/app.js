@@ -94,8 +94,10 @@ function etfFetchStamp(){
 function etfExchangeStamp(code){
  const q=lastLive?.quotes?.[code];
  if(!q)return'';
- const src=String(q.source||'').includes('browser direct')?'｜直連':'｜伺服器';
- return src+(q.time?('｜成交 '+q.time):'');
+ const src=String(q.source||'');
+ if(src.includes('Anue'))return'｜鉅亨即時';
+ if(src.includes('TWSE'))return'｜TWSE備援'+(q.time?('｜成交 '+q.time):'');
+ return src?('｜'+src):'';
 }
 
 function nLive(v){const x=Number(v);return Number.isFinite(x)?x:null}
@@ -138,15 +140,7 @@ async function browserTwseEtfLive(){
 async function loadEtfLive(){
  clearTimeout(etfLiveTimer);
  try{
-  let d=null,directErr=null;
-  try{
-   d=await browserTwseEtfLive();
-  }catch(e){directErr=e}
-  // Browser direct is canonical. Server is fallback only when browser CORS/network blocks TWSE.
-  if(!d?.quotes){
-   d=await get('/api/etf-live?_='+Date.now(),6500);
-   if(directErr)d.browserDirectError=directErr?.message||String(directErr);
-  }
+  const d=await get('/api/etf-live?_='+Date.now(),6500);
   ETF_FETCH_AT=Date.now();ETF_FETCH_COUNT++;
   if(d?.quotes){
    lastLive=lastLive||{ok:true,quotes:{}};

@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.20-BROWSER-TWSE-DIRECT';
+const BUILD='16.8.21-ANUE-LIVE-PRIMARY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -211,28 +211,66 @@ async function yahooTwOne(code,isIndex=false){
 
 async function liveEtf4(){
  const quotes={},errors=[];
- const rs=await Promise.allSettled(
-  ETF.map(async c=>{
-   const d=await mis('tse_'+c+'.tw');
-   const rows=d?.msgArray||[];
-   const x=rows.find(v=>String(v.c||'').trim()===c);
-   if(!x)throw Error('TWSE MIS missing '+c);
-   const q=parseMis(x);
-   if(!(q.last>0))throw Error('TWSE MIS no last '+c);
-   q.source='TWSE MIS session '+c;
-   q.realtime=true;
-   q.serverFetchedAt=new Date().toISOString();
-   return q;
-  })
- );
- rs.forEach((r,i)=>{
-  const c=ETF[i];
-  if(r.status==='fulfilled'&&r.value?.last>0)quotes[c]=r.value;
-  else errors.push(c+': '+(r.reason?.message||'TWSE MIS失敗'));
- });
+ // Primary: Anue 鉅亨 public quote API (no auth), one batch request for all four ETFs.
+ try{
+  const syms=ETF.map(c=>'TWS:'+c+':STOCK').join(',');
+  const url='https://ws.api.cnyes.com/ws/api/v1/quote/quotes/'+syms+
+            '?column=FORMAT&_='+(Date.now()+'_'+Math.random().toString(36).slice(2));
+  const d=await getJSONQuick(url,{
+   'User-Agent':'Mozilla/5.0',
+   'Referer':'https://www.cnyes.com/',
+   'Cache-Control':'no-cache, no-store, max-age=0',
+   'Pragma':'no-cache',
+   'Accept-Encoding':'identity'
+  },4500);
+  for(const x of (d?.data||[])){
+   const code=String(x?.['200010']||'').trim();
+   if(!ETF.includes(code))continue;
+   const last=n(x?.['200026']),prev=n(x?.['200031']);
+   if(last>0){
+    quotes[code]={
+     ticker:code,
+     name:x?.['200009']||code,
+     last,
+     prevClose:prev,
+     change:n(x?.['200027']),
+     changePct:n(x?.['200044']),
+     time:null,
+     date:null,
+     source:'Anue 鉅亨',
+     realtime:true,
+     serverFetchedAt:new Date().toISOString()
+    };
+   }
+  }
+ }catch(e){
+  errors.push('Anue 鉅亨: '+(e.message||String(e)));
+ }
+
+ // Fallback: only fill symbols missing from Anue. This keeps the old TWSE path available,
+ // but it can no longer overwrite a good Anue quote.
+ const missing=ETF.filter(c=>!quotes[c]?.last);
+ if(missing.length){
+  try{
+   const ex=missing.map(c=>'tse_'+c+'.tw').join('|');
+   const rows=(await mis(ex)).msgArray||[];
+   for(const x of rows){
+    const q=parseMis(x);
+    if(missing.includes(q.ticker)&&q.last>0){
+     q.source='TWSE MIS fallback';
+     q.realtime=true;
+     q.serverFetchedAt=new Date().toISOString();
+     quotes[q.ticker]=q;
+    }
+   }
+  }catch(e){
+   errors.push('TWSE MIS fallback: '+(e.message||String(e)));
+  }
+ }
+
  return{
   ok:ETF.every(c=>quotes[c]?.last>0),
-  source:'TWSE MIS direct per-code',
+  source:'Anue 鉅亨 primary',
   fetchedAt:new Date().toISOString(),
   quotes,
   missing:ETF.filter(c=>!quotes[c]?.last),
