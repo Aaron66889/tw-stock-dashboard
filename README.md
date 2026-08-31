@@ -449,3 +449,9 @@ app.js 完全未改；模型、Score、Gate、買點、Yahoo價格、持股、�
 - 每次請求加入唯一 nonce、no-cache/no-store、Pragma、Expires、If-Modified-Since。
 - 保留前端抓取心跳，並另外顯示「證交所時間」，用來判斷是網站在抓舊值，還是TWSE回應本身沒前進。
 - 模型、Score、Gate、買點、燈號、持股、歷史、回測未修改。
+
+## 16.8.18 分頁切回即時價重啟修正
+- 找到真正前端停更原因：visibilitychange 切回頁面時會 clearTimeout(etfLiveTimer)，但原本漏掉重新呼叫 loadEtfLive()。
+- 因此使用者切去券商/其他分頁再切回網站後，ETF即時價迴圈會被永久清掉。
+- 現在切回頁面時會立即重新啟動 loadEtfLive()。
+- TWSE MIS來源、模型、Score、Gate、買點、燈號、持股、歷史、回測均未修改。
