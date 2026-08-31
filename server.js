@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.21-ANUE-LIVE-PRIMARY';
+const BUILD='16.8.22-CONSTITUENT-ANUE-LIVE-ONLY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -119,11 +119,67 @@ function parseMis(x){
 }
 async function quoteCodes(codes){
  const uniq=[...new Set(codes.filter(x=>/^\d{4,6}$/.test(String(x))))],out={};
+ // 16.8.22: constituent intraday quotes use the same proven Anue source as ETF live prices.
+ // Holdings lists and weights are untouched; this function changes quote transport only.
  try{
-  for(let i=0;i<uniq.length;i+=22){const chunk=uniq.slice(i,i+22),ex=chunk.flatMap(c=>['tse_'+c+'.tw','otc_'+c+'.tw']).join('|'),rows=(await mis(ex)).msgArray||[];for(const x of rows){const z=parseMis(x);if(z.ticker&&z.last>0){z.source='TWSE MIS';z.realtime=true;out[z.ticker]=z}}}
-  if(Object.keys(out).length>=Math.max(3,uniq.length*.65))return out;
+  for(let i=0;i<uniq.length;i+=40){
+   const chunk=uniq.slice(i,i+40);
+   const syms=chunk.map(c=>'TWS:'+c+':STOCK').join(',');
+   const url='https://ws.api.cnyes.com/ws/api/v1/quote/quotes/'+syms+
+             '?column=FORMAT&_='+(Date.now()+'_'+Math.random().toString(36).slice(2));
+   const d=await getJSONQuick(url,{
+    'User-Agent':'Mozilla/5.0',
+    'Referer':'https://www.cnyes.com/',
+    'Cache-Control':'no-cache, no-store, max-age=0',
+    'Pragma':'no-cache',
+    'Accept-Encoding':'identity'
+   },4500);
+   for(const x of (d?.data||[])){
+    const code=String(x?.['200010']||'').trim();
+    if(!chunk.includes(code))continue;
+    const last=n(x?.['200026']),prev=n(x?.['200031']);
+    if(last>0&&prev>0){
+     out[code]={
+      ticker:code,
+      name:x?.['200009']||code,
+      last,
+      prevClose:prev,
+      change:n(x?.['200027']),
+      changePct:n(x?.['200044']),
+      source:'Anue 鉅亨',
+      realtime:true
+     };
+    }
+   }
+  }
  }catch(_){}
- try{const day=await twseDailyAll();for(const c of uniq)if(!out[c]&&day.map[c])out[c]=day.map[c]}catch(_){}
+
+ // Fill only missing symbols with the existing TWSE path; never overwrite a good Anue quote.
+ const missing=uniq.filter(c=>!out[c]?.last);
+ if(missing.length){
+  try{
+   for(let i=0;i<missing.length;i+=22){
+    const chunk=missing.slice(i,i+22),
+          ex=chunk.flatMap(c=>['tse_'+c+'.tw','otc_'+c+'.tw']).join('|'),
+          rows=(await mis(ex)).msgArray||[];
+    for(const x of rows){
+     const z=parseMis(x);
+     if(z.ticker&&z.last>0&&!out[z.ticker]){
+      z.source='TWSE MIS fallback';z.realtime=true;out[z.ticker]=z;
+     }
+    }
+   }
+  }catch(_){}
+ }
+
+ // Last fallback remains official daily data for quote gaps only.
+ const stillMissing=uniq.filter(c=>!out[c]?.last);
+ if(stillMissing.length){
+  try{
+   const day=await twseDailyAll();
+   for(const c of stillMissing)if(!out[c]&&day.map[c])out[c]=day.map[c];
+  }catch(_){}
+ }
  return out;
 }
 async function twseDailyAll(){
