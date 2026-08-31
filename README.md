@@ -372,3 +372,10 @@ TWSE 每月資料改為 JSON → CSV 雙路徑。JSON 暫時被擋或回非 JSON
 - 00919.TW
 
 四檔分開請求，單檔失敗不阻塞其他三檔；盤中每2秒刷新。此修改只作用於四檔ETF現價，不修改買點模型、歷史、回測、成分股或驗證邏輯。
+
+## 16.8.6 — Yahoo頁面現價對齊
+- 修正 16.8.5 使用 Yahoo chart 最後一根 5 分K close，造成可落後 Yahoo 台股報價頁。
+- 現價現在優先採 Yahoo `meta.regularMarketPrice`，時間採 `meta.regularMarketTime`。
+- chart interval 改 1m，僅在 regularMarketPrice 缺失時才當備援。
+- Yahoo請求加時間戳與 no-cache。
+- 四檔ETF盤中維持每2秒輪詢。

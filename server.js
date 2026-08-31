@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.5-YAHOO-ETF-DIRECT';
+const BUILD='16.8.6-YAHOO-META-LIVE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -91,11 +91,36 @@ async function twseDailyAll(){
  });
 }
 async function yahooTwOne(code,isIndex=false){
- const symbol=isIndex?'^TWII':code+'.TW',url='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=5m&range=1d&includePrePost=false';
- const d=await getJSONQuick(url,{},5000),r=d?.chart?.result?.[0];if(!r)throw Error('Yahoo no chart '+symbol);const q=r.indicators?.quote?.[0]||{},ts=r.timestamp||[];let idx=-1;
- for(let i=(q.close||[]).length-1;i>=0;i--)if(Number.isFinite(q.close[i])){idx=i;break}if(idx<0)throw Error('Yahoo no price '+symbol);
- const closes=q.close.filter(Number.isFinite),opens=q.open.filter(Number.isFinite),highs=q.high.filter(Number.isFinite),lows=q.low.filter(Number.isFinite),meta=r.meta||{},last=q.close[idx],prev=n(meta.chartPreviousClose??meta.previousClose);
- return{ticker:isIndex?'t00':code,name:isIndex?'加權指數':(META[code]?.name||code),last,prevClose:prev,open:opens[0]??n(meta.regularMarketOpen),high:highs.length?Math.max(...highs):n(meta.regularMarketDayHigh),low:lows.length?Math.min(...lows):n(meta.regularMarketDayLow),volume:null,time:ts[idx]?new Date(ts[idx]*1000).toISOString():null,date:ts[idx]?new Date(ts[idx]*1000).toISOString().slice(0,10):null,source:'Yahoo Finance即時備援',realtime:true};
+ const symbol=isIndex?'^TWII':code+'.TW',
+       url='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=1m&range=1d&includePrePost=false&_='+Date.now();
+ const d=await getJSONQuick(url,{'Cache-Control':'no-cache','Pragma':'no-cache'},5000),
+       r=d?.chart?.result?.[0];
+ if(!r)throw Error('Yahoo no chart '+symbol);
+ const q=r.indicators?.quote?.[0]||{},ts=r.timestamp||[],meta=r.meta||{};
+ let idx=-1;
+ for(let i=(q.close||[]).length-1;i>=0;i--)if(Number.isFinite(q.close[i])){idx=i;break}
+ const candleLast=idx>=0?q.close[idx]:null,
+       metaLast=n(meta.regularMarketPrice),
+       last=(metaLast>0?metaLast:candleLast),
+       prev=n(meta.chartPreviousClose??meta.previousClose),
+       opens=(q.open||[]).filter(Number.isFinite),
+       highs=(q.high||[]).filter(Number.isFinite),
+       lows=(q.low||[]).filter(Number.isFinite),
+       marketTime=n(meta.regularMarketTime);
+ if(!(last>0))throw Error('Yahoo no price '+symbol);
+ return{
+  ticker:isIndex?'t00':code,
+  name:isIndex?'加權指數':(META[code]?.name||code),
+  last,prevClose:prev,
+  open:n(meta.regularMarketOpen)??opens[0],
+  high:n(meta.regularMarketDayHigh)??(highs.length?Math.max(...highs):null),
+  low:n(meta.regularMarketDayLow)??(lows.length?Math.min(...lows):null),
+  volume:n(meta.regularMarketVolume),
+  time:marketTime?new Date(marketTime*1000).toISOString():(idx>=0&&ts[idx]?new Date(ts[idx]*1000).toISOString():null),
+  date:marketTime?new Date(marketTime*1000).toISOString().slice(0,10):(idx>=0&&ts[idx]?new Date(ts[idx]*1000).toISOString().slice(0,10):null),
+  source:metaLast>0?'Yahoo Finance regularMarketPrice':'Yahoo Finance 1m fallback',
+  realtime:true
+ };
 }
 
 async function liveEtf4(){
