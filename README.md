@@ -462,3 +462,10 @@ app.js 完全未改；模型、Score、Gate、買點、Yahoo價格、持股、�
 - 保留唯一nonce與no-cache。
 - 顯示文字「證交所」改成「成交」，避免把成交時間誤認為抓取時間。
 - 模型、Score、Gate、買點、持股、歷史、回測未修改。
+
+## 16.8.20 Browser TWSE Direct
+- 四檔ETF現價優先由使用者瀏覽器直接向 TWSE MIS 取得，避免 Render 海外主機取得20分鐘延遲行情。
+- 若瀏覽器被CORS/網路阻擋，才退回既有 Render `/api/etf-live`。
+- UI 顯示「直連」或「伺服器」，可直接判斷目前使用哪條行情路徑。
+- TWSE `z:"-"` 不再視為行情失敗：有舊成交價時保留上一筆；冷啟動才暫以最佳買賣價中間值建立畫面價格。
+- 模型、Score、Gate、買點、持股、歷史、回測、server liveEtf4 均未修改。

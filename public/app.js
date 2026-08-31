@@ -94,30 +94,72 @@ function etfFetchStamp(){
 function etfExchangeStamp(code){
  const q=lastLive?.quotes?.[code];
  if(!q)return'';
- return q.time?('｜成交 '+q.time):'';
+ const src=String(q.source||'').includes('browser direct')?'｜直連':'｜伺服器';
+ return src+(q.time?('｜成交 '+q.time):'');
+}
+
+function nLive(v){const x=Number(v);return Number.isFinite(x)?x:null}
+function parseBrowserMisRow(x,prev){
+ const z=nLive(x?.z);
+ const ask=String(x?.a||'').split('_').map(nLive).find(v=>v>0);
+ const bid=String(x?.b||'').split('_').map(nLive).find(v=>v>0);
+ let last=z>0?z:Number(prev?.last);
+ // TWSE MIS z="-" means no new trade in this snapshot; keep last trade.
+ // On cold start only, use best bid/ask midpoint as a temporary display value until a trade arrives.
+ if(!(last>0)&&bid>0&&ask>0)last=Math.round(((bid+ask)/2)*100)/100;
+ else if(!(last>0))last=bid||ask||null;
+ return{
+  ticker:String(x?.c||'').trim(),name:x?.n||'',channel:x?.ch||'',
+  last,prevClose:nLive(x?.y),open:nLive(x?.o),high:nLive(x?.h),low:nLive(x?.l),
+  volume:nLive(x?.v),time:x?.t||x?.['%']||null,date:x?.d||null,
+  bid,ask,hasTrade:z>0,source:'TWSE MIS browser direct',realtime:true
+ };
+}
+async function browserTwseEtfLive(){
+ const ex=ETF.map(c=>'tse_'+c+'.tw').join('|');
+ const url='https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='+
+   encodeURIComponent(ex)+'&json=1&delay=0&_='+(Date.now()+'_'+Math.random().toString(36).slice(2));
+ const c=new AbortController(),timer=setTimeout(()=>c.abort(),4500);
+ try{
+  const r=await fetch(url,{cache:'no-store',mode:'cors',credentials:'omit',signal:c.signal});
+  if(!r.ok)throw Error('TWSE HTTP '+r.status);
+  const d=await r.json(),quotes={};
+  for(const x of (d?.msgArray||[])){
+   const code=String(x?.c||'').trim();
+   if(ETF.includes(code)){
+    const q=parseBrowserMisRow(x,lastLive?.quotes?.[code]);
+    if(q.last>0)quotes[code]=q;
+   }
+  }
+  if(!ETF.some(c=>quotes[c]?.last>0))throw Error('TWSE browser direct 無有效行情');
+  return{ok:true,source:'TWSE MIS browser direct',fetchedAt:new Date().toISOString(),quotes};
+ }finally{clearTimeout(timer)}
 }
 async function loadEtfLive(){
  clearTimeout(etfLiveTimer);
  try{
-  const d=await get('/api/etf-live?_='+Date.now(),6500);
+  let d=null,directErr=null;
+  try{
+   d=await browserTwseEtfLive();
+  }catch(e){directErr=e}
+  // Browser direct is canonical. Server is fallback only when browser CORS/network blocks TWSE.
+  if(!d?.quotes){
+   d=await get('/api/etf-live?_='+Date.now(),6500);
+   if(directErr)d.browserDirectError=directErr?.message||String(directErr);
+  }
   ETF_FETCH_AT=Date.now();ETF_FETCH_COUNT++;
   if(d?.quotes){
    lastLive=lastLive||{ok:true,quotes:{}};
    lastLive.quotes=lastLive.quotes||{};
-   let changed=false;
    for(const c of ETF){
     const q=d.quotes[c];
     if(q?.last>0){
      const old=Number(lastLive.quotes[c]?.last),next=Number(q.last);
      lastLive.quotes[c]={...q,fetchTime:new Date().toISOString()};
-     if(old>0&&next!==old){ETF_PRICE_FLASH[c]=next>old?'up':'down';changed=true;}
+     if(old>0&&next!==old)ETF_PRICE_FLASH[c]=next>old?'up':'down';
+     const r=lastBuy?.results?.[c];
+     if(r){r.price=next;updateOne(c,r)}
     }
-   }
-   // Yahoo ETF price is the single source of truth for both display and Layer 1/2/3 trigger state.
-   if(lastBuy?.models){
-    resetDaily();
-    ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error&&lastLive?.quotes?.[c]?.last>0)updateOne(c,r)});
-    saveJSON('v124_state',STATE);
    }
    renderHoldings();
    renderHomeRanking();

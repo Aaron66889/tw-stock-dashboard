@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.19-TWSE-SESSION-FRESH';
+const BUILD='16.8.20-BROWSER-TWSE-DIRECT';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
