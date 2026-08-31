@@ -405,3 +405,9 @@ TWSE 每月資料改為 JSON → CSV 雙路徑。JSON 暫時被擋或回非 JSON
 ## 16.8.10 LIGHT FIX ONLY
 第一層未觸價不再固定紅底。三層統一為：未觸價深色、已觸價橘色、正式確認紅色。
 app.js 完全未改；模型、Score、Gate、買點、Yahoo價格、持股、歷史與回測不動。
+
+## 16.8.11 ETF LIVE RESILIENCE ONLY
+- 修正 boot 原本重複啟動兩條 loadEtfLive() 迴圈，改成唯一一條。
+- /api/etf-live 盤中每3秒獨立重試；/api/market 502不會停止ETF live。
+- /api/market 失敗不再反覆寫入頁面事件列，狀態仍保留警示。
+- Yahoo來源、模型、Score、Gate、買點、燈號、持股、歷史、回測均不修改。
