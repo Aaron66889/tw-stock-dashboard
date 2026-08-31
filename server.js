@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8-STABILITY-ONLY';
+const BUILD='16.8.3-ETF-LIVE-NOCACHE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -83,6 +83,41 @@ async function yahooTwOne(code,isIndex=false){
  const closes=q.close.filter(Number.isFinite),opens=q.open.filter(Number.isFinite),highs=q.high.filter(Number.isFinite),lows=q.low.filter(Number.isFinite),meta=r.meta||{},last=q.close[idx],prev=n(meta.chartPreviousClose??meta.previousClose);
  return{ticker:isIndex?'t00':code,name:isIndex?'加權指數':(META[code]?.name||code),last,prevClose:prev,open:opens[0]??n(meta.regularMarketOpen),high:highs.length?Math.max(...highs):n(meta.regularMarketDayHigh),low:lows.length?Math.min(...lows):n(meta.regularMarketDayLow),volume:null,time:ts[idx]?new Date(ts[idx]*1000).toISOString():null,date:ts[idx]?new Date(ts[idx]*1000).toISOString().slice(0,10):null,source:'Yahoo Finance即時備援',realtime:true};
 }
+
+async function liveEtf4(){
+ const quotes={},errors=[];
+ // One lightweight MIS request for only the four ETFs; no index, no holdings, no context.
+ try{
+  const ex=ETF.map(c=>'tse_'+c+'.tw').join('|'),rows=(await mis(ex)).msgArray||[];
+  for(const x of rows){
+   const z=parseMis(x);
+   if(ETF.includes(z.ticker)&&z.last>0){
+    z.source='TWSE MIS ETF即時';
+    z.realtime=true;
+    quotes[z.ticker]=z;
+   }
+  }
+ }catch(e){errors.push('MIS:'+e.message)}
+ // Per-symbol Yahoo fallback only for missing ETFs. This does not block the main /api/market path.
+ const missing=ETF.filter(c=>!quotes[c]?.last);
+ if(missing.length){
+  const rs=await Promise.allSettled(missing.map(c=>deadline(yahooTwOne(c,false),4200,null)));
+  rs.forEach((r,i)=>{
+   if(r.status==='fulfilled'&&r.value?.last>0){
+    quotes[missing[i]]={...r.value,source:'Yahoo ETF即時備援',realtime:true};
+   }else errors.push(missing[i]+':Yahoo fallback failed');
+  });
+ }
+ return{
+  ok:ETF.every(c=>quotes[c]?.last>0),
+  source:'ETF4 lightweight live',
+  fetchedAt:new Date().toISOString(),
+  quotes,
+  missing:ETF.filter(c=>!quotes[c]?.last),
+  errors
+ };
+}
+
 async function liveTwse(extra=[]){
  const codes=[...new Set([...ETF,'2330',...extra.map(String).filter(x=>/^\d{4,6}$/.test(x))])],ex=codes.map(c=>'tse_'+c+'.tw').join('|')+'|tse_t00.tw',rows=(await mis(ex)).msgArray||[],quotes={};let market=null,tsmc=null;
  for(const x of rows){const z=parseMis(x);z.source='TWSE MIS';z.realtime=true;if((x.ch||'').includes('t00.tw')||z.ticker==='t00')market=z;else if(z.ticker==='2330')tsmc=z;else if(z.ticker&&z.last>0)quotes[z.ticker]=z}
@@ -887,7 +922,7 @@ async function constituents(code,date=null){
  });
 }
 async function constituentHealth(code){
- return cached('health:r328:'+code,10000,async()=>{
+ return cached('health:r328:'+code,45000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
@@ -1087,6 +1122,16 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/validation')return safeApi(res,'validation',()=>validationReport(u.searchParams.get('deep')==='1'));
  if(u.pathname==='/api/official-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'official-history',async()=>{if(!ETF.includes(code))return{ok:false,error:'unsupported code'};const h=await officialHistory(code);return h.ready?{ok:true,ready:true,code,source:h.source,validation:h.validation,corporateActions:h.corporateActions,adjustmentAnomalies:h.adjustmentAnomalies,rows:h.rows.length,first:h.rows[0]?.date,last:h.rows.at(-1)?.date}:{ok:true,ready:false,status:'WARMING',code,progress:h.progress}})}
  if(u.pathname==='/api/diagnostics')return send(res,200,{ok:true,version:VERSION,build:BUILD,marketSource:RUNTIME.live?.source||null,marketRealtime:RUNTIME.live?.realtime??null,lastRefresh:RUNTIME.lastRefresh,errors:RUNTIME.errors||[],historyQueue:ETF.map(historyProgress),historyAllPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),yahoo0050:{enabled:true,mode:'v8 chart period1/period2 adjusted OHLC'},goodinfo0050:{enabled:true,mode:'POST long-history',cachedRows:GOODINFO_0050_CACHE.rows.length,period:GOODINFO_0050_CACHE.period,error:GOODINFO_0050_CACHE.error,sourceUrl:GOODINFO_0050_CACHE.url||'https://goodinfo.tw/tw/ShowK_Chart.asp?STOCK_ID=0050&CHT_CAT2=DATE&STEP=DATA&PERIOD=6000&PRICE_ADJ=T'},now:new Date().toISOString()});
+ if(u.pathname==='/api/etf-live'){
+  try{
+   const d=await deadline(liveEtf4(),5500,null),body=JSON.stringify(d||{ok:false,status:'TIMEOUT',source:'etf-live',quotes:{},error:'四檔ETF即時行情逾時',fetchedAt:new Date().toISOString()});
+   res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store, no-cache, must-revalidate, proxy-revalidate','Pragma':'no-cache','Expires':'0'});
+   return res.end(body);
+  }catch(e){
+   res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store, no-cache, must-revalidate, proxy-revalidate'});
+   return res.end(JSON.stringify({ok:false,source:'etf-live',quotes:{},error:e.message,fetchedAt:new Date().toISOString()}));
+  }
+ }
  if(u.pathname==='/api/market')return safeApi(res,'market',async()=>{const d=await deadline(live((u.searchParams.get('symbols')||'').split(',')),8500,null);return d||{ok:false,status:'TIMEOUT',source:'market',error:'外部行情來源逾時；前端將自動沿用最後成功資料並重試',fetchedAt:new Date().toISOString()}});
  if(u.pathname==='/api/context')return safeApi(res,'context',()=>cached('ctx',60000,context));
  if(u.pathname==='/api/taiex-history')return safeApi(res,'taiex-history',async()=>{const h=await taiexHistory();return{...h,ret5:periodReturn(h.rows,5),ret20:periodReturn(h.rows,20)}});

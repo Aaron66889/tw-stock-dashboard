@@ -23,6 +23,7 @@ const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
 let marketTimer,slowTimer,buyTimer,nightTimer,selectedETF='0050',selectedBacktest='0050';
+let etfLiveTimer=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 function loadJSON(k,d){try{const x=JSON.parse(localStorage.getItem(k));return x??d}catch{return d}}
@@ -48,7 +49,32 @@ function stageText(s,i=1){return{CONFIRMED_IN:`🔴 第${i}層已確認／可分
 function rank(s){return{CONFIRMED_IN:6,FORMING:5,CONFIRMED_ABOVE:4,CONFIRMED_BELOW:3,WAIT:2,INVALID:1,FAST_PASS:0}[s]||0}
 
 async function get(url,timeoutMs=12000){const c=new AbortController(),timer=setTimeout(()=>c.abort(),timeoutMs);try{const r=await fetch(url,{cache:'no-store',signal:c.signal}),text=await r.text(),t=text.trim();if(!r.ok)throw Error('HTTP '+r.status+'｜'+url);if(!(t.startsWith('{')||t.startsWith('[')))throw Error('來源回傳HTML而非JSON｜'+url+'｜'+t.slice(0,45).replace(/\s+/g,' '));let d;try{d=JSON.parse(t)}catch(e){throw Error('JSON解析失敗｜'+url+'｜'+e.message)}return d}catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(timer)}}
-async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);lastLive=d;saveLastGood('market',d);renderMarket();renderHoldings();renderHomeRanking();renderBuyCards();if(selectedETF)renderDetailBuy();$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){lastLive=c.data;renderMarket();renderHoldings();renderHomeRanking();renderBuyCards();if(selectedETF)renderDetailBuy();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}addEvent('行情來源失敗：'+e.message,'bad')}marketTimer=setTimeout(loadMarket,10000)}
+
+function twMarketOpenClient(){
+ const d=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'})),wd=d.getDay(),m=d.getHours()*60+d.getMinutes();
+ return wd>=1&&wd<=5&&m>=540&&m<=810;
+}
+async function loadEtfLive(){
+ clearTimeout(etfLiveTimer);
+ try{
+  const d=await get('/api/etf-live?_='+Date.now(),6500);
+  if(d?.quotes){
+   lastLive=lastLive||{ok:true,quotes:{}};
+   lastLive.quotes=lastLive.quotes||{};
+   for(const c of ETF){
+    const q=d.quotes[c];
+    if(q?.last>0)lastLive.quotes[c]=q;
+   }
+   // Update only surfaces that display/use the four ETF current prices.
+   renderHoldings();
+   renderHomeRanking();
+   renderBuyCards();
+   if(selectedETF)renderDetailBuy();
+  }
+ }catch(_){}
+ etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?3000:10000);
+}
+async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);lastLive=d;saveLastGood('market',d);renderMarket();renderHoldings();$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){lastLive=c.data;renderMarket();renderHoldings();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}addEvent('行情來源失敗：'+e.message,'bad')}marketTimer=setTimeout(loadMarket,10000)}
 async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=c.data;if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();slowTimer=setTimeout(loadSlow,60000)}
 async function loadNight(){clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();nightTimer=setTimeout(loadNight,10000)}
 async function loadBuy(){clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){$('freshPill').textContent='● 模型資料降級／暫停確認';$('freshPill').className='pill warn'}updateState();renderAllModel()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
@@ -154,7 +180,7 @@ function renderHealth(h){$('healthSummary').innerHTML=`<div class="grid4"><div c
  $('constNote').innerHTML=`<b>自動換版：</b>每次讀到新的有效日期會保存一個版本。回測若沒有當時版本，就不使用今天成分倒灌。${h.note?' '+h.note:''}`
 }
 
-let constituentSelected='0050',constituentCache={},constituentRequestSeq=0,constituentRefreshing=false;
+let constituentSelected='0050',constituentCache={},constituentRequestSeq=0;
 function renderConstituentTabs(){
  const meta={0050:'50檔',0056:'50檔',00878:'30檔',00919:'40檔'};
  $('constTabs').innerHTML=ETF.map(c=>{const label=meta[c]||'成分股';return `<button class="btn etftab ${c===constituentSelected?'on':''}" onclick="selectConstituent('${c}')">${c} <small>${label}</small></button>`}).join('');
@@ -166,12 +192,10 @@ function selectConstituent(c){
  loadConstituentPage(false);
 }
 async function loadConstituentPage(force=false){
- if(force&&constituentRefreshing)return;
  const c=constituentSelected,hit=constituentCache[c],req=++constituentRequestSeq;
  renderConstituentTabs();
- if(hit&&!force&&Date.now()-hit._loadedAt<10000){renderConstituents(hit);return}
+ if(hit&&!force&&Date.now()-hit._loadedAt<45000){renderConstituents(hit);return}
  $('c0050Status').innerHTML=`正在讀取 ${c} 官方完整持股與成分股行情…`;
- constituentRefreshing=true;
  try{
   const d=await get('/api/constituent-dashboard?code='+encodeURIComponent(c),18000);
   d._loadedAt=Date.now();constituentCache[c]=d;
@@ -181,7 +205,7 @@ async function loadConstituentPage(force=false){
  }catch(e){
   if(req!==constituentRequestSeq||c!==constituentSelected)return;
   $('c0050Status').innerHTML=`<b class="downc">${c} 讀取失敗：</b>${e.message}<br><span class="note">失敗或不完整時只顯示、不計分，也不會用其他 ETF 的資料替代。</span>`;
- }finally{constituentRefreshing=false}
+ }
 }
 function renderConstituents(d){
  const c=d.code||constituentSelected, expected=d.expected||({0050:50,0056:50,00878:30,00919:40}[c]||0),s=d.summary||{},full=d.actual>=expected&&d.complete,model=d.usable;
@@ -277,6 +301,6 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);addChat('V12.4免費戰情問答已啟動。','sys');loadMarket();loadSlow();loadNight();loadBuy();loadValidation(false)}
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadMarket();loadSlow();loadNight();loadBuy()}})
-setInterval(setMode,30000);setInterval(()=>{if(document.getElementById('constituentPage')?.classList.contains('on'))loadConstituentPage(true)},15000);boot();
+function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy();loadValidation(false)}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadMarket();loadSlow();loadNight();loadBuy()}})
+setInterval(setMode,30000);boot();
