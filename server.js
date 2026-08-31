@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.15-FETCH-HEARTBEAT';
+const BUILD='16.8.16-TWSE-MIS-LIVE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -184,32 +184,52 @@ async function yahooTwOne(code,isIndex=false){
 }
 
 async function liveEtf4(){
- // Canonical source is Yahoo Taiwan quote page. The background pump refreshes one ETF
- // every 1.2s, so each ETF is refreshed about every 4.8s without four-page request bursts.
- const quotes={};
- for(const c of ETF){
-  const q=ETF_TW_LIVE.quotes[c];
-  if(q?.last>0)quotes[c]=q;
+ const quotes={},errors=[];
+ try{
+  // 四檔ETF與大盤/一般台股行情使用同一條 TWSE MIS 即時來源。
+  const ex=ETF.map(c=>'tse_'+c+'.tw').join('|');
+  const rows=(await mis(ex)).msgArray||[];
+  for(const x of rows){
+   const q=parseMis(x);
+   if(ETF.includes(q.ticker)&&q.last>0){
+    q.source='TWSE MIS';
+    q.realtime=true;
+    quotes[q.ticker]=q;
+   }
+  }
+ }catch(e){
+  errors.push('TWSE MIS: '+(e.message||String(e)));
  }
- // Cold-start safety: if cache has not filled yet, fetch only missing codes once.
+
+ // 單檔補抓一次，避免批次回應偶發缺碼。
  const missing=ETF.filter(c=>!quotes[c]?.last);
  if(missing.length){
-  const rs=await Promise.allSettled(missing.map(c=>deadline(yahooTwPageOne(c),5000,null)));
+  const rs=await Promise.allSettled(
+   missing.map(async c=>{
+    const rows=(await mis('tse_'+c+'.tw')).msgArray||[];
+    const x=rows.find(v=>String(v.c||'').trim()===c);
+    if(!x)throw Error('missing '+c);
+    const q=parseMis(x);
+    if(!(q.last>0))throw Error('no trade '+c);
+    q.source='TWSE MIS';
+    q.realtime=true;
+    return q;
+   })
+  );
   rs.forEach((r,i)=>{
    const c=missing[i];
-   if(r.status==='fulfilled'&&r.value?.last>0){
-    ETF_TW_LIVE.quotes[c]=r.value;
-    quotes[c]=r.value;
-   }
+   if(r.status==='fulfilled'&&r.value?.last>0)quotes[c]=r.value;
+   else errors.push(c+': TWSE MIS失敗');
   });
  }
+
  return{
   ok:ETF.every(c=>quotes[c]?.last>0),
-  source:'Yahoo Taiwan quote page canonical',
+  source:'TWSE MIS',
   fetchedAt:new Date().toISOString(),
   quotes,
   missing:ETF.filter(c=>!quotes[c]?.last),
-  errors:ETF.filter(c=>ETF_TW_LIVE.errors[c]).map(c=>c+': '+ETF_TW_LIVE.errors[c])
+  errors
  };
 }
 
@@ -1247,7 +1267,6 @@ server.requestTimeout=30000;
 server.on('clientError',(err,socket)=>{try{if(socket.writable)socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')}catch(_){}});
 server.listen(PORT,'0.0.0.0',()=>{
  console.log(VERSION+' '+BUILD+' listening on '+PORT);
- startYahooTwEtfPump();
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
  setInterval(refreshRuntime,120000);
