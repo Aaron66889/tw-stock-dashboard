@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.23-CONSTITUENT-LIVE-REFRESH';
+const BUILD='16.8.25-ETF-PRICE-RED-UP-GREEN-DOWN';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -334,6 +334,54 @@ async function liveEtf4(){
  };
 }
 
+
+function anueField(x,key){const v=x?.[key];return v==null?null:n(v)}
+async function anueQuoteSymbol(symbol,name=''){
+ const url='https://ws.api.cnyes.com/ws/api/v1/quote/quotes/'+symbol+'?column=FORMAT&_='+(Date.now()+'_'+Math.random().toString(36).slice(2));
+ const d=await getJSONQuick(url,{
+  'User-Agent':'Mozilla/5.0',
+  'Referer':'https://www.cnyes.com/',
+  'Cache-Control':'no-cache, no-store, max-age=0',
+  'Pragma':'no-cache',
+  'Accept-Encoding':'identity'
+ },4500);
+ const x=(d?.data||[])[0];
+ if(!x)throw Error('Anue quote empty: '+symbol);
+ const last=anueField(x,'200026'),prev=anueField(x,'200031');
+ if(!(last>0))throw Error('Anue last missing: '+symbol);
+ const change=anueField(x,'200027');
+ const changePct=anueField(x,'200044');
+ return{ticker:symbol,name:x?.['200009']||name||symbol,last,prevClose:prev,change:Number.isFinite(change)?change:(prev>0?last-prev:null),changePct:Number.isFinite(changePct)?changePct:(prev>0?(last-prev)/prev*100:null),open:anueField(x,'200032'),high:anueField(x,'200033'),low:anueField(x,'200034'),volume:anueField(x,'200036'),source:'Anue 鉅亨',realtime:true,fetchedAt:new Date().toISOString()};
+}
+async function anueMarket(){
+ const q=await anueQuoteSymbol('TWS:TSE01:INDEX','加權指數');
+ return{...q,ticker:'t00',name:'加權指數',source:'Anue 鉅亨 TSE01'};
+}
+async function anueTxf(){
+ // 鉅亨公開頁路徑已確認為 /futures/TWF/TXF；先走其 quote service。
+ const candidates=['TWF:TXF:FUTURE','TWF:TXF:FUTURES','TWF:TXF'];
+ const errors=[];
+ for(const sym of candidates){
+  try{
+   const q=await anueQuoteSymbol(sym,'台指期');
+   addNightSample(q.last);
+   return{ok:true,available:true,source:'Anue 鉅亨 TXF',sourceUrl:'https://invest.cnyes.com/futures/TWF/TXF',fetchedAt:new Date().toISOString(),last:q.last,reference:q.prevClose,prevClose:q.prevClose,open:q.open,high:q.high,low:q.low,volume:q.volume,openInterest:null,bid:null,ask:null,change:q.change,changePct:q.changePct,offHighPoints:q.high>0?q.last-q.high:null,offHighPct:q.high>0?(q.last-q.high)/q.high*100:null,momentum:nightMomentum(q.last,q.high,q.low),quoteSymbol:sym};
+  }catch(e){errors.push(sym+':'+e.message)}
+ }
+ // Do not fabricate TXF data: caller will use the existing Yahoo fallback.
+ throw Error(errors.join('｜'));
+}
+async function liveAnueMarket(extra=[]){
+ const market=await anueMarket();
+ // ETF current prices stay owned by /api/etf-live; here we only replace market + TSMC context.
+ let tsmc=null;
+ try{
+  const q=await anueQuoteSymbol('TWS:2330:STOCK','台積電');
+  tsmc={...q,ticker:'2330'};
+ }catch(_){}
+ return{ok:true,fetchedAt:new Date().toISOString(),source:'Anue 鉅亨大盤',realtime:true,market,tsmc,quotes:{}};
+}
+
 async function liveTwse(extra=[]){
  const codes=[...new Set([...ETF,'2330',...extra.map(String).filter(x=>/^\d{4,6}$/.test(x))])],ex=codes.map(c=>'tse_'+c+'.tw').join('|')+'|tse_t00.tw',rows=(await mis(ex)).msgArray||[],quotes={};let market=null,tsmc=null;
  for(const x of rows){const z=parseMis(x);z.source='TWSE MIS';z.realtime=true;if((x.ch||'').includes('t00.tw')||z.ticker==='t00')market=z;else if(z.ticker==='2330')tsmc=z;else if(z.ticker&&z.last>0)quotes[z.ticker]=z}
@@ -350,7 +398,9 @@ async function liveDaily(extra=[]){
  return{ok:true,fetchedAt:new Date().toISOString(),source:'TWSE官方盤後備援',realtime:false,market,tsmc:quotes['2330']||null,quotes};
 }
 async function live(extra=[]){
- const errors=[];try{return await liveTwse(extra)}catch(e){errors.push('MIS:'+e.message)}
+ const errors=[];
+ try{return await liveAnueMarket(extra)}catch(e){errors.push('Anue:'+e.message)}
+ try{const d=await liveTwse(extra);return{...d,fallbackErrors:errors}}catch(e){errors.push('MIS:'+e.message)}
  if(twMarketOpenNow()){try{const y=await cached('live:yahoo',8000,()=>liveYahoo(extra));return{...y,fallbackErrors:errors}}catch(e){errors.push('Yahoo:'+e.message)}}
  try{const d=await liveDaily(extra);return{...d,fallbackErrors:errors}}catch(e){errors.push('TWSE日線:'+e.message)}
  if(!twMarketOpenNow()){try{const y=await cached('live:yahoo',15000,()=>liveYahoo(extra));return{...y,fallbackErrors:errors}}catch(e){errors.push('Yahoo:'+e.message)}}
@@ -428,7 +478,7 @@ function nightMomentum(last,high,low){
  if(r){const offH=high>0?last-high:0,offL=low>0?last-low:0;if(r.pct<=-.22)direction='加速下殺',tone='bear';else if(r.pct<=-.08)direction='短線走弱',tone='bear';else if(offH<=-35&&r.points<15)direction='高檔回落',tone='softBear';else if(r.pct>=.22)direction='持續走強',tone='bull';else if(r.pct>=.08)direction='短線走強',tone='bull';else if(offL>=35&&r.points>0)direction='低檔反彈',tone='softBull';else direction='區間震盪'}
  return{direction,tone,d1,d3,d5,d15,sampleCount:nightSamples.length};
 }
-async function nightFuture(){
+async function nightFutureYahoo(){
  const url='https://tw.stock.yahoo.com/future/WTX%26';
  try{
   const text=stripTags(await getText(url,{'Referer':'https://tw.stock.yahoo.com/future/'}));
@@ -438,6 +488,7 @@ async function nightFuture(){
   return{ok:true,available:true,source:'Yahoo股市 WTX&（正負號自行重算）',sourceUrl:url,fetchedAt:new Date().toISOString(),last,reference,prevClose:reference,open,high,low,volume,openInterest:oi,bid,ask,change,changePct,offHighPoints:high>0?last-high:null,offHighPct:high>0?(last-high)/high*100:null,momentum:nightMomentum(last,high,low)};
  }catch(e){return{ok:false,available:false,source:'Yahoo股市 WTX&',sourceUrl:url,fetchedAt:new Date().toISOString(),reason:e.message}}
 }
+async function nightFuture(){try{return await anueTxf()}catch(e){const y=await nightFutureYahoo();return y?.ok?{...y,fallbackErrors:['Anue TXF:'+e.message]}:{...y,fallbackErrors:['Anue TXF:'+e.message]}}}
 
 const SPLITS={'0050':[{'date':'2025-06-18','ratio':4,'source':'TWSE official 0050 split'}]};
 function diskRead(name){try{return JSON.parse(fs.readFileSync(path.join(DATA_DIR,name),'utf8'))}catch{return null}}
