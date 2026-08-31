@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.18-VISIBILITY-RESTART-FIX';
+const BUILD='16.8.19-TWSE-SESSION-FRESH';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -77,17 +77,29 @@ function dateMinus(days){const d=new Date(Date.now()-days*86400000);return ymdTa
 
 async function mis(exch){
  const nonce=Date.now()+'_'+Math.random().toString(36).slice(2);
+ let cookie='';
+ try{
+  const r=await deadline(fetch('https://mis.twse.com.tw/stock/index.jsp?_='+nonce,{
+   headers:{'User-Agent':'Mozilla/5.0','Cache-Control':'no-cache','Pragma':'no-cache'}
+  }),1800,null);
+  if(r){
+   const sc=r.headers.get('set-cookie')||'';
+   const m=sc.match(/JSESSIONID=[^;]+/i);
+   if(m)cookie=m[0];
+  }
+ }catch(_){}
+ const headers={
+  'User-Agent':'Mozilla/5.0',
+  'Referer':'https://mis.twse.com.tw/stock/index.jsp',
+  'Cache-Control':'no-cache, no-store, max-age=0',
+  'Pragma':'no-cache',
+  'Expires':'0',
+  'Accept-Encoding':'identity'
+ };
+ if(cookie)headers.Cookie=cookie;
  return getJSONQuick(
   'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='+encodeURIComponent(exch)+'&json=1&delay=0&_='+nonce,
-  {
-   'Referer':'https://mis.twse.com.tw/stock/index.jsp',
-   'Cache-Control':'no-cache, no-store, max-age=0',
-   'Pragma':'no-cache',
-   'Expires':'0',
-   'If-Modified-Since':'Thu, 01 Jan 1970 00:00:00 GMT',
-   'Accept-Encoding':'identity'
-  },
-  3500
+  headers,3500
  )
 }
 function parseMis(x){
@@ -207,7 +219,7 @@ async function liveEtf4(){
    if(!x)throw Error('TWSE MIS missing '+c);
    const q=parseMis(x);
    if(!(q.last>0))throw Error('TWSE MIS no last '+c);
-   q.source='TWSE MIS direct '+c;
+   q.source='TWSE MIS session '+c;
    q.realtime=true;
    q.serverFetchedAt=new Date().toISOString();
    return q;

@@ -455,3 +455,10 @@ app.js 完全未改；模型、Score、Gate、買點、Yahoo價格、持股、�
 - 因此使用者切去券商/其他分頁再切回網站後，ETF即時價迴圈會被永久清掉。
 - 現在切回頁面時會立即重新啟動 loadEtfLive()。
 - TWSE MIS來源、模型、Score、Gate、買點、燈號、持股、歷史、回測均未修改。
+
+## 16.8.19 TWSE MIS session fresh
+- 16.8.18截圖已證明前端輪詢正常（#次數持續增加），但TWSE回應中的成交時間落後約20分鐘。
+- 每次MIS查詢前先向MIS首頁取得JSESSIONID，再帶同一session查詢個股，避免Render無session請求持續收到舊快取。
+- 保留唯一nonce與no-cache。
+- 顯示文字「證交所」改成「成交」，避免把成交時間誤認為抓取時間。
+- 模型、Score、Gate、買點、持股、歷史、回測未修改。

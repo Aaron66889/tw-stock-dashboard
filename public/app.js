@@ -94,7 +94,7 @@ function etfFetchStamp(){
 function etfExchangeStamp(code){
  const q=lastLive?.quotes?.[code];
  if(!q)return'';
- return q.time?('｜證交所 '+q.time):'';
+ return q.time?('｜成交 '+q.time):'';
 }
 async function loadEtfLive(){
  clearTimeout(etfLiveTimer);
