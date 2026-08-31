@@ -1,421 +1,94 @@
-<!doctype html><html lang="zh-Hant"><head>
+<!doctype html>
+<html lang="zh-Hant"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#111827"><link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
-<title>台股戰情正式版 V12.3.1</title>
-<style>
-:root{--bg:#f3f4f6;--card:#fff;--text:#15171a;--muted:#6b7280;--line:#e5e7eb;--green:#17794c;--red:#c23b3b;--amber:#a86500;--panel:#f7f8fa}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif}button{font:inherit}
-main{max-width:1040px;margin:auto;padding:16px 14px 80px}.top{display:flex;justify-content:space-between;gap:12px}.eyebrow,.note{color:var(--muted);font-size:12px}h1{font-size:25px;margin:4px 0}.pills{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}.pill{height:max-content;padding:7px 10px;border-radius:999px;background:#eceff2;font-size:12px;font-weight:850}.live{background:#e7f5ed;color:var(--green)}.warn{background:#fff1dc;color:var(--amber)}.bad{background:#fdeaea;color:var(--red)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:17px;margin-top:12px}.hero{padding:20px}.index{font-size:42px;font-weight:950;margin:5px 0}.change{font-size:20px;font-weight:900}.green{color:var(--red)}.red{color:var(--green)}.amber{color:var(--amber)}
-.marketgrid,.stats,.signals,.quad{display:grid;gap:9px}.marketgrid,.stats,.quad{grid-template-columns:repeat(4,1fr)}.signals{grid-template-columns:repeat(3,1fr)}
-.box,.stat{background:var(--panel);border-radius:14px;padding:12px}.stat{background:#fff;border:1px solid var(--line)}.k{font-size:11px;color:var(--muted)}.v{font-weight:850;margin-top:4px}.stat .v{font-size:19px}
-.verdict{margin-top:15px;padding-top:13px;border-top:1px solid var(--line)}.verdict strong{font-size:21px}.plain{line-height:1.65;margin-top:7px}.title{font-weight:900}.score{font-size:22px;font-weight:900;margin:8px 0}.what{font-size:11px;color:var(--muted);font-weight:900}.explain{font-size:13px;line-height:1.55;margin-top:4px}
-.sectiontitle{font-size:18px;font-weight:900;margin-bottom:9px}.reading{background:#fafafa;border:1px solid var(--line);border-radius:12px;padding:11px;margin-top:10px;font-size:13px;line-height:1.6}
-.holding{padding:14px 0;border-bottom:1px solid var(--line)}.holding:last-child{border:0}.holdtop{display:flex;justify-content:space-between}.ticker{font-size:18px;font-weight:900}.ret{font-size:17px;font-weight:900}.hgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:7px;margin-top:10px}
-.nav{display:flex;gap:8px;overflow:auto;margin-top:12px}.nav button{border:1px solid var(--line);background:#fff;border-radius:11px;padding:9px 12px;font-weight:850;white-space:nowrap}.nav button.active{background:#111827;color:white}.page{display:none}.page.active{display:block}
-.error{display:none;background:#fff5e5;border:1px solid #efd3a3;border-radius:13px;padding:11px;margin-top:12px;font-size:13px}.refresh{border:1px solid var(--line);background:#fff;border-radius:10px;padding:8px 10px;font-weight:850}
-.dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:currentColor;margin-right:5px}.fresh{font-size:11px;color:var(--muted);margin-top:7px}
-footer{margin-top:18px;color:var(--muted);font-size:11px;line-height:1.6}
-@media(max-width:760px){.marketgrid,.stats,.quad{grid-template-columns:1fr 1fr}.signals{grid-template-columns:1fr}.hgrid{grid-template-columns:1fr 1fr}.index{font-size:35px}.top{align-items:flex-start}.pills{max-width:54%}}
-</style></head><body><main>
-<div class="top"><div><div class="eyebrow">台股戰情 · 正式版 V12.3.1</div><h1 id="modeTitle">今天台股怎麼了？</h1><div class="note" id="modeNote">自動辨識盤前／盤中／盤後／夜間模式</div></div><div class="pills"><span id="mode" class="pill">判斷時段</span><span id="status" class="pill warn">連線中</span><span class="pill">台股 10 秒</span><button id="refresh" class="refresh">更新</button></div></div>
-<div id="error" class="error"></div>
+<link rel="stylesheet" href="/styles.css?v=R3.18"><title>台股戰情16.8</title>
+</head><body><main>
+<div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.18</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
+<nav class="topnav">
+<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="buy">ETF買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
+</nav>
 
-<div class="nav">
- <button class="active" data-page="home">大盤首頁</button>
- <button data-page="portfolio">我的持股</button>
- <button data-page="tomorrow">明日環境</button>
- <button data-page="logic">怎麼判斷</button>
+<div id="home" class="page on">
+<section id="preopenCard" class="card"><div class="sectiontitle">08:57 盤前預測三層</div><div id="preopenSummary" class="reading">尚未建立今日盤前基準。</div></section>
+<section class="card hero"><div class="sectiontitle">台股現貨大盤</div><div id="idx" class="index">—</div><div id="idxchg" class="change">—</div>
+<div class="grid4"><div class="box"><span class="k">今日開盤</span><b id="open">—</b></div><div class="box"><span class="k">今日最高</span><b id="high">—</b></div><div class="box"><span class="k">今日最低</span><b id="low">—</b></div><div class="box"><span class="k">距今日高點</span><b id="offHigh">—</b></div></div>
+<div class="grid4"><div class="box"><span class="k">現貨近5交易日</span><b id="ret5">—</b><small>只算TAIEX現貨</small></div><div class="box"><span class="k">現貨近20交易日</span><b id="ret20">—</b><small>不含夜盤</small></div><div class="box"><span class="k">市場廣度</span><b id="breadthHome">—</b><small id="breadthScope">上市集中市場</small></div><div class="box"><span class="k">台積電</span><b id="tsmcHome">—</b></div></div>
+<div id="plain" class="reading">等待行情。</div></section>
+<section class="card"><div class="sectiontitle">🌙 夜盤／海外摘要</div><div id="homeExternal" class="grid4"></div><div id="homeExternalText" class="reading">讀取中。</div></section>
+<section class="card"><div class="sectiontitle">現在最值得看的ETF</div><div class="note">直接顯示第一／理想／強力買點。模型可以回答「今日暫無合理買點」。</div><div id="homeBuyRanking"></div><div id="homeModelEvent" class="reading">戰情載入中。</div></section>
 </div>
 
-<div id="home" class="page active">
-<section class="card hero">
- <div class="k">加權指數</div><div id="idx" class="index">—</div><div id="idxchg" class="change">正在取得行情</div>
- <div class="marketgrid">
-  <div class="box"><div class="k">今日開盤</div><div id="open" class="v">—</div></div>
-  <div class="box"><div class="k">今日最高</div><div id="high" class="v">—</div></div>
-  <div class="box"><div class="k">今日最低</div><div id="low" class="v">—</div></div>
-  <div class="box"><div class="k">漲幅保留率</div><div id="retainHero" class="v">—</div></div>
- </div>
- <div class="verdict"><strong id="verdict">🟡 等待大盤資料</strong><div id="plain" class="plain">行情進來後，這裡直接翻成白話。</div></div>
- <div class="fresh">最後更新：<span id="updated">—</span>｜即時來源：證交所 MIS</div>
-</section>
-<section id="nightHomeCard" class="card" style="display:none">
- <div class="sectiontitle">🌙 台指夜盤現在怎麼走？</div>
- <div class="quad">
-  <div class="box"><div class="k">WTX& 台指期近一</div><div id="nightHomePrice" class="v">讀取中</div></div>
-  <div class="box"><div class="k">夜盤漲跌</div><div id="nightHomeChange" class="v">—</div></div>
-  <div class="box"><div class="k">即時走勢</div><div id="nightHomeTrend" class="v">累積中</div></div>
-  <div class="box"><div class="k">自高點回落</div><div id="nightHomeOffHigh" class="v">—</div></div>
- </div>
- <div id="nightHomePlain" class="reading"><b>白話：</b>正在讀取台指夜盤。</div>
- <div id="nightMomentumDetail" class="explain">短線動能：正在累積 1／3／5／15 分鐘資料。</div>
- <div class="what">這是看什麼？</div>
- <div class="explain">台股收盤後，台指期夜盤會先反映歐美市場與重大消息。它比單看 NASDAQ 更直接，但仍不能單獨代表明天一定漲跌。</div>
-</section>
-
-
-<section class="signals">
- <div class="card"><div class="title">中期趨勢</div><div id="midTrend" class="score amber">🟡 資料載入中</div><div class="what">這是看什麼？</div><div class="explain">看未來幾週的大方向有沒有壞。單日大漲大跌不會直接翻轉。</div></div>
- <div class="card"><div class="title">今日盤勢</div><div id="tone" class="score amber">🟡 讀取中</div><div class="what">這是看什麼？</div><div class="explain">看今天買方或賣方誰比較強，盤中會快速修正。</div></div>
- <div class="card"><div class="title">市場內部</div><div id="internal" class="score amber">🟡 讀取中</div><div class="what">這是看什麼？</div><div class="explain">看是不是很多股票一起漲，以及台積電是否單獨撐盤。</div></div>
-</section>
-
-<section class="card"><div class="sectiontitle">今天大盤為什麼這樣走？</div>
- <div class="quad">
-  <div class="box"><div class="k">市場廣度</div><div id="breadth" class="v">讀取中</div><div class="note">看多數股票到底是漲還跌。</div></div>
-  <div class="box"><div class="k">成交活躍度</div><div id="activity" class="v">讀取中</div><div class="note">看這波漲跌有沒有市場參與。</div></div>
-  <div class="box"><div class="k">台積電</div><div id="tsmc" class="v">讀取中</div><div class="note">看權值王對指數的影響。</div></div>
-  <div class="box"><div class="k">三大法人</div><div id="inst" class="v">盤後更新</div><div class="note">看大資金近期偏買或偏賣。</div></div>
- </div>
- <div id="why" class="reading"><b>白話：</b>正在整理市場結構。</div>
-</section>
-
-<section class="card"><div class="sectiontitle">大盤結構</div>
- <div class="quad">
-  <div class="box"><div class="k">近 5 日</div><div id="d5" class="v">讀取中</div><div class="note">看最近一週正在轉強還轉弱。</div></div>
-  <div class="box"><div class="k">近 20 日</div><div id="d20" class="v">讀取中</div><div class="note">看短中期方向，不被一天行情騙到。</div></div>
-  <div class="box"><div class="k">距今日高點</div><div id="offHigh" class="v">—</div><div class="note">看盤中強勢退了多少。</div></div>
-  <div class="box"><div class="k">資料品質</div><div id="quality" class="v">檢查中</div><div class="note">缺資料時會降級，不硬猜。</div></div>
- </div>
-</section>
+<div id="holdingsPage" class="page">
+<section class="card private"><div class="row"><div><div class="sectiontitle">我的持股｜私人頁</div><div class="note">不和公開買點混在一起；新訪客預設空白。</div></div><button class="btn primary" onclick="openHolding()">＋新增持股</button></div>
+<div id="holdingTotals" class="grid4"></div><div id="holdingManager"></div><div id="holdings"></div></section>
 </div>
 
-<div id="portfolio" class="page">
-<section class="card"><div class="row"><div><div class="sectiontitle">持股管理</div><div class="note">可直接新增、編輯、刪除；資料保存在這台裝置</div></div><button class="btn" onclick="addHolding()">＋ 新增持股</button></div><div id="holdingManager"></div></section>
-<section class="card"><div class="sectiontitle">我的 ETF 資產</div>
- <section class="stats">
-  <div class="stat"><div class="k">持股總成本</div><div class="v">$350,693</div></div>
-  <div class="stat"><div class="k">目前總市值</div><div id="market" class="v">—</div></div>
-  <div class="stat"><div class="k">未實現損益</div><div id="profit" class="v">—</div></div>
-  <div class="stat"><div class="k">總報酬率</div><div id="return" class="v">—</div></div>
- </section>
- <div id="portfolioPlain" class="reading"><b>白話：</b>行情進來後，會告訴你今天大盤變化對你的實際帳戶代表什麼。</div>
- <div id="allocationPlain" class="reading"><b>部位結構：</b>正在計算你的資金主要集中在哪一檔。</div>
- <div id="holdings"></div>
-</section>
+<div id="buy" class="page">
+<section class="card"><div class="sectiontitle">四檔ETF動態買點</div><div class="reading">價格約10秒更新；模型約30秒重算。第一層確認後，價格彈走只會顯示「已確認但離開／不追」，不會10秒反覆取消。</div></section><div id="buyCards"></div>
+</div>
+
+
+<div id="constituentPage" class="page">
+<section class="card"><div class="row"><div><div class="sectiontitle" id="constTitle">ETF 完整成分股雷達</div><div class="note" id="constDesc">0050/0056 元大官方、00878 國泰官方、00919 群益官方。只有完整持股且行情覆蓋達標才允許納入模型。</div></div><button class="btn primary" onclick="loadConstituentPage(true)">重新整理</button></div><div class="etftabs" id="constTabs"></div><div id="c0050Status" class="reading">等待讀取官方成分股。</div></section>
+<section class="card"><div class="sectiontitle">市場內部廣度</div><div id="c0050Summary" class="grid4"></div><div id="c0050Breadth" class="reading"></div></section>
+<section class="card"><div class="sectiontitle" id="constHeatTitle">前十大權值股熱力圖</div><div class="note">紅＝上漲、綠＝下跌；僅前十大使用卡片，其餘成分股改為緊湊清單。</div><div id="c0050Heat" class="constituent50"></div></section>
+<section class="card"><div class="sectiontitle">完整成分明細</div><div id="c0050Table"></div></section>
+</div>
+
+<div id="nightPage" class="page">
+<section class="card"><div class="sectiontitle">🌙 台指夜盤 WTX&</div><div id="nightFull"></div><div class="reading"><b>正負號：</b>永遠用成交價－參考價自行計算。整晚相對參考價與距今晚最高點分開。</div></section>
+<section class="card"><div class="sectiontitle">海外科技環境</div><div id="overseasFull" class="grid4"></div></section>
+
 </div>
 
 <div id="tomorrow" class="page">
-<section class="card">
- <div class="sectiontitle">🌙 明日台股結論</div>
- <div id="tomorrowScore" class="score amber">🟡 尚未形成結論</div>
- <div id="confidence" class="v" style="margin-top:4px">信心：低</div>
- <div class="fresh">結論更新：<span id="forecastUpdated">—</span></div>
- <div id="tomorrowPlain" class="reading"><b>白話：</b>目前資料還不足，先不要把下午的初判當成明早的最終結論。</div>
+<section class="card"><div class="sectiontitle">明日台股環境</div><div id="tomorrowScore" class="score amber">尚未形成</div><div id="confidence" class="note">信心：—</div><div id="tomorrowPlain" class="reading">等待夜盤與海外訊號。</div><div id="tomorrowFactors" class="grid4"></div></section>
+</div>
 
- <div class="quad" style="margin-top:12px">
-  <div class="box"><div class="k">NASDAQ</div><div id="nasdaq" class="v">—</div></div>
-  <div class="box"><div class="k">費半 SOX</div><div id="sox" class="v">—</div></div>
-  <div class="box"><div class="k">台積電 ADR</div><div id="tsmadr" class="v">—</div></div>
-  <div class="box"><div class="k">台指期近一 WTX&</div><div id="nightFut" class="v amber">讀取中</div><div id="nightDetail" class="note">Yahoo 股市</div></div>
- </div>
+<div id="etfDetail" class="page">
+<section class="card"><div class="row"><div><div class="sectiontitle" id="detailTitle">0050</div><div class="note">買點｜成分健康｜歷史買點都放回ETF自身頁面。</div></div><div class="etftabs" id="detailTabs"></div></div><div id="detailBuy"></div></section>
+<section class="card"><div class="sectiontitle">成分健康度</div><div id="healthSummary"></div><div id="constHeat" class="heat"></div><div id="constNote" class="notice"></div></section>
+<section class="card"><div class="sectiontitle">歷史買點 vs 實際價格</div><svg id="historyChart" class="chart" viewBox="0 0 900 230" preserveAspectRatio="none"></svg><div class="legend"><span><i class="dot actual"></i>實際價</span><span><i class="dot l1"></i>第一層</span><span><i class="dot l2"></i>第二層</span><span><i class="dot l3"></i>第三層</span></div><div id="majorZone" class="reading"></div><div id="historyTable"></div></section>
+</div>
 
- <div class="card" style="background:var(--panel);margin-top:12px">
-  <div class="sectiontitle" style="font-size:16px">這個結論現在成熟到哪裡？</div>
-  <div id="signalChecklist" class="note" style="line-height:1.9">
-   ✓ 台股收盤結構<br>
-   ✓ 市場廣度 / 台積電<br>
-   ⏳ NASDAQ<br>
-   ⏳ 費半<br>
-   ⏳ 台積電 ADR<br>
-   ✓/⏳ 台指期近一 WTX&
-  </div>
-  <div class="reading" style="margin-top:10px">
-   <b>下一個重要更新：</b><span id="nextUpdate">依目前時段自動判斷</span><br>
-   <b>目前版本：</b><span id="forecastStage">收盤初判</span>
-  </div>
- </div>
-
- <div class="card" style="background:var(--panel);margin-top:12px">
-  <div class="sectiontitle" style="font-size:16px">明天你該怎麼看？</div>
-  <div id="openBias" class="reading"><b>開盤環境：</b>尚未判斷</div>
-  <div id="closeBias" class="reading"><b>整日環境：</b>尚未判斷</div>
-  <div id="actionPlain" class="reading"><b>白話：</b>「偏多」不等於開盤就追，「偏空」也不等於一定要賣。</div>
- </div>
-
- <div class="fresh">海外資料約每 60 秒更新；台股即時行情 10 秒。台指夜盤尚未接入，因此信心會自動打折。</div>
-</section>
+<div id="model" class="page">
+<section class="card"><div class="sectiontitle">模型狀況／核心風控</div><div id="modelCards"></div></section>
+<section class="card"><div class="row"><div><div class="sectiontitle">我的模型實戰成績</div><div class="note">只有你實際標記「依模型買入」的交易才會進這裡，與「我的持股」完全分開。</div></div></div><div id="liveTradeSummary" class="grid5"></div><div id="modelTradeList"></div></section>
+<section class="card"><div class="sectiontitle">全歷史建立狀態</div><div class="note">服務啟動後自動建立四檔TWSE官方全歷史，不需要按回測才開始。完成前模型會明示使用備援。</div><div id="historyBuildStatus" class="grid4"></div></section>
+<section class="card"><div class="sectiontitle">全歷史回測</div><div class="note">上市日至今是主結果；近10／5／2／1年只是切片。使用還原權息序列避免除息假跌。</div><div class="etftabs" id="backtestTabs"></div><button class="btn primary" id="runBacktestBtn" onclick="runBacktest()">執行全歷史回測</button><div id="backtestResult" class="reading">尚未執行。</div></section>
+<section class="card"><div class="row"><div class="sectiontitle">今日模型事件</div><button class="btn danger" id="clearModelEventsBtn" onclick="clearModelEvents()">清除事件</button></div><div class="note" style="margin-bottom:8px">事件太多時可清除本機紀錄；後續新模型事件仍會繼續記錄。</div><div id="modelEvents"></div></section>
+<section class="card" id="validationCenter"><div class="row"><div><div class="sectiontitle">45項驗證中心</div><div class="note">不是規格清單：每格接實際功能／資料／回測訊號。PASS才亮綠燈。</div></div><button class="btn primary" id="deepValidateBtn" onclick="runDeepValidation()">執行完整驗證</button></div><div id="validationSummary" class="grid5"></div><div id="validationOverall" class="reading">驗證載入中。</div><div id="specGrid" class="specgrid"></div><div class="sectiontitle" style="margin-top:12px">新增3項核心風控</div><div id="coreValidation" class="grid3"></div></section>
 </div>
 
 <div id="logic" class="page">
-<section class="card"><div class="sectiontitle">這個 App 到底怎麼判斷？</div>
- <div class="reading"><b>中期趨勢：</b>主要看約 20 日方向，這是「大方向有沒有壞」。</div>
- <div class="reading"><b>今日盤勢：</b>看相對昨收、今日高低點與漲幅保留率，這是「現在買方還是賣方強」。</div>
- <div class="reading"><b>市場內部：</b>看漲跌家數與台積電同步性，這是「真的大家都強，還是只有權值股撐」。</div>
- <div class="reading"><b>明日環境：</b>看 NASDAQ、費半、台積電 ADR，再預留台指夜盤。它只判斷外部順逆風，不直接等於明天收漲／收跌。</div>
- <div class="reading"><b>資料原則：</b>即時資料、盤後資料、海外資料分開更新。任何一層失敗，就顯示「資料不足」，不把舊資料或別的指標冒充。</div>
-</section>
+<section class="card"><div class="sectiontitle">V12.4 怎麼判斷？</div>
+<div class="reading"><b>現貨趨勢：</b>5／20日只用TAIEX現貨；買點本身使用ETF全歷史、5／20／60／120／250日結構、ATR與還原權息。</div>
+<div class="reading"><b>動態三層：</b>同框架、四檔獨立參數。利多只慢慢抬升買點，利空可較快反映。</div>
+<div class="reading"><b>防追高：</b>價格漲速若遠快於合理價中樞，啟動上修煞車。</div>
+<div class="reading"><b>參與率保護：</b>長期買不到且60／120／250日中樞確認上移，允許緩慢重錨。</div>
+<div class="reading"><b>防下逃：</b>只有新環境證據惡化才允許明顯下修；單純價格下跌不能讓球門一直後退。</div>
+<div class="reading"><b>資料硬Gate：</b>行情逾時、重大異常、急殺條件可暫停買點。</div></section>
 </div>
 
-<footer>正式版 V12.3.1：全站漲跌配色改為台股慣例「紅漲、綠跌」；美股未開盤時優先顯示盤前資料，若該商品沒有盤前交易則顯示前一交易日表現，不再誤標成資料不足。WTX& 夜盤動能與中期趨勢沿用 V12.3。資料僅供資訊整理，不構成投資建議。</footer>
+<div id="qa" class="page">
+<section class="card"><div class="sectiontitle">💬 即時戰情留言＋免費問答</div><div class="note">0元GPT API：直接讀目前模型、夜盤、成分健康、歷史事件回答。</div><div id="qaEvents"></div><div id="chat" class="chat"></div>
+<div class="quick"><button class="btn" onclick="quickAsk('現在四檔哪個最好？')">四檔哪個最好？</button><button class="btn" onclick="quickAsk('0050為什麼不能買？')">0050為什麼不能買？</button><button class="btn" onclick="quickAsk('夜盤現在怎樣？')">夜盤現在怎樣？</button><button class="btn" onclick="quickAsk('剛剛發生什麼？')">剛剛發生什麼？</button></div>
+<div class="askrow"><input id="question" placeholder="例如：00878三層買點？"><button class="btn primary" onclick="sendAsk()">送出</button></div></section>
+</div>
+
+<footer>V12.4 FINAL R3.18｜紅＝漲、綠＝跌。公開行情與模型僅供資訊整理；模型不保證最低點或獲利。完整成分健康只有在來源回傳足夠覆蓋時才納入，資料不足時寧可停用，不拿前幾大成分冒充全部。</footer>
 </main>
-<script>
-const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
-let H=loadHoldings();
-function loadHoldings(){try{const x=JSON.parse(localStorage.getItem('twStockHoldingsV12'));return Array.isArray(x)?x:DEFAULT_H.slice()}catch(e){return DEFAULT_H.slice()}}
-function saveHoldings(){localStorage.setItem('twStockHoldingsV12',JSON.stringify(H))}
-let totalCost=H.reduce((a,h)=>a+h.s*h.c,0), $=id=>document.getElementById(id), money=n=>'$'+Math.round(n).toLocaleString('zh-TW'), pct=n=>(n>=0?'+':'')+n.toFixed(2)+'%';
-let lastLive=null,marketTimer,slowTimer,overseasTimer;
-let latestOverseas=null, latestContext=null, latestHistory=null;
 
-function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
+<div id="holdingModal" class="modal" onclick="if(event.target===this)closeHolding()"><div class="sheet"><div class="row"><div class="sectiontitle" id="holdingTitle">新增持股</div><button class="btn" onclick="closeHolding()">關閉</button></div><input id="editHoldingId" type="hidden">
+<div class="field"><label>股票／ETF代號</label><input id="hCode"></div><div class="field"><label>股數</label><input id="hShares" type="number"></div><div class="field"><label>平均成本</label><input id="hCost" type="number" step="0.01"></div><button class="btn primary" style="width:100%;margin-top:12px" onclick="saveHoldingForm()">儲存</button></div></div>
 
-function renderHoldingManager(){
- const el=$('holdingManager');if(!el)return;
- el.innerHTML=H.length?H.map(x=>`<div style="display:grid;grid-template-columns:80px 1fr auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #263246"><b>${x.t}</b><span>${Number(x.s).toLocaleString()} 股｜均價 $${Number(x.c).toFixed(2)}</span><span><button class="btn" onclick="editHolding('${x.t}')">編輯</button> <button class="btn" onclick="deleteHolding('${x.t}')">刪除</button></span></div>`).join(''):'<div class="note">目前沒有持股。</div>';
-}
-function holdingInput(old=''){
- const x=H.find(v=>v.t===old),t=prompt('股票代號',x?.t||'');if(t===null)return;
- const s=prompt('持有股數',x?.s||'');if(s===null)return;
- const c=prompt('平均成本',x?.c||'');if(c===null)return;
- const nt=t.trim().toUpperCase(),ns=Number(s),nc=Number(c);if(!nt||!(ns>0)||!(nc>0)){alert('請輸入正確的代號、股數與平均成本');return}
- if(!old&&H.some(v=>v.t===nt)){alert('這檔已存在，請使用編輯');return}
- H=H.filter(v=>v.t!==old);H.push({t:nt,n:nt,s:ns,c:nc});saveHoldings();totalCost=H.reduce((a,v)=>a+v.s*v.c,0);renderHoldingManager();loadLive();
-}
-function addHolding(){holdingInput('')} function editHolding(t){holdingInput(t)}
-function deleteHolding(t){if(confirm('確定刪除 '+t+'？')){H=H.filter(v=>v.t!==t);saveHoldings();totalCost=H.reduce((a,v)=>a+v.s*v.c,0);renderHoldingManager();loadLive();}}
-function setMode(){
- const d=taipeiNow(),mins=d.getHours()*60+d.getMinutes(),day=d.getDay();
- let label,title,note;
- if(day===0||day===6){label='週末模式';title='市場休市，先看持股與下一交易日環境';note='即時行情可能維持最近交易日資料'}
- else if(mins<540){label='盤前模式';title='今天開盤前，環境怎麼樣？';note='先看海外市場與前一交易日結構'}
- else if(mins<=810){label='● 盤中模式';title='今天台股怎麼了？';note='大盤與持股行情每 10 秒更新'}
- else if(mins<900){label='收盤模式';title='今天台股收得怎麼樣？';note='確認尾盤強弱與盤後籌碼'}
- else if(mins>=900||mins<300){label='🌙 夜間模式';title='今晚正在怎麼影響明天？';note='以美股科技與 ADR 評估隔日外部環境'}
- else{label='盤前模式';title='今天開盤前，環境怎麼樣？';note='整合昨晚海外市場'}
- $('mode').textContent=label;$('modeTitle').textContent=title;$('modeNote').textContent=note;
-}
-function judge(q){
- if(!q||!(q.last>0)||!(q.prevClose>0))return null;
- const ch=(q.last-q.prevClose)/q.prevClose*100,maxUp=q.high>q.prevClose?q.high-q.prevClose:0;
- const retain=maxUp>0?Math.max(0,Math.min(1,(q.last-q.prevClose)/maxUp)):null;
- const off=q.high?(q.last-q.high)/q.high*100:null;
- let tone='🟡 震盪',plain='目前多空沒有非常明顯優勢。',cls='amber';
- if(ch>0&&retain!==null&&retain>=.70){tone='🔴 多方強勢';plain='大盤上漲，而且大部分盤中漲幅仍保留下來。白話：買方目前守得住成果。';cls='green'}
- else if(ch>0&&retain!==null&&retain<.35){tone='🟠 先強後弱';plain='大盤還在上漲，但已吐回大部分盤中漲幅。白話：不是直接轉空，而是早盤買方優勢正在快速縮小。';cls='amber'}
- else if(ch>0){tone='🟡 上漲但降溫';plain='大盤仍在上漲，但已從高點回落一部分。白話：多方還贏，只是沒有最高點時那麼強。';cls='amber'}
- else if(ch<0){tone='🟢 今日偏弱';plain='大盤目前低於昨天收盤。白話：今天賣方暫時占優勢，要再看低點是否出現明顯承接。';cls='red'}
- return{ch,retain,off,tone,plain,cls};
-}
-function renderLive(d){
- lastLive=d; const q=d.market,x=judge(q);
- if(q&&x){
-  $('idx').textContent=q.last.toLocaleString('zh-TW',{maximumFractionDigits:2});
-  $('idxchg').textContent=(x.ch>=0?'▲ ':'▼ ')+Math.abs(q.last-q.prevClose).toFixed(2)+' 點　'+pct(x.ch);$('idxchg').className='change '+(x.ch>=0?'green':'red');
-  $('open').textContent=q.open?.toLocaleString()??'—';$('high').textContent=q.high?.toLocaleString()??'—';$('low').textContent=q.low?.toLocaleString()??'—';
-  $('retainHero').textContent=x.retain==null?'不適用':Math.round(x.retain*100)+'%';$('offHigh').textContent=x.off==null?'—':x.off.toFixed(2)+'%';
-  $('verdict').textContent=x.tone;$('verdict').className=x.cls;$('plain').textContent=x.plain;$('tone').textContent=x.tone;$('tone').className='score '+x.cls;
- }
- let total=0,html='',todayDelta=0;
- for(const h of H){const z=d.quotes[h.t];if(!z||!(z.last>0))continue;const m=z.last*h.s,p=m-h.c*h.s,r=p/(h.c*h.s)*100,day=z.prevClose?(z.last-z.prevClose)/z.prevClose*100:null;total+=m;if(z.prevClose)todayDelta+=(z.last-z.prevClose)*h.s;
- html+=`<div class="holding"><div class="holdtop"><div><div class="ticker">${h.t}</div><div class="note">${h.n}</div></div><div class="ret ${r>=0?'green':'red'}">${pct(r)}</div></div><div class="hgrid"><div class="box"><div class="k">現價</div><div class="v">$${z.last.toFixed(2)}</div></div><div class="box"><div class="k">今日</div><div class="v ${day>=0?'green':'red'}">${day==null?'—':pct(day)}</div></div><div class="box"><div class="k">持有</div><div class="v">${h.s.toLocaleString()}股</div></div><div class="box"><div class="k">均價</div><div class="v">$${h.c.toFixed(2)}</div></div><div class="box"><div class="k">市值</div><div class="v">${money(m)}</div></div><div class="box"><div class="k">未實現</div><div class="v ${p>=0?'green':'red'}">${p>=0?'+':''}${money(p)}</div></div></div></div>`}
- $('holdings').innerHTML=html||'<div class="note">持股行情暫時取不到。</div>';
- if(total){const p=total-totalCost,r=p/totalCost*100;$('market').textContent=money(total);$('profit').textContent=(p>=0?'+':'')+money(p);$('profit').className='v '+(p>=0?'green':'red');$('return').textContent=pct(r);$('return').className='v '+(r>=0?'green':'red');
- $('portfolioPlain').innerHTML='<b>白話：</b>目前持股今日價格變動合計約 <b class="'+(todayDelta>=0?'green':'red')+'">'+(todayDelta>=0?'+':'')+money(todayDelta)+'</b>。這是價格變動，不含配息與交易成本。';
- const weights=H.map(h=>{const z=d.quotes[h.t];return {t:h.t,v:z&&z.last>0?z.last*h.s:0}}).filter(x=>x.v>0).sort((a,b)=>b.v-a.v);
- if(weights.length){const top=weights[0],w=top.v/total*100;$('allocationPlain').innerHTML='<b>部位結構：</b>'+top.t+' 約占目前 ETF 市值 '+w.toFixed(0)+'%，是你帳戶對大盤最敏感的主要來源。這只是集中度提示，不等於叫你調整部位。';}
-}
- if(d.tsmc&&d.tsmc.prevClose){const tc=(d.tsmc.last-d.tsmc.prevClose)/d.tsmc.prevClose*100;$('tsmc').textContent=pct(tc);$('tsmc').className='v '+(tc>=0?'green':'red')}
- $('status').textContent='● 行情正常';$('status').className='pill live';$('updated').textContent=new Date(d.fetchedAt).toLocaleTimeString('zh-TW',{hour12:false});$('error').style.display='none';setMode();forecastFromSignals();
-}
-function parseDateish(s){if(!s)return null;const z=String(s),m=z.match(/(\d{3,4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);if(!m)return null;let y=+m[1];if(y<1911)y+=1911;return new Date(y,+m[2]-1,+m[3])}
-function extractSeries(rows){if(!Array.isArray(rows))return[];const out=[];for(const r of rows){let date=null,idx=null;for(const v of Object.values(r||{})){if(!date)date=parseDateish(v)}for(const [k,v] of Object.entries(r||{})){if(/指數|收盤|發行量加權|TAIEX|close/i.test(k)){const x=Number(String(v).replace(/,/g,''));if(Number.isFinite(x)&&x>1000){idx=x;break}}}if(date&&idx)out.push({date,idx})}return out.sort((a,b)=>a.date-b.date)}
-async function loadHistory(){
- try{
-  const r=await fetch('/api/history?x='+Date.now(),{cache:'no-store'}),d=await r.json();latestHistory=d;
-  if(!r.ok||!d.ok||!Array.isArray(d.rows)||d.rows.length<60)throw Error('history');
-  const s=d.rows.filter(x=>Number.isFinite(Number(x.close))).map(x=>Number(x.close));
-  const last=s.at(-1), d5=s.at(-6), d20=s.at(-21), d60=s.at(-61);
-  const r5=(last-d5)/d5*100, r20=(last-d20)/d20*100, r60=(last-d60)/d60*100;
-  $('d5').textContent=pct(r5);$('d5').className='v '+(r5>=0?'green':'red');
-  $('d20').textContent=pct(r20);$('d20').className='v '+(r20>=0?'green':'red');
-  let label='🟡 震盪',cls='amber';
-  if(r20>2 && r60>0 && r5>-2){label='🔴 中期偏多';cls='green'}
-  else if(r20< -2 && r60<0 && r5<2){label='🟢 中期偏空';cls='red'}
-  else if(r20>=0 && r60>=0){label='🟡 多頭整理';cls='amber'}
-  else if(r20<0 && r60>0){label='🟠 中期轉弱';cls='amber'}
-  $('midTrend').textContent=label;$('midTrend').className='score '+cls;
-  $('quality').textContent='🟢 歷史資料正常';
-  forecastFromSignals();
- }catch(e){
-  $('d5').textContent='資料不足';$('d20').textContent='資料不足';
-  $('midTrend').textContent='🟡 資料不足';$('quality').textContent='🟠 降級運作';
- }
-}
-function findNumByKeys(o,ps){if(!o)return null;for(const[k,v]of Object.entries(o)){if(ps.some(p=>p.test(k))){const x=Number(String(v).replace(/,/g,''));if(Number.isFinite(x))return x}}return null}
-function parseBreadth(a){if(!Array.isArray(a)||!a.length)return null;const r=a.at(-1),up=findNumByKeys(r,[/上漲/i,/漲家/i]),down=findNumByKeys(r,[/下跌/i,/跌家/i]),flat=findNumByKeys(r,[/持平/i,/平盤/i])||0;if(up==null||down==null)return null;return{up,down,ratio:up/(up+down+flat)}}
-function parseInst(d){if(!d||!Array.isArray(d.data)||!Array.isArray(d.fields))return null;const f=d.fields,fi=f.findIndex(x=>/外陸資買賣超股數/.test(x)&&!/自營商/.test(x)),ti=f.findIndex(x=>/投信買賣超股數/.test(x)),di=f.findIndex(x=>/^自營商買賣超股數$/.test(x));let x=0;for(const r of d.data){for(const i of[fi,ti,di])if(i>=0)x+=Number(String(r[i]||0).replace(/,/g,''))||0}return x}
-async function loadContext(){
- try{const r=await fetch('/api/context?x='+Date.now(),{cache:'no-store'}),d=await r.json(); latestContext=d;if(!r.ok||!d.ok)throw Error('context');const b=parseBreadth(d.breadth),ins=parseInst(d.institutional),parts=[];let internal='🟡 分歧',cls='amber';
- if(b){$('breadth').textContent=(b.ratio>=.6?'🟢 ':b.ratio<=.4?'🔴 ':'🟡 ')+b.up+'↑ / '+b.down+'↓';if(b.ratio>=.6){internal='🔴 偏健康';cls='green';parts.push('多數股票一起上漲，市場不是只靠少數權值股。')}else if(b.ratio<=.4){internal='🟢 偏弱';cls='red';parts.push('多數股票下跌，即使指數看起來還好也要提高警覺。')}else parts.push('漲跌家數接近，市場內部分歧。')}else $('breadth').textContent='資料不足';
- $('internal').textContent=internal;$('internal').className='score '+cls;
- $('activity').textContent=Array.isArray(d.turnover)&&d.turnover.length?'官方成交資料已連線':'資料不足';
- if(ins!=null){$('inst').textContent=(ins>=0?'🟢 淨買超':'🔴 淨賣超');parts.push('法人資料用來看盤後大資金方向，不當作盤中即時訊號。')}else $('inst').textContent='盤後資料不足';
- if(lastLive?.market&&lastLive?.tsmc?.prevClose){const m=judge(lastLive.market),tc=(lastLive.tsmc.last-lastLive.tsmc.prevClose)/lastLive.tsmc.prevClose*100;if(m&&Math.sign(m.ch)!==Math.sign(tc))parts.push('台積電與大盤不同方向，今天不能只用台積電解釋整體市場。');else parts.push('台積電與大盤同方向，權值股對指數方向有明顯共振。')}
- $('why').innerHTML='<b>白話：</b>'+parts.join(' ');forecastFromSignals();
- }catch(e){$('breadth').textContent='資料不足';$('activity').textContent='資料不足';$('inst').textContent='資料不足';$('why').innerHTML='<b>白話：</b>市場結構資料暫時不足，先以即時指數判讀，不硬猜。';}
-}
 
-function currentForecastStage(){
- const d=taipeiNow(), mins=d.getHours()*60+d.getMinutes();
- if(mins<510) return {stage:'盤前最終版',next:'08:55 前最後確認'};
- if(mins<810) return {stage:'今日盤中',next:'收盤後重新建立明日初判'};
- if(mins<900) return {stage:'收盤初判',next:'15:00 後觀察台指夜盤'};
- if(mins<1290) return {stage:'夜間更新版',next:'美股開盤後更新科技股訊號'};
- if(mins<300) return {stage:'美股進行中',next:'美股收盤後更新最終海外訊號'};
- return {stage:'盤前最終版',next:'08:55 前最後確認'};
-}
-let latestNightFuture=null;
-async function loadNightFuture(){
- try{
-  const r=await fetch('/api/night-future?x='+Date.now(),{cache:'no-store'}),d=await r.json();latestNightFuture=d;
-  const now=taipeiNow(),mins=now.getHours()*60+now.getMinutes();
-  const showNight=(mins>=900||mins<300);
-  $('nightHomeCard').style.display=showNight?'block':'none';
-  if(d.available&&d.last>0){
-    const ch=d.changePct!=null?d.changePct:(d.prevClose>0?(d.last-d.prevClose)/d.prevClose*100:null);
-    $('nightFut').textContent=(ch==null?'':pct(ch)+' · ')+d.last.toLocaleString('zh-TW');
-    $('nightFut').className='v '+(ch==null?'amber':ch>=0?'green':'red');
-    const off=d.high>0?(d.last-d.high)/d.high*100:null;
-    $('nightDetail').textContent='高 '+(d.high??'—')+' / 低 '+(d.low??'—')+(off==null?'':' · 距高點 '+off.toFixed(2)+'%');
+<div id="modelTradeModal" class="modal" onclick="if(event.target===this)closeModelTrade()"><div class="sheet"><div class="row"><div class="sectiontitle">記錄模型買入</div><button class="btn" onclick="closeModelTrade()">關閉</button></div>
+<div class="field"><label>ETF</label><input id="mtCode" readonly></div>
+<div class="field"><label>實際成交價</label><input id="mtPrice" type="number" step="0.01"></div>
+<div class="field"><label>股數</label><input id="mtShares" type="number" step="1"></div>
+<div class="field"><label>依模型哪一層買入</label><select id="mtLayer" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px"><option value="1">第一層</option><option value="2">第二／理想層</option><option value="3">第三／強力層</option></select></div>
+<div id="mtSnapshot" class="reading"></div><button class="btn primary" style="width:100%;margin-top:12px" onclick="saveModelTrade()">保存這筆模型實戰</button></div></div>
 
-    $('nightHomePrice').textContent=d.last.toLocaleString('zh-TW');
-    $('nightHomeChange').textContent=ch==null?'—':pct(ch);
-    $('nightHomeChange').className='v '+(ch==null?'amber':ch>=0?'green':'red');
-    const offPts=d.high>0?d.last-d.high:null;
-    $('nightHomeOffHigh').textContent=offPts==null?'—':((offPts<0?'回落 ':'高於 ')+Math.abs(offPts).toLocaleString('zh-TW')+' 點'+(off==null?'':'（'+off.toFixed(2)+'%）'));
-    const mom=d.momentum||{}, dir=mom.direction||'資料累積中';
-    $('nightHomeTrend').textContent=dir;
-    $('nightHomeTrend').className='v '+(mom.tone==='bull'?'green':(mom.tone==='bear'||mom.tone==='softBear')?'red':'amber');
-    const fmtMom=(x)=>x?((x.points>=0?'+':'')+Math.round(x.points)+'點 / '+(x.pct>=0?'+':'')+x.pct.toFixed(2)+'%'):'累積中';
-    $('nightMomentumDetail').textContent='短線動能：1分 '+fmtMom(mom.d1)+' ｜ 3分 '+fmtMom(mom.d3)+' ｜ 5分 '+fmtMom(mom.d5)+' ｜ 15分 '+fmtMom(mom.d15);
-    let position=ch==null?'相對昨收位置不明':ch>=0?'相對昨收仍上漲 '+pct(ch):'相對昨收下跌 '+pct(ch);
-    let plain=position+'，即時走勢為「'+dir+'」。';
-    if(dir.includes('回落')||dir.includes('走弱')||dir.includes('下殺'))plain+=' 也就是說，雖然夜盤可能仍高於昨收，但目前價格動能正在往下，不能再寫成「小幅上漲」。';
-    else if(dir.includes('走強'))plain+=' 短線價格動能正在往上。';
-    else if(dir.includes('震盪'))plain+=' 目前沒有明確單邊動能。';
-    else plain+=' 需要先累積一段即時價格，才能判斷真正方向。';
-    $('nightHomePlain').innerHTML='<b>白話：</b>'+plain;
-  }else{
-    $('nightFut').textContent='暫時取不到';$('nightFut').className='v amber';
-    $('nightDetail').textContent=d.reason||'Yahoo WTX& 暫無資料';
-    $('nightHomePrice').textContent='資料不足';$('nightHomeChange').textContent='—';$('nightHomeTrend').textContent='資料不足';
-    $('nightHomePlain').innerHTML='<b>白話：</b>目前抓不到 WTX&，所以今晚不拿假資料補夜盤判讀。';
-  }
-  forecastFromSignals();
- }catch(e){
-  latestNightFuture=null;$('nightFut').textContent='資料不足';$('nightDetail').textContent='稍後自動重試';
-  $('nightHomePrice').textContent='資料不足';$('nightHomeTrend').textContent='資料不足';$('nightHomePlain').innerHTML='<b>白話：</b>夜盤來源暫時連線失敗，稍後自動重試。';
-  forecastFromSignals();
- }
-}
-function forecastFromSignals(){
- const stage=currentForecastStage();
- $('forecastStage').textContent=stage.stage;
- $('nextUpdate').textContent=stage.next;
-
- const signals=[];
- const overseas=latestOverseas?.quotes||{};
- for(const [key,label] of [['NASDAQ','NASDAQ'],['SOX','費半'],['TSM','台積電 ADR']]){
-   const q=overseas[key];
-   if(q&&q.last>0&&q.prevClose>0){
-     const ch=Number.isFinite(q.changePct)?q.changePct:(q.last-q.prevClose)/q.prevClose*100;
-     const weight=Number.isFinite(q.sessionWeight)?q.sessionWeight:1;
-     signals.push({name:label,score:Math.max(-2,Math.min(2,ch))*weight,weight,available:true,ch,session:q.session||'即時'});
-   }else signals.push({name:label,score:0,weight:0,available:false,ch:null,session:'資料不足'});
- }
-
- let domesticScore=0, domesticCount=0;
- if(lastLive?.market){
-   const j=judge(lastLive.market);
-   if(j){domesticScore += Math.max(-1.5,Math.min(1.5,j.ch)); domesticCount++;}
- }
- if(Array.isArray(latestHistory?.rows)&&latestHistory.rows.length>=6){
-   const s=latestHistory.rows.map(x=>Number(x.close)).filter(Number.isFinite);
-   if(s.length>=6){
-     const last=s.at(-1),d5=s.at(-6);
-     domesticScore += Math.max(-1.5,Math.min(1.5,(last-d5)/d5*100)); domesticCount++;
-   }
- }
-
- let score=0, count=0;
- if(latestNightFuture?.available&&latestNightFuture.last>0){
-   const nf=latestNightFuture.changePct!=null?latestNightFuture.changePct:(latestNightFuture.prevClose>0?(latestNightFuture.last-latestNightFuture.prevClose)/latestNightFuture.prevClose*100:null);
-   if(nf!=null){score+=Math.max(-2,Math.min(2,nf))*1.35;count+=1.35;}
- }
- for(const s of signals){if(s.available){score+=s.score;count+=s.weight||1;}}
- if(domesticCount){score += domesticScore; count += domesticCount;}
-
- const availableOverseas=signals.filter(s=>s.available).length;
- const nightAvailable=!!(latestNightFuture?.available&&latestNightFuture?.last>0);
- const totalExpected=6; // domestic close, structure, 3 overseas, night future
- const availableCount=Math.min(totalExpected,(domesticCount?2:0)+availableOverseas+(nightAvailable?1:0));
- const confidenceRatio=availableCount/totalExpected;
-
- let label='🟡 中性',cls='amber';
- const avg=count?score/count:0;
- if(count>=2 && avg>0.55){label='🔴 偏多';cls='green'}
- else if(count>=2 && avg<-0.55){label='🟢 偏空';cls='red'}
- else if(count<2){label='🟡 尚未形成結論';cls='amber'}
-
- let conf='低';
- if(confidenceRatio>=0.8) conf='高';
- else if(confidenceRatio>=0.55) conf='中';
- else if(confidenceRatio>=0.35) conf='中低';
-
- $('tomorrowScore').textContent=label;
- $('tomorrowScore').className='score '+cls;
- $('confidence').textContent='信心：'+conf;$('forecastUpdated').textContent=new Date().toLocaleTimeString('zh-TW',{hour12:false});
-
- const checklist=[];
- checklist.push((lastLive?.market?'✓':'⏳')+' 台股收盤 / 即時結構');
- checklist.push((latestContext?'✓':'⏳')+' 市場廣度 / 台積電');
- checklist.push((signals[0].available?'✓':'⏳')+' NASDAQ');
- checklist.push((signals[1].available?'✓':'⏳')+' 費半');
- checklist.push((signals[2].available?'✓':'⏳')+' 台積電 ADR');
- checklist.push('✓/⏳ 台指期近一 WTX&');
- $('signalChecklist').innerHTML=checklist.join('<br>');
-
- const desc=[];
- for(const s of signals.filter(x=>x.available)) desc.push(s.name+'（'+s.session+'）'+(s.ch>=0?'上漲':'下跌')+Math.abs(s.ch).toFixed(2)+'%');
- const base = label.includes('偏多')?'目前外部與台股結構整體偏正面。':
-              label.includes('偏空')?'目前外部與台股結構整體偏弱。':
-              '目前多空訊號沒有形成一致方向。';
- const warning='台指期近一 WTX& 已納入；若 Yahoo 當下暫無資料，系統會自動降低信心。';
- $('tomorrowPlain').innerHTML='<b>白話：</b>'+base+(desc.length?' '+desc.join('、')+'。':' ')+warning;
-
- let openText='尚未形成明確方向', closeText='尚未形成明確方向';
- if(label.includes('偏多')){openText='偏強機率較高，但仍要防開高走低';closeText='整日環境偏正面，但不代表一定收漲'}
- else if(label.includes('偏空')){openText='偏弱機率較高，但仍可能低開後拉回';closeText='整日環境偏逆風，但不代表一定收跌'}
- else {openText='開高開低都缺乏明顯優勢';closeText='比較像震盪環境，盤中訊號會比盤前更重要'}
- $('openBias').innerHTML='<b>開盤環境：</b>'+openText;
- $('closeBias').innerHTML='<b>整日環境：</b>'+closeText;
- $('actionPlain').innerHTML='<b>白話：</b>'+(label.includes('偏多')?'如果你原本有部位，偏多環境代表外部風險較低；但不等於開盤直接追價。':label.includes('偏空')?'偏空代表明天外部逆風較大；但若你的中期趨勢仍健康，也不能只靠一晚訊號就認定整個行情結束。':'目前沒有足夠優勢，明天更應該等開盤後的實際盤勢確認。');
-}
-async function loadOverseas(){
- try{
-  const r=await fetch('/api/overseas?x='+Date.now(),{cache:'no-store'}),d=await r.json();
-  if(!r.ok||!d.ok)throw Error('overseas');
-  latestOverseas=d;
-  for(const [key,id] of [['NASDAQ','nasdaq'],['SOX','sox'],['TSM','tsmadr']]){
-    const q=d.quotes[key];
-    if(!q||!(q.last>0)||!(q.prevClose>0)){ $(id).textContent='資料不足'; continue; }
-    const ch=Number.isFinite(q.changePct)?q.changePct:(q.last-q.prevClose)/q.prevClose*100;
-    const session=q.session||'最新';
-    $(id).textContent=session+' '+pct(ch); $(id).className='v '+(ch>=0?'green':'red');
-  }
-  forecastFromSignals();
- }catch(e){
-  latestOverseas=null;
-  $('nasdaq').textContent='連線失敗';$('sox').textContent='連線失敗';$('tsmadr').textContent='連線失敗';
-  forecastFromSignals();
- }
-}
-
-async function updateLive(){clearTimeout(marketTimer);try{const r=await fetch('/api/market?x='+Date.now(),{cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||r.status);renderLive(d)}catch(e){$('status').textContent='行情失敗';$('status').className='pill bad';$('error').style.display='block';$('error').textContent='台股行情更新失敗：'+e.message+'。10秒後自動重試，舊資料不會冒充即時。'}marketTimer=setTimeout(updateLive,10000)}
-document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.page).classList.add('active')});
-$('refresh').onclick=()=>{updateLive();loadContext();loadOverseas();loadHistory();loadNightFuture()};
-setMode();setInterval(setMode,30000);loadHistory();loadContext();loadOverseas();loadNightFuture();slowTimer=setInterval(loadContext,60000);overseasTimer=setInterval(loadOverseas,60000);setInterval(loadNightFuture,10000);updateLive();
-if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
-</script></body></html>
+<script src="/app.js?v=R3.18"></script></body></html>

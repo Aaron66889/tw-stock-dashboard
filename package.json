@@ -1,12 +1,15 @@
 {
-  "name": "tw-stock-dashboard-v12-3-1-color-overseas",
-  "version": "12.3.1",
+  "name": "tw-stock-dashboard-v12-4-final",
+  "version": "12.4.0-r3.8",
   "private": true,
+  "description": "Taiwan stock dashboard V12.4 Final - dynamic ETF buy points, risk controls, constituents, history and full-history backtests",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
     "node": ">=18"
   },
-  "description": "Taiwan stock market dashboard PWA"
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  }
 }
