@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.6-YAHOO-META-LIVE';
+const BUILD='16.8.7-YAHOO-PAGE-DIRECT';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -90,6 +90,44 @@ async function twseDailyAll(){
   return{map,source:'TWSE STOCK_DAY_ALL盤後快照',fetchedAt:new Date().toISOString()};
  });
 }
+
+async function yahooTwPageOne(code){
+ const url='https://tw.stock.yahoo.com/quote/'+code+'.TW?_='+Date.now();
+ const html=await getText(url,{
+  'Cache-Control':'no-cache',
+  'Pragma':'no-cache',
+  'Referer':'https://tw.stock.yahoo.com/'
+ },1);
+
+ // Yahoo台股報價頁本身的現價欄位。
+ let m=html.match(/data-field=["']regularMarketPrice["'][^>]*>\s*([^<]+?)\s*</i);
+ if(!m)m=html.match(/["']regularMarketPrice["']\s*:\s*\{?[^}]{0,180}?["'](?:raw|value)["']\s*:\s*([0-9.]+)/i);
+ if(!m)m=html.match(/["']regularMarketPrice["']\s*:\s*([0-9.]+)/i);
+ if(!m)throw Error('Yahoo台股頁面找不到 regularMarketPrice '+code);
+
+ const last=n(String(m[1]).replace(/,/g,''));
+ if(!(last>0))throw Error('Yahoo台股頁面現價無效 '+code);
+
+ let tm=null;
+ const mt=html.match(/["']regularMarketTime["']\s*:\s*([0-9]{10,13})/i);
+ if(mt){
+  let epoch=Number(mt[1]);
+  if(epoch>1e12)epoch=Math.floor(epoch/1000);
+  if(epoch>1e9)tm=new Date(epoch*1000).toISOString();
+ }
+
+ return{
+  ticker:code,
+  name:META[code]?.name||code,
+  last,
+  prevClose:null,
+  open:null,high:null,low:null,volume:null,
+  time:tm||new Date().toISOString(),
+  date:new Date().toISOString().slice(0,10),
+  source:'Yahoo台股報價頁 '+code+'.TW',
+  realtime:true
+ };
+}
 async function yahooTwOne(code,isIndex=false){
  const symbol=isIndex?'^TWII':code+'.TW',
        url='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=1m&range=1d&includePrePost=false&_='+Date.now();
@@ -125,22 +163,30 @@ async function yahooTwOne(code,isIndex=false){
 
 async function liveEtf4(){
  const quotes={},errors=[];
- // User-selected source: Yahoo Taiwan quote symbols 0050.TW / 0056.TW / 00878.TW / 00919.TW.
- // Fetch each symbol independently so one failure cannot freeze the other three.
  const rs=await Promise.allSettled(
-  ETF.map(c=>deadline(yahooTwOne(c,false),5000,null))
+  ETF.map(c=>deadline(yahooTwPageOne(c),4500,null))
  );
  rs.forEach((r,i)=>{
   const c=ETF[i];
-  if(r.status==='fulfilled'&&r.value?.last>0){
-   quotes[c]={...r.value,source:'Yahoo台股 '+c+'.TW',realtime:true};
-  }else{
-   errors.push(c+': Yahoo '+c+'.TW 即時價取得失敗');
-  }
+  if(r.status==='fulfilled'&&r.value?.last>0)quotes[c]=r.value;
  });
+
+ const missing=ETF.filter(c=>!quotes[c]?.last);
+ if(missing.length){
+  const fb=await Promise.allSettled(
+   missing.map(c=>deadline(yahooTwOne(c,false),4500,null))
+  );
+  fb.forEach((r,i)=>{
+   const c=missing[i];
+   if(r.status==='fulfilled'&&r.value?.last>0){
+    quotes[c]={...r.value,source:'Yahoo Finance API備援 '+c+'.TW'};
+   }else errors.push(c+': Yahoo頁面/API都失敗');
+  });
+ }
+
  return{
   ok:ETF.every(c=>quotes[c]?.last>0),
-  source:'Yahoo Taiwan ETF direct',
+  source:'Yahoo Taiwan quote page direct',
   fetchedAt:new Date().toISOString(),
   quotes,
   missing:ETF.filter(c=>!quotes[c]?.last),

@@ -72,7 +72,7 @@ async function loadEtfLive(){
    if(selectedETF)renderDetailBuy();
   }
  }catch(_){}
- etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?2000:10000);
+ etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?3000:10000);
 }
 async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);lastLive=d;saveLastGood('market',d);renderMarket();renderHoldings();$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){lastLive=c.data;renderMarket();renderHoldings();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}addEvent('行情來源失敗：'+e.message,'bad')}marketTimer=setTimeout(loadMarket,10000)}
 async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=c.data;if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();slowTimer=setTimeout(loadSlow,60000)}
