@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.22-CONSTITUENT-ANUE-LIVE-ONLY';
+const BUILD='16.8.23-CONSTITUENT-LIVE-REFRESH';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -1138,7 +1138,7 @@ async function constituents(code,date=null){
  });
 }
 async function constituentHealth(code){
- return cached('health:r328:'+code,45000,async()=>{
+ return cached('health:r328:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;

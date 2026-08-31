@@ -288,7 +288,7 @@ function selectConstituent(c){
 async function loadConstituentPage(force=false){
  const c=constituentSelected,hit=constituentCache[c],req=++constituentRequestSeq;
  renderConstituentTabs();
- if(hit&&!force&&Date.now()-hit._loadedAt<45000){renderConstituents(hit);return}
+ if(hit&&!force&&Date.now()-hit._loadedAt<8000){renderConstituents(hit);return}
  $('c0050Status').innerHTML=`正在讀取 ${c} 官方完整持股與成分股行情…`;
  try{
   const d=await get('/api/constituent-dashboard?code='+encodeURIComponent(c),18000);
@@ -315,7 +315,7 @@ function renderConstituents(d){
  $('c0050Summary').innerHTML=`<div class="box"><span class="k">成分健康</span><b>${Number.isFinite(d.healthScore)?d.healthScore+'/100':'不計分'}</b></div><div class="box"><span class="k">上漲 / 下跌</span><b>${s.upCount||0} / ${s.downCount||0}</b><small>平盤 ${s.flatCount||0}</small></div><div class="box"><span class="k">偏多 / 偏弱權重</span><b>${fmt(s.upWeight)}% / ${fmt(s.downWeight)}%</b></div><div class="box"><span class="k">前十大權重</span><b>${fmt(s.top10Weight)}%</b></div>`;
  const eb=Number.isFinite(s.equalBreadth)?s.equalBreadth:null,wb=Number.isFinite(s.weightedBreadth)?s.weightedBreadth:null,wm=Number.isFinite(s.weightedMove)?s.weightedMove:null;
  $('c0050Breadth').innerHTML=`<b>等權廣度：</b>${eb==null?'—':pct(eb)}　<b>權重廣度：</b>${wb==null?'—':pct(wb)}　<b>權重加權漲跌：</b>${wm==null?'—':pct(wm)}　<b>前十大權重：</b>${fmt(s.top10Weight)}%<br><span class="note">健康度仍使用全部 ${items.length||expected} 檔計算；畫面只把前十大做成大型熱力卡片，其餘改用緊湊表格，避免小權重股把頁面拉得過長。</span>`;
- $('c0050Heat').innerHTML=top.length?top.map(x=>`<div class="ctile ${x.changePct>.3?'up':x.changePct<-.3?'down':'flat'}"><div><b>${x.code||'—'}</b> ${x.name||'—'}</div><strong>${Number.isFinite(x.changePct)?pct(x.changePct):'—'}</strong><small>權重 ${fmt(x.weight)}%</small></div>`).join(''):'<div class="notice">尚無可顯示的主要成分股。</div>';
+ $('c0050Heat').innerHTML=top.length?top.map(x=>`<div class="ctile ${x.changePct>.3?'up':x.changePct<-.3?'down':'flat'}"><div><b>${x.code||'—'}</b> ${x.name||'—'}</div><strong>${Number.isFinite(x.last)?fmt(x.last):'—'}</strong><small class="${cls(x.changePct)}">${Number.isFinite(x.changePct)?pct(x.changePct):'—'}｜權重 ${fmt(x.weight)}%</small></div>`).join(''):'<div class="notice">尚無可顯示的主要成分股。</div>';
  const compactRows=rest.map((x,i)=>`<tr><td>${i+11}</td><td>${x.code||'—'}</td><td>${x.name||'—'}</td><td>${fmt(x.weight)}%</td><td>${fmt(x.last)}</td><td class="${cls(x.changePct)}">${Number.isFinite(x.changePct)?pct(x.changePct):'—'}</td></tr>`).join('');
  $('c0050Table').innerHTML=rest.length?`<div class="compactHead"><div><b>其餘 ${rest.length} 檔成分股</b><span>小權重股改為緊湊清單；仍全部參與健康度與模型計算。</span></div></div><table class="table compactTable"><thead><tr><th>#</th><th>代號</th><th>名稱</th><th>權重</th><th>現價</th><th>今日</th></tr></thead><tbody>${compactRows}</tbody></table>`:(items.length?'<div class="notice">此ETF目前只有前十大可顯示，等待完整官方清單。</div>':'<div class="notice">官方完整成分尚未取得。</div>');
 }
@@ -403,4 +403,8 @@ function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys')
 function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy();loadValidation(false)}
 migrate1689Existing0050Trade();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy()}})
+setInterval(()=>{
+ const p=document.getElementById('constituentPage');
+ if(p?.classList.contains('on'))loadConstituentPage(true);
+},10000);
 setInterval(setMode,30000);boot();
