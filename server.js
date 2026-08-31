@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.4-ETF-LIVE-DIRECT';
+const BUILD='16.8.5-YAHOO-ETF-DIRECT';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -99,42 +99,26 @@ async function yahooTwOne(code,isIndex=false){
 }
 
 async function liveEtf4(){
- const quotes={},errors=[],misMeta={};
- try{
-  const ex=ETF.map(c=>'tse_'+c+'.tw').join('|'),d=await mis(ex),rows=d.msgArray||[];
-  for(const x of rows){
-   const z=parseMis(x);
-   if(!ETF.includes(z.ticker))continue;
-   misMeta[z.ticker]={time:z.time,date:z.date,rawLast:x.z,prevClose:z.prevClose};
-   if(z.hasTrade){
-    z.source='TWSE MIS ETF即時';
-    z.realtime=true;
-    quotes[z.ticker]=z;
-   }
+ const quotes={},errors=[];
+ // User-selected source: Yahoo Taiwan quote symbols 0050.TW / 0056.TW / 00878.TW / 00919.TW.
+ // Fetch each symbol independently so one failure cannot freeze the other three.
+ const rs=await Promise.allSettled(
+  ETF.map(c=>deadline(yahooTwOne(c,false),5000,null))
+ );
+ rs.forEach((r,i)=>{
+  const c=ETF[i];
+  if(r.status==='fulfilled'&&r.value?.last>0){
+   quotes[c]={...r.value,source:'Yahoo台股 '+c+'.TW',realtime:true};
+  }else{
+   errors.push(c+': Yahoo '+c+'.TW 即時價取得失敗');
   }
- }catch(e){errors.push('MIS:'+e.message)}
-
- // For every missing ETF, ask Yahoo. This is important during market hours when MIS may return z="-" and only y=昨收.
- const missing=ETF.filter(c=>!quotes[c]?.last);
- if(missing.length){
-  const rs=await Promise.allSettled(missing.map(c=>deadline(yahooTwOne(c,false),5000,null)));
-  rs.forEach((r,i)=>{
-   const c=missing[i];
-   if(r.status==='fulfilled'&&r.value?.last>0){
-    quotes[c]={...r.value,source:'Yahoo Finance ETF即時',realtime:true};
-   }else{
-    errors.push(c+':Yahoo current price unavailable');
-   }
-  });
- }
-
+ });
  return{
   ok:ETF.every(c=>quotes[c]?.last>0),
-  source:'ETF4 direct live',
+  source:'Yahoo Taiwan ETF direct',
   fetchedAt:new Date().toISOString(),
   quotes,
   missing:ETF.filter(c=>!quotes[c]?.last),
-  misMeta,
   errors
  };
 }
