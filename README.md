@@ -411,3 +411,9 @@ app.js 完全未改；模型、Score、Gate、買點、Yahoo價格、持股、�
 - /api/etf-live 盤中每3秒獨立重試；/api/market 502不會停止ETF live。
 - /api/market 失敗不再反覆寫入頁面事件列，狀態仍保留警示。
 - Yahoo來源、模型、Score、Gate、買點、燈號、持股、歷史、回測均不修改。
+
+## 16.8.12 即時價格修復
+- 四檔ETF輪詢改為 Yahoo Finance API 優先，Yahoo台灣完整報價頁僅作備援，降低Render/Yahoo長時間高頻HTML抓取造成的卡住風險。
+- /api/etf-live 外層期限由5.5秒調整為9秒，避免primary失敗後fallback尚未完成就被切斷。
+- 盤中5秒更新一次；價格真正變動時：上漲短暫紅色、下跌短暫綠色，約0.9秒恢復。
+- 模型、Score、Gate、買點、三層燈號、持股、歷史、回測均不修改。

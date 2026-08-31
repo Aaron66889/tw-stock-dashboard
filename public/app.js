@@ -51,6 +51,21 @@ function ztxt(z){return z&&Number.isFinite(z.low)&&Number.isFinite(z.high)?`${z.
 function center(z){return z?(z.low+z.high)/2:null}
 function moveZone(cur,target,maxDown,maxUp,allowDown=true){if(!cur)return JSON.parse(JSON.stringify(target));const c=center(cur),t=center(target),half=(cur.high-cur.low)/2;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
 function layerView(L,px){if(!L)return'WAIT';if(L.invalid)return'INVALID';if(L.confirmed){if(px>L.zone.high)return'CONFIRMED_ABOVE';if(px<L.zone.low)return'CONFIRMED_BELOW';return'CONFIRMED_IN'}if(L.fastPass)return'FAST_PASS';if(L.forming)return'FORMING';return'WAIT'}
+function flashLivePrices(){
+ for(const c of ETF){
+  const dir=ETF_PRICE_FLASH[c];if(!dir)continue;
+  const q=lastLive?.quotes?.[c];if(!q?.last)continue;
+  document.querySelectorAll('.buybox').forEach(box=>{
+   const k=box.querySelector('.k'),b=box.querySelector('b');
+   if(k&&b&&k.textContent.trim()==='現價'&&Math.abs(Number(b.textContent.replace(/,/g,''))-Number(q.last))<.001){
+    b.classList.remove('price-flash-up','price-flash-down');void b.offsetWidth;
+    b.classList.add(dir==='up'?'price-flash-up':'price-flash-down');
+    setTimeout(()=>b.classList.remove('price-flash-up','price-flash-down'),950);
+   }
+  });
+  delete ETF_PRICE_FLASH[c];
+ }
+}
 function layerTouchState(L,px){
  if(!L?.zone||!Number.isFinite(px))return'IDLE';
  if(L.confirmed)return'CONFIRMED';
@@ -69,6 +84,7 @@ function twMarketOpenClient(){
  const d=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'})),wd=d.getDay(),m=d.getHours()*60+d.getMinutes();
  return wd>=1&&wd<=5&&m>=540&&m<=810;
 }
+const ETF_PRICE_FLASH={};
 async function loadEtfLive(){
  clearTimeout(etfLiveTimer);
  try{
@@ -80,9 +96,9 @@ async function loadEtfLive(){
    for(const c of ETF){
     const q=d.quotes[c];
     if(q?.last>0){
-     const old=Number(lastLive.quotes[c]?.last);
+     const old=Number(lastLive.quotes[c]?.last),next=Number(q.last);
      lastLive.quotes[c]=q;
-     if(old!==Number(q.last))changed=true;
+     if(old>0&&next!==old){ETF_PRICE_FLASH[c]=next>old?'up':'down';changed=true;}
     }
    }
    // Yahoo ETF price is the single source of truth for both display and Layer 1/2/3 trigger state.
@@ -95,9 +111,10 @@ async function loadEtfLive(){
    renderHomeRanking();
    renderBuyCards();
    if(selectedETF)renderDetailBuy();
+   flashLivePrices();
   }
  }catch(e){console.warn('[ETF-LIVE]',e?.message||e)}
- etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?3000:10000);
+ etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?5000:10000);
 }
 async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);
  const yahooETF={};for(const c of ETF)if(lastLive?.quotes?.[c]?.last>0)yahooETF[c]=lastLive.quotes[c];

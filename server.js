@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.11-ETF-LIVE-RESILIENCE';
+const BUILD='16.8.12-LIVE-PRICE-FIX';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -163,30 +163,31 @@ async function yahooTwOne(code,isIndex=false){
 
 async function liveEtf4(){
  const quotes={},errors=[];
+ // Repeated polling uses Yahoo Finance API first. HTML quote-page scraping is only fallback;
+ // repeatedly scraping four full pages every 3s is heavier and can be throttled upstream.
  const rs=await Promise.allSettled(
-  ETF.map(c=>deadline(yahooTwPageOne(c),4500,null))
+  ETF.map(c=>deadline(yahooTwOne(c,false),4200,null))
  );
  rs.forEach((r,i)=>{
   const c=ETF[i];
-  if(r.status==='fulfilled'&&r.value?.last>0)quotes[c]=r.value;
+  if(r.status==='fulfilled'&&r.value?.last>0)
+   quotes[c]={...r.value,source:'Yahoo Finance API '+c+'.TW',realtime:true};
  });
 
  const missing=ETF.filter(c=>!quotes[c]?.last);
  if(missing.length){
   const fb=await Promise.allSettled(
-   missing.map(c=>deadline(yahooTwOne(c,false),4500,null))
+   missing.map(c=>deadline(yahooTwPageOne(c),4200,null))
   );
   fb.forEach((r,i)=>{
    const c=missing[i];
-   if(r.status==='fulfilled'&&r.value?.last>0){
-    quotes[c]={...r.value,source:'Yahoo Finance API備援 '+c+'.TW'};
-   }else errors.push(c+': Yahoo頁面/API都失敗');
+   if(r.status==='fulfilled'&&r.value?.last>0)quotes[c]=r.value;
+   else errors.push(c+': Yahoo API/頁面都失敗');
   });
  }
-
  return{
   ok:ETF.every(c=>quotes[c]?.last>0),
-  source:'Yahoo Taiwan quote page direct',
+  source:'Yahoo Finance API + Taiwan page fallback',
   fetchedAt:new Date().toISOString(),
   quotes,
   missing:ETF.filter(c=>!quotes[c]?.last),
@@ -1200,7 +1201,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/diagnostics')return send(res,200,{ok:true,version:VERSION,build:BUILD,marketSource:RUNTIME.live?.source||null,marketRealtime:RUNTIME.live?.realtime??null,lastRefresh:RUNTIME.lastRefresh,errors:RUNTIME.errors||[],historyQueue:ETF.map(historyProgress),historyAllPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),yahoo0050:{enabled:true,mode:'v8 chart period1/period2 adjusted OHLC'},goodinfo0050:{enabled:true,mode:'POST long-history',cachedRows:GOODINFO_0050_CACHE.rows.length,period:GOODINFO_0050_CACHE.period,error:GOODINFO_0050_CACHE.error,sourceUrl:GOODINFO_0050_CACHE.url||'https://goodinfo.tw/tw/ShowK_Chart.asp?STOCK_ID=0050&CHT_CAT2=DATE&STEP=DATA&PERIOD=6000&PRICE_ADJ=T'},now:new Date().toISOString()});
  if(u.pathname==='/api/etf-live'){
   try{
-   const d=await deadline(liveEtf4(),5500,null),body=JSON.stringify(d||{ok:false,status:'TIMEOUT',source:'etf-live',quotes:{},error:'四檔ETF即時行情逾時',fetchedAt:new Date().toISOString()});
+   const d=await deadline(liveEtf4(),9000,null),body=JSON.stringify(d||{ok:false,status:'TIMEOUT',source:'etf-live',quotes:{},error:'四檔ETF即時行情逾時',fetchedAt:new Date().toISOString()});
    res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store, no-cache, must-revalidate, proxy-revalidate','Pragma':'no-cache','Expires':'0'});
    return res.end(body);
   }catch(e){
