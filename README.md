@@ -355,3 +355,11 @@ TWSE 每月資料改為 JSON → CSV 雙路徑。JSON 暫時被擋或回非 JSON
 - /api/etf-live 明確回傳 Cache-Control: no-store/no-cache。
 - 台股盤中每3秒刷新；非盤中每10秒。
 - 僅修改四檔ETF即時價傳輸/刷新，不修改模型、歷史、回測、成分股與買點演算法。
+
+## 16.8.4 — ETF現價直接行情修正
+- 修正核心問題：TWSE MIS 在盤中若 `z` 為 `-` / 空值，舊 parser 會自動退回 `y`（昨收），因此畫面看似有價格但永遠不跳。
+- 現在 parseMis 不再拿昨收冒充現價。
+- 盤中 MIS 沒有有效 `z` 時，該ETF立即改用 Yahoo Finance current price。
+- 四檔ETF盤中每2秒刷新。
+- 現價欄下方顯示行情時間，方便直接驗證是否真的在更新。
+- 不修改模型、歷史、回測、成分股或買點演算法。

@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.3-ETF-LIVE-NOCACHE';
+const BUILD='16.8.4-ETF-LIVE-DIRECT';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -54,7 +54,21 @@ function parseISODate(s){const m=String(s||'').match(/(20\d{2})[\/.-](\d{1,2})[\
 function dateMinus(days){const d=new Date(Date.now()-days*86400000);return ymdTaipei(d)}
 
 async function mis(exch){return getJSONQuick('https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='+encodeURIComponent(exch)+'&json=1&delay=0&_='+Date.now(),{'Referer':'https://mis.twse.com.tw/'},3500)}
-function parseMis(x){return{ticker:String(x.c||'').trim(),name:x.n||'',channel:x.ch||'',last:n(x.z)??n(x.y),prevClose:n(x.y),open:n(x.o),high:n(x.h),low:n(x.l),volume:n(x.v),time:x.t||null,date:x.d||null}}
+function parseMis(x){
+ const z=n(x.z),y=n(x.y),open=n(x.o),high=n(x.h),low=n(x.l);
+ return{
+  ticker:String(x.c||'').trim(),
+  name:x.n||'',
+  channel:x.ch||'',
+  last:z,
+  prevClose:y,
+  open,high,low,
+  volume:n(x.v),
+  time:x.t||null,
+  date:x.d||null,
+  hasTrade:Number.isFinite(z)&&z>0
+ };
+}
 async function quoteCodes(codes){
  const uniq=[...new Set(codes.filter(x=>/^\d{4,6}$/.test(String(x))))],out={};
  try{
@@ -85,35 +99,42 @@ async function yahooTwOne(code,isIndex=false){
 }
 
 async function liveEtf4(){
- const quotes={},errors=[];
- // One lightweight MIS request for only the four ETFs; no index, no holdings, no context.
+ const quotes={},errors=[],misMeta={};
  try{
-  const ex=ETF.map(c=>'tse_'+c+'.tw').join('|'),rows=(await mis(ex)).msgArray||[];
+  const ex=ETF.map(c=>'tse_'+c+'.tw').join('|'),d=await mis(ex),rows=d.msgArray||[];
   for(const x of rows){
    const z=parseMis(x);
-   if(ETF.includes(z.ticker)&&z.last>0){
+   if(!ETF.includes(z.ticker))continue;
+   misMeta[z.ticker]={time:z.time,date:z.date,rawLast:x.z,prevClose:z.prevClose};
+   if(z.hasTrade){
     z.source='TWSE MIS ETF即時';
     z.realtime=true;
     quotes[z.ticker]=z;
    }
   }
  }catch(e){errors.push('MIS:'+e.message)}
- // Per-symbol Yahoo fallback only for missing ETFs. This does not block the main /api/market path.
+
+ // For every missing ETF, ask Yahoo. This is important during market hours when MIS may return z="-" and only y=昨收.
  const missing=ETF.filter(c=>!quotes[c]?.last);
  if(missing.length){
-  const rs=await Promise.allSettled(missing.map(c=>deadline(yahooTwOne(c,false),4200,null)));
+  const rs=await Promise.allSettled(missing.map(c=>deadline(yahooTwOne(c,false),5000,null)));
   rs.forEach((r,i)=>{
+   const c=missing[i];
    if(r.status==='fulfilled'&&r.value?.last>0){
-    quotes[missing[i]]={...r.value,source:'Yahoo ETF即時備援',realtime:true};
-   }else errors.push(missing[i]+':Yahoo fallback failed');
+    quotes[c]={...r.value,source:'Yahoo Finance ETF即時',realtime:true};
+   }else{
+    errors.push(c+':Yahoo current price unavailable');
+   }
   });
  }
+
  return{
   ok:ETF.every(c=>quotes[c]?.last>0),
-  source:'ETF4 lightweight live',
+  source:'ETF4 direct live',
   fetchedAt:new Date().toISOString(),
   quotes,
   missing:ETF.filter(c=>!quotes[c]?.last),
+  misMeta,
   errors
  };
 }
