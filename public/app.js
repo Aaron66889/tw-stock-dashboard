@@ -391,11 +391,37 @@ function closeTrackedTrade(id){
  t.exitAt=new Date().toISOString();t.exitPrice=p;t.realizedReturnPct=(p/t.entryPrice-1)*100;t.realizedPnL=(p-t.entryPrice)*t.shares;saveJSON('v124_model_trades',MODEL_TRADES);renderModelTrades()
 }
 function deleteTrackedTrade(id){if(!confirm('刪除這筆模型實戰紀錄？'))return;MODEL_TRADES=MODEL_TRADES.filter(x=>x.id!==id);saveJSON('v124_model_trades',MODEL_TRADES);renderModelTrades()}
+function fubonEstimatedTradeCost(entryPrice,shares,currentPrice){
+ const buyValue=Number(entryPrice)*Number(shares),sellValue=Number(currentPrice)*Number(shares);
+ if(!(buyValue>0)||!(sellValue>0))return null;
+ // 富邦零股/電子交易實際帳務校正：小額手續費至少以1元估；ETF賣出證交稅0.1%。
+ const buyFee=Math.max(1,Math.round(buyValue*0.001425));
+ const sellFee=Math.max(1,Math.round(sellValue*0.001425));
+ const etfTax=Math.round(sellValue*0.001);
+ return buyFee+sellFee+etfTax;
+}
+function modelNetMetrics(t){
+ const p=t?.perf,px=Number(p?.currentPrice),entry=Number(t?.entryPrice),shares=Number(t?.shares);
+ if(t?.exitAt){
+  const gross=Number(t.realizedPnL);
+  const exit=Number(t.exitPrice);
+  const cost=fubonEstimatedTradeCost(entry,shares,exit);
+  const net=Number.isFinite(gross)&&Number.isFinite(cost)?gross-cost:null;
+  const base=entry*shares;
+  return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null};
+ }
+ const gross=Number.isFinite(p?.currentPnLPerShare)?p.currentPnLPerShare*shares:null;
+ const cost=fubonEstimatedTradeCost(entry,shares,px);
+ const net=Number.isFinite(gross)&&Number.isFinite(cost)?gross-cost:null;
+ const base=entry*shares;
+ return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null};
+}
 function renderModelTrades(){
- const open=MODEL_TRADES.filter(t=>!t.exitAt),closed=MODEL_TRADES.filter(t=>t.exitAt),rets=MODEL_TRADES.map(t=>t.exitAt?t.realizedReturnPct:t.perf?.currentReturnPct).filter(Number.isFinite),wins=rets.filter(x=>x>0).length;
- const pnl=MODEL_TRADES.reduce((sum,t)=>sum+(t.exitAt?(t.realizedPnL||0):(Number.isFinite(t.perf?.currentPnLPerShare)?t.perf.currentPnLPerShare*t.shares:0)),0);
- $('liveTradeSummary').innerHTML=`<div class="box"><span class="k">模型實戰</span><b>${MODEL_TRADES.length}筆</b></div><div class="box"><span class="k">追蹤中</span><b>${open.length}筆</b></div><div class="box"><span class="k">目前/已結束獲利</span><b>${wins}/${rets.length}</b></div><div class="box"><span class="k">合計損益</span><b class="${cls(pnl)}">${Math.round(pnl).toLocaleString()}</b></div><div class="box"><span class="k">平均報酬</span><b class="${cls(mean(rets))}">${rets.length?pct(mean(rets)):'—'}</b></div>`;
- $('modelTradeList').innerHTML=MODEL_TRADES.length?MODEL_TRADES.slice().reverse().map(t=>{const p=t.perf,ret=t.exitAt?t.realizedReturnPct:p?.currentReturnPct,pnl=t.exitAt?t.realizedPnL:(Number.isFinite(p?.currentPnLPerShare)?p.currentPnLPerShare*t.shares:null),h=p?.horizon||{};return`<div class="card"><div class="row"><div><b>${t.code}｜模型第${t.layer}層</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b></div><div class="box"><span class="k">5日</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">MAE / MFE</span><b>${Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—'} / ${Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'}</b></div></div><div class="reading">進場快照：分數 ${t.snapshot.score}｜防追高 ${t.snapshot.chaseRisk}｜環境 ${fmt(t.snapshot.environmentScore)}｜歷史 ${p?.officialHistory?'TWSE官方':'備援/建立中'}。${p?`<br>第2層曾到：${p.reachedLayer2?'是':'否'}｜第3層曾到：${p.reachedLayer3?'是':'否'}｜進場追高：${p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—'}`:''}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`}).join(''):'<div class="notice">尚無模型實戰紀錄。請在ETF買點旁按「記錄模型買入」。</div>'
+ const open=MODEL_TRADES.filter(t=>!t.exitAt),closed=MODEL_TRADES.filter(t=>t.exitAt);
+ const metrics=MODEL_TRADES.map(modelNetMetrics),rets=metrics.map(x=>x.ret).filter(Number.isFinite),wins=rets.filter(x=>x>0).length;
+ const pnl=metrics.reduce((sum,x)=>sum+(Number.isFinite(x.net)?x.net:0),0);
+ $('liveTradeSummary').innerHTML=`<div class="box"><span class="k">模型實戰</span><b>${MODEL_TRADES.length}筆</b></div><div class="box"><span class="k">追蹤中</span><b>${open.length}筆</b></div><div class="box"><span class="k">目前/已結束獲利</span><b>${wins}/${rets.length}</b></div><div class="box"><span class="k">合計淨損益</span><b class="${cls(pnl)}">${Math.round(pnl).toLocaleString()}</b></div><div class="box"><span class="k">平均淨報酬</span><b class="${cls(mean(rets))}">${rets.length?pct(mean(rets)):'—'}</b></div>`;
+ $('modelTradeList').innerHTML=MODEL_TRADES.length?MODEL_TRADES.slice().reverse().map(t=>{const p=t.perf,m=modelNetMetrics(t),ret=m.ret,pnl=m.net,h=p?.horizon||{};return`<div class="card"><div class="row"><div><b>${t.code}｜模型第${t.layer}層</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束淨損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b><small>${Number.isFinite(m.gross)&&Number.isFinite(m.cost)?`毛損益 ${Math.round(m.gross).toLocaleString()}｜估計成本 ${Math.round(m.cost)}元`:''}</small></div><div class="box"><span class="k">5日</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">MAE / MFE</span><b>${Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—'} / ${Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'}</b></div></div><div class="reading">進場快照：分數 ${t.snapshot.score}｜防追高 ${t.snapshot.chaseRisk}｜環境 ${fmt(t.snapshot.environmentScore)}｜歷史 ${p?.officialHistory?'TWSE官方':'備援/建立中'}。${p?`<br>第2層曾到：${p.reachedLayer2?'是':'否'}｜第3層曾到：${p.reachedLayer3?'是':'否'}｜進場追高：${p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—'}`:''}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`}).join(''):'<div class="notice">尚無模型實戰紀錄。請在ETF買點旁按「記錄模型買入」。</div>'
 }
 async function loadHistoryStatus(){
  try{
