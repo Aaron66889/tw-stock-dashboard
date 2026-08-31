@@ -443,3 +443,9 @@ app.js 完全未改；模型、Score、Gate、買點、Yahoo價格、持股、�
 - 批次抓四檔，若有單檔缺值再單獨補抓。
 - 保留「抓取 HH:mm:ss｜#次數」心跳，方便確認前端是否持續收到資料。
 - 模型、Score、Gate、買點、燈號、持股、歷史、回測未修改。
+
+## 16.8.17 TWSE MIS 單檔直抓
+- 四檔ETF不再用一個批次 ex_ch；改成四個獨立 TWSE MIS 請求，避免批次回應卡舊值。
+- 每次請求加入唯一 nonce、no-cache/no-store、Pragma、Expires、If-Modified-Since。
+- 保留前端抓取心跳，並另外顯示「證交所時間」，用來判斷是網站在抓舊值，還是TWSE回應本身沒前進。
+- 模型、Score、Gate、買點、燈號、持股、歷史、回測未修改。

@@ -8,7 +8,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.16-TWSE-MIS-LIVE';
+const BUILD='16.8.17-TWSE-DIRECT-PER-CODE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -75,7 +75,21 @@ function parseROCDate(s){const m=String(s||'').match(/(\d{3})[\/.-](\d{1,2})[\/.
 function parseISODate(s){const m=String(s||'').match(/(20\d{2})[\/.-](\d{1,2})[\/.-](\d{1,2})/);return m?`${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`:null}
 function dateMinus(days){const d=new Date(Date.now()-days*86400000);return ymdTaipei(d)}
 
-async function mis(exch){return getJSONQuick('https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='+encodeURIComponent(exch)+'&json=1&delay=0&_='+Date.now(),{'Referer':'https://mis.twse.com.tw/'},3500)}
+async function mis(exch){
+ const nonce=Date.now()+'_'+Math.random().toString(36).slice(2);
+ return getJSONQuick(
+  'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='+encodeURIComponent(exch)+'&json=1&delay=0&_='+nonce,
+  {
+   'Referer':'https://mis.twse.com.tw/stock/index.jsp',
+   'Cache-Control':'no-cache, no-store, max-age=0',
+   'Pragma':'no-cache',
+   'Expires':'0',
+   'If-Modified-Since':'Thu, 01 Jan 1970 00:00:00 GMT',
+   'Accept-Encoding':'identity'
+  },
+  3500
+ )
+}
 function parseMis(x){
  const z=n(x.z),y=n(x.y),open=n(x.o),high=n(x.h),low=n(x.l);
  return{
@@ -185,47 +199,28 @@ async function yahooTwOne(code,isIndex=false){
 
 async function liveEtf4(){
  const quotes={},errors=[];
- try{
-  // 四檔ETF與大盤/一般台股行情使用同一條 TWSE MIS 即時來源。
-  const ex=ETF.map(c=>'tse_'+c+'.tw').join('|');
-  const rows=(await mis(ex)).msgArray||[];
-  for(const x of rows){
+ const rs=await Promise.allSettled(
+  ETF.map(async c=>{
+   const d=await mis('tse_'+c+'.tw');
+   const rows=d?.msgArray||[];
+   const x=rows.find(v=>String(v.c||'').trim()===c);
+   if(!x)throw Error('TWSE MIS missing '+c);
    const q=parseMis(x);
-   if(ETF.includes(q.ticker)&&q.last>0){
-    q.source='TWSE MIS';
-    q.realtime=true;
-    quotes[q.ticker]=q;
-   }
-  }
- }catch(e){
-  errors.push('TWSE MIS: '+(e.message||String(e)));
- }
-
- // 單檔補抓一次，避免批次回應偶發缺碼。
- const missing=ETF.filter(c=>!quotes[c]?.last);
- if(missing.length){
-  const rs=await Promise.allSettled(
-   missing.map(async c=>{
-    const rows=(await mis('tse_'+c+'.tw')).msgArray||[];
-    const x=rows.find(v=>String(v.c||'').trim()===c);
-    if(!x)throw Error('missing '+c);
-    const q=parseMis(x);
-    if(!(q.last>0))throw Error('no trade '+c);
-    q.source='TWSE MIS';
-    q.realtime=true;
-    return q;
-   })
-  );
-  rs.forEach((r,i)=>{
-   const c=missing[i];
-   if(r.status==='fulfilled'&&r.value?.last>0)quotes[c]=r.value;
-   else errors.push(c+': TWSE MIS失敗');
-  });
- }
-
+   if(!(q.last>0))throw Error('TWSE MIS no last '+c);
+   q.source='TWSE MIS direct '+c;
+   q.realtime=true;
+   q.serverFetchedAt=new Date().toISOString();
+   return q;
+  })
+ );
+ rs.forEach((r,i)=>{
+  const c=ETF[i];
+  if(r.status==='fulfilled'&&r.value?.last>0)quotes[c]=r.value;
+  else errors.push(c+': '+(r.reason?.message||'TWSE MIS失敗'));
+ });
  return{
   ok:ETF.every(c=>quotes[c]?.last>0),
-  source:'TWSE MIS',
+  source:'TWSE MIS direct per-code',
   fetchedAt:new Date().toISOString(),
   quotes,
   missing:ETF.filter(c=>!quotes[c]?.last),
