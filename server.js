@@ -2,14 +2,20 @@
 const http=require('http');
 const fs=require('fs');
 const path=require('path');
+const crypto=require('crypto');
 const {URL}=require('url');
 let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.28-MODEL-NET-PNL-ONLY';
+const BUILD='16.8.39-NIGHT-ANUE-PAGE-ONLY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
+const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
+const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
+const MODEL_SYNC_KEY=String(process.env.MODEL_SYNC_KEY||'').trim();
+const MODEL_SYNC_META_ID='__MODEL_SYNC_META__';
+const HOLDINGS_SYNC_ID='__HOLDINGS_STATE__';
 const ETF=['0050','0056','00878','00919'];
 const META={
  '0050':{name:'元大台灣50',listed:'2003-06-30',expected:50,fundId:'1066',source:'Yuanta',url:'https://www.yuantaetfs.com/product/detail/0050/ratio',
@@ -355,20 +361,98 @@ async function anueQuoteSymbol(symbol,name=''){
 }
 async function anueMarket(){
  const q=await anueQuoteSymbol('TWS:TSE01:INDEX','加權指數');
- return{...q,ticker:'t00',name:'加權指數',source:'Anue 鉅亨 TSE01'};
+ // 16.8.31：只恢復舊版已成功的 TAIEX OHLC 來源。
+ // 現價/昨收/漲跌仍由 Anue TSE01 擁有；開高低優先用舊版 TWSE MIS，
+ // MIS 無法取得時再用舊版 Yahoo ^TWII。兩者都失敗才保留 Anue 原值。
+ let ohlc=null;
+ try{
+  const rows=(await mis('tse_t00.tw')).msgArray||[];
+  const x=rows.find(x=>(x.ch||'').includes('t00.tw')||String(x.c||'').trim()==='t00');
+  if(x){
+   const z=parseMis(x);
+   if(z.open>0&&z.high>0&&z.low>0)ohlc=z;
+  }
+ }catch(_){}
+ if(!ohlc){
+  try{
+   const z=await yahooTwOne('t00',true);
+   if(z.open>0&&z.high>0&&z.low>0)ohlc=z;
+  }catch(_){}
+ }
+ return{
+  ...q,
+  ticker:'t00',
+  name:'加權指數',
+  open:ohlc?.open>0?ohlc.open:q.open,
+  high:ohlc?.high>0?ohlc.high:q.high,
+  low:ohlc?.low>0?ohlc.low:q.low,
+  ohlcSource:ohlc?.source||'Anue 鉅亨',
+  source:'Anue 鉅亨 TSE01'
+ };
 }
 async function anueTxf(){
- // 鉅亨公開頁路徑已確認為 /futures/TWF/TXF；先走其 quote service。
- const candidates=['TWF:TXF:FUTURE','TWF:TXF:FUTURES','TWF:TXF'];
+ // 16.8.39：只修 #2/#3 夜盤來源。
+ // 不再猜 TXF quote symbol；先直接讀鉅亨官方 TXF 商品頁，頁面本身明確提供
+ // 現價、漲跌、漲跌幅與 1 日高低。參考價固定用「現價 - 漲跌點數」反推，
+ // 確保 #2 正負號與 #3 參考價/高點使用同一份鉅亨資料。
+ const url='https://invest.cnyes.com/futures/TWF/TXF';
  const errors=[];
+ try{
+  const plain=stripTags(await getText(url,{
+   'Referer':'https://invest.cnyes.com/',
+   'Cache-Control':'no-cache, no-store, max-age=0',
+   'Pragma':'no-cache'
+  },1));
+  // 鉅亨頁面格式：
+  // 台指期 市場盤中 MM/DD HH:mm (UTC+8) <last> <change> <changePct>% ... 1日高低 <low> - <high>
+  const px=plain.match(/台指期\s+市場(?:盤中|收盤|休市)[\s\S]{0,180}?([0-9,]+(?:\.\d+)?)\s+([+-][0-9,]+(?:\.\d+)?)\s+([+-][0-9.]+)%/);
+  const rg=plain.match(/1日高低\s+([0-9,]+(?:\.\d+)?)\s*-\s*([0-9,]+(?:\.\d+)?)/);
+  const vm=plain.match(/成交量\s*([0-9,]+)\s*口/);
+  if(!px)throw Error('Anue TXF page price fields not found');
+  if(!rg)throw Error('Anue TXF page day-range fields not found');
+  const last=n(px[1]),reportedChange=n(px[2]),reportedPct=n(px[3]),low=n(rg[1]),high=n(rg[2]),volume=vm?n(vm[1]):null;
+  if(!(last>0)||!Number.isFinite(reportedChange))throw Error('Anue TXF page invalid last/change');
+  if(!(low>0&&high>0&&high>=low))throw Error('Anue TXF page invalid day range');
+  const reference=last-reportedChange;
+  if(!(reference>0))throw Error('Anue TXF page invalid reference');
+  // 不直接相信頁面百分比，固定依同一 reference 自行重算，避免正負號/四捨五入混用。
+  const change=last-reference,changePct=change/reference*100;
+  addNightSample(last);
+  return{
+   ok:true,available:true,
+   source:'Anue 鉅亨 TXF 官網（正負號自行重算）',
+   sourceUrl:url,fetchedAt:new Date().toISOString(),
+   last,reference,prevClose:reference,open:null,high,low,volume,
+   openInterest:null,bid:null,ask:null,
+   change,changePct,
+   reportedChange,reportedPct,
+   offHighPoints:last-high,
+   offHighPct:(last-high)/high*100,
+   momentum:nightMomentum(last,high,low),
+   quoteSymbol:'TWF/TXF-page',
+   highDefinition:'鉅亨 1日高點'
+  };
+ }catch(e){errors.push('page:'+e.message)}
+ // 官網頁若暫時改版，再保留原本 quote API 嘗試；兩者都失敗才由 nightFuture() 落到既有 Yahoo 備援。
+ const candidates=['TWF:TXF:FUTURE','TWF:TXF:FUTURES','TWF:TXF'];
  for(const sym of candidates){
   try{
    const q=await anueQuoteSymbol(sym,'台指期');
+   const reference=q.prevClose;
+   if(!(q.last>0&&reference>0&&q.high>0&&q.low>0))throw Error('Anue TXF quote fields incomplete');
+   const change=q.last-reference,changePct=change/reference*100;
    addNightSample(q.last);
-   return{ok:true,available:true,source:'Anue 鉅亨 TXF',sourceUrl:'https://invest.cnyes.com/futures/TWF/TXF',fetchedAt:new Date().toISOString(),last:q.last,reference:q.prevClose,prevClose:q.prevClose,open:q.open,high:q.high,low:q.low,volume:q.volume,openInterest:null,bid:null,ask:null,change:q.change,changePct:q.changePct,offHighPoints:q.high>0?q.last-q.high:null,offHighPct:q.high>0?(q.last-q.high)/q.high*100:null,momentum:nightMomentum(q.last,q.high,q.low),quoteSymbol:sym};
+   return{
+    ok:true,available:true,source:'Anue 鉅亨 TXF API（正負號自行重算）',
+    sourceUrl:url,fetchedAt:new Date().toISOString(),
+    last:q.last,reference,prevClose:reference,open:q.open,high:q.high,low:q.low,volume:q.volume,
+    openInterest:null,bid:null,ask:null,change,changePct,
+    offHighPoints:q.last-q.high,offHighPct:(q.last-q.high)/q.high*100,
+    momentum:nightMomentum(q.last,q.high,q.low),quoteSymbol:sym,
+    highDefinition:'鉅亨 1日高點'
+   };
   }catch(e){errors.push(sym+':'+e.message)}
  }
- // Do not fabricate TXF data: caller will use the existing Yahoo fallback.
  throw Error(errors.join('｜'));
 }
 async function liveAnueMarket(extra=[]){
@@ -465,9 +549,32 @@ async function yahooQuote(symbol){
  return{symbol,last,prevClose:prev,changePct:(last-prev)/prev*100,session,sessionWeight:weight,asOf:lastTs?new Date(lastTs*1000).toISOString():null};
 }
 async function overseas(){
- const map={NASDAQ:'^IXIC',SOX:'^SOX',TSM:'TSM'},quotes={},errors=[];
- await Promise.all(Object.entries(map).map(async([k,s])=>{try{quotes[k]=await yahooQuote(s)}catch(e){errors.push(k+':'+e.message)}}));
- return{ok:Object.keys(quotes).length>0,source:'Yahoo Finance chart',fetchedAt:new Date().toISOString(),quotes,errors};
+ const usSession=()=>{
+  const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false,hourCycle:'h23'}).formatToParts(new Date()).map(x=>[x.type,x.value]));
+  const m=Number(p.hour)*60+Number(p.minute),weekday=['Mon','Tue','Wed','Thu','Fri'].includes(p.weekday);
+  return weekday&&m>=570&&m<960?'盤中':'前一交易日';
+ };
+ const session=usSession(),weight=session==='盤中'?1:.65;
+ const map={
+  NASDAQ:{anue:'GI:IXIC:INDEX',yahoo:'^IXIC',name:'NASDAQ'},
+  SOX:{anue:'GI:SOX:INDEX',yahoo:'^SOX',name:'費城半導體'},
+  TSM:{anue:'USS:TSM:STOCK',yahoo:'TSM',name:'台積電ADR'}
+ },quotes={},errors=[],used=[];
+ await Promise.all(Object.entries(map).map(async([k,m])=>{
+  try{
+   const q=await anueQuoteSymbol(m.anue,m.name);
+   quotes[k]={...q,symbol:m.anue,session,sessionWeight:weight,asOf:q.fetchedAt||new Date().toISOString(),source:'Anue 鉅亨（國際行情延遲約15分鐘）'};
+   used.push(k+':Anue');
+  }catch(e1){
+   try{
+    quotes[k]=await yahooQuote(m.yahoo);
+    quotes[k].source='Yahoo Finance fallback';
+    used.push(k+':Yahoo');
+    errors.push(k+' Anue fallback: '+e1.message);
+   }catch(e2){errors.push(k+': Anue '+e1.message+'｜Yahoo '+e2.message)}
+  }
+ }));
+ return{ok:Object.keys(quotes).length>0,source:'Anue 鉅亨國際行情（Yahoo Finance 備援）',fetchedAt:new Date().toISOString(),quotes,errors,used};
 }
 
 function fieldNum(text,label){const esc=label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),m=text.match(new RegExp(esc+'\\s*([\\-+]?\\d[\\d,]*(?:\\.\\d+)?)'));return m?n(m[1]):null}
@@ -1358,11 +1465,25 @@ function autoWarmAllHistory(){
 
 async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3Low=null,layer1High=null){
  if(!ETF.includes(code)||!(Number(entryPrice)>0)||!/^\d{4}-\d{2}-\d{2}$/.test(entryDate||''))return{ok:false,error:'invalid trade parameters'};
- const ep=Number(entryPrice),livePx=RUNTIME.live?.quotes?.[code]?.last??null;
+ const ep=Number(entryPrice);
+ // 16.8.38：模型實戰的「目前價」必須直接讀四檔ETF即時來源。
+ // RUNTIME.live 是大盤/台積電環境，不是 ETF quote owner，不能拿它算 0050/0056/00878/00919 損益。
+ let livePx=null,liveSource=null;
+ try{
+  const d=await deadline(liveEtf4(),6500,null);
+  const q=d?.quotes?.[code];
+  if(Number(q?.last)>0){livePx=Number(q.last);liveSource=q.source||d?.source||'ETF live'}
+ }catch(_){}
  let h;try{h=await etfHistory(code)}catch(e){h={rows:[],source:'history unavailable',validation:{fullHistoryPass:false},error:e.message}}
  const rows=adjustedRows(h.rows||[]).filter(x=>x.date>=entryDate);
- const current=Number.isFinite(livePx)?livePx:(rows.at(-1)?.close??null);
- const immediate={currentPrice:current,currentReturnPct:Number.isFinite(current)?(current/ep-1)*100:null,currentPnLPerShare:Number.isFinite(current)?current-ep:null};
+ const histPx=Number(rows.at(-1)?.close);
+ const current=Number.isFinite(livePx)&&livePx>0?livePx:(Number.isFinite(histPx)&&histPx>0?histPx:null);
+ const immediate={
+  currentPrice:current,
+  currentReturnPct:Number.isFinite(current)?(current/ep-1)*100:null,
+  currentPnLPerShare:Number.isFinite(current)?current-ep:null,
+  currentPriceSource:Number.isFinite(livePx)&&livePx>0?liveSource:(Number.isFinite(histPx)&&histPx>0?'daily history fallback':null)
+ };
  if(!rows.length)return{ok:true,status:'TRACKING',code,entryDate,entryPrice:ep,...immediate,horizon:{5:null,20:null,60:null},maePct:null,mfePct:null,maeDate:null,mfeDate:null,
   reachedLayer2:false,reachedLayer3:false,chaseEntry:Number.isFinite(Number(layer1High))?ep>Number(layer1High):null,historySource:h.source,officialHistory:!!h.validation?.fullHistoryPass,reason:'尚未形成進場日後的日K；即時損益仍持續追蹤',updatedAt:new Date().toISOString()};
  const r0=rows[0],entryFactor=r0.close>0&&r0.aClose>0?r0.aClose/r0.close:1,horizon={};
@@ -1386,10 +1507,149 @@ function modelTradeStaticProof(){
 }
 
 function mime(f){if(f.endsWith('.html'))return'text/html; charset=utf-8';if(f.endsWith('.css'))return'text/css; charset=utf-8';if(f.endsWith('.js'))return'application/javascript; charset=utf-8';if(f.endsWith('.json'))return'application/json; charset=utf-8';if(f.endsWith('.svg'))return'image/svg+xml';return'application/octet-stream'}
+
+function readJSONBody(req,maxBytes=1024*1024){
+ return new Promise((resolve,reject)=>{
+  let size=0,chunks=[];
+  req.on('data',c=>{size+=c.length;if(size>maxBytes){reject(Error('request too large'));req.destroy();return}chunks.push(c)});
+  req.on('end',()=>{try{const t=Buffer.concat(chunks).toString('utf8').trim();resolve(t?JSON.parse(t):{})}catch(e){reject(Error('invalid JSON'))}});
+  req.on('error',reject);
+ });
+}
+function cookieMap(req){
+ const out={};String(req.headers.cookie||'').split(';').forEach(x=>{const i=x.indexOf('=');if(i>0)out[x.slice(0,i).trim()]=decodeURIComponent(x.slice(i+1).trim())});return out;
+}
+function digestText(v){return crypto.createHash('sha256').update(String(v)).digest('hex')}
+function safeEqualText(a,b){
+ const aa=Buffer.from(digestText(a)),bb=Buffer.from(digestText(b));
+ return aa.length===bb.length&&crypto.timingSafeEqual(aa,bb);
+}
+function modelSyncConfigured(){return !!(SUPABASE_URL&&SUPABASE_SECRET_KEY&&MODEL_SYNC_KEY)}
+function modelSyncCookieValue(){return MODEL_SYNC_KEY?digestText('model-sync-cookie-v1|'+MODEL_SYNC_KEY):''}
+function modelSyncAuthorized(req){const v=cookieMap(req).model_sync;return !!(v&&MODEL_SYNC_KEY&&safeEqualText(v,modelSyncCookieValue()))}
+async function supabaseRest(route,opts={}){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))throw Error('Supabase 尚未設定');
+ const headers={'apikey':SUPABASE_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json',...(opts.headers||{})};
+ const r=await fetchTimeout(SUPABASE_URL+'/rest/v1/'+route,{method:opts.method||'GET',headers,body:opts.body==null?undefined:JSON.stringify(opts.body)},8000);
+ const text=await r.text();
+ if(!r.ok)throw Error('Supabase HTTP '+r.status+(text?'｜'+text.slice(0,240):''));
+ if(!text.trim())return null;
+ try{return JSON.parse(text)}catch(_){return text}
+}
+function tradeSyncStamp(t){return String(t?._syncUpdatedAt||t?.exitAt||t?.perf?.fetchedAt||t?.entryAt||new Date(0).toISOString())}
+async function cloudRowsById(id){
+ return await supabaseRest('model_trades?id=eq.'+encodeURIComponent(id)+'&select=id,code,entry_at,updated_at,payload&limit=1')||[];
+}
+async function cloudModelState(){
+ const rows=await supabaseRest('model_trades?select=id,code,entry_at,updated_at,payload&order=entry_at.asc')||[];
+ let initialized=false;const trades=[],deletedIds=[];
+ for(const r of rows){
+  if(r.id===MODEL_SYNC_META_ID){initialized=true;continue}
+  if(r.id===HOLDINGS_SYNC_ID)continue
+  const p=r.payload&&typeof r.payload==='object'?r.payload:null;if(!p)continue;
+  if(p._deleted){deletedIds.push(r.id);continue}
+  trades.push({...p,id:p.id||r.id,code:p.code||r.code,_cloudUpdatedAt:r.updated_at});
+ }
+ return{initialized,trades,deletedIds};
+}
+async function ensureModelSyncMeta(){
+ const body=[{id:MODEL_SYNC_META_ID,code:'__META__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:new Date().toISOString(),payload:{meta:true,initializedAt:new Date().toISOString()}}];
+ return supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body});
+}
+async function cloudUpsertTrade(input){
+ if(!input||typeof input!=='object'||!String(input.id||'').startsWith('mt_'))throw Error('invalid trade');
+ const incoming=JSON.parse(JSON.stringify(input)),id=String(incoming.id),existingRows=await cloudRowsById(id),existing=existingRows[0]?.payload&&typeof existingRows[0].payload==='object'?existingRows[0].payload:null;
+ if(existing?._deleted)return{ok:true,deleted:true,id};
+ const incomingStamp=Date.parse(tradeSyncStamp(incoming))||0,existingStamp=Date.parse(tradeSyncStamp(existing))||0;
+ if(existing&&existingStamp>incomingStamp)return{ok:true,keptCloud:true,id};
+ let merged=existing?{...existing,...incoming}:incoming;
+ // A closed trade is sticky: an old device must not reopen it with a later performance refresh.
+ if(existing?.exitAt&&!incoming?.exitAt){
+  for(const k of ['exitAt','exitPrice','realizedReturnPct','realizedPnL'])merged[k]=existing[k];
+  merged._syncUpdatedAt=existing._syncUpdatedAt||existing.exitAt;
+ }
+ merged._syncUpdatedAt=merged._syncUpdatedAt||new Date().toISOString();
+ delete merged._syncDirty;delete merged._cloudUpdatedAt;
+ const row={id,code:String(merged.code||''),entry_at:merged.entryAt||new Date().toISOString(),updated_at:new Date().toISOString(),payload:merged};
+ await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
+ await ensureModelSyncMeta();
+ return{ok:true,id};
+}
+async function cloudDeleteTrade(id){
+ if(!String(id||'').startsWith('mt_'))throw Error('invalid trade id');
+ const rows=await cloudRowsById(id),old=rows[0]?.payload&&typeof rows[0].payload==='object'?rows[0].payload:{id,code:'DELETED',entryAt:new Date().toISOString()};
+ const tomb={...old,id,_deleted:true,_syncUpdatedAt:new Date().toISOString()};delete tomb._syncDirty;delete tomb._cloudUpdatedAt;
+ const row={id,code:String(old.code||'DELETED'),entry_at:old.entryAt||new Date().toISOString(),updated_at:new Date().toISOString(),payload:tomb};
+ await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
+ await ensureModelSyncMeta();
+ return{ok:true,id};
+}
+
+
+async function cloudHoldingsState(){
+ const rows=await cloudRowsById(HOLDINGS_SYNC_ID),r=rows[0];
+ const p=r?.payload&&typeof r.payload==='object'?r.payload:null;
+ return{initialized:!!p,holdings:Array.isArray(p?.holdings)?p.holdings:[],updatedAt:r?.updated_at||p?.updatedAt||null};
+}
+async function cloudUpsertHoldings(holdings){
+ if(!Array.isArray(holdings)||holdings.length>100)throw Error('invalid holdings');
+ const clean=holdings.map(h=>({t:String(h?.t||''),n:String(h?.n||h?.t||''),s:Number(h?.s)||0,c:Number(h?.c)||0}))
+   .filter(h=>h.t&&h.s>=0&&h.c>=0);
+ const now=new Date().toISOString();
+ const row={id:HOLDINGS_SYNC_ID,code:'__HOLDINGS__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload:{holdings:clean,updatedAt:now}};
+ await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
+ return{ok:true,holdings:clean,updatedAt:now};
+}
+
 async function safeApi(res,label,fn){try{const data=await fn();const key={'market':'live','context':'ctx','night-future':'nf','overseas':'ovs','buy-model':'bm'}[label];if(key&&data){RUNTIME[key]=data;RUNTIME.lastRefresh=new Date().toISOString()}return send(res,200,data)}catch(e){console.error(label,e);RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith(label+':')),label+':'+(e.message||String(e))].slice(-20);return send(res,200,{ok:false,status:'ERROR',source:label,error:e.message||String(e),fetchedAt:new Date().toISOString()})}}
 const server=http.createServer(async(req,res)=>{
  const u=new URL(req.url,'http://'+req.headers.host);
  if(['/health','/api/health','/healthz','/readyz'].includes(u.pathname))return send(res,200,{ok:true,status:'healthy',version:VERSION,build:BUILD,now:new Date().toISOString(),uptimeSec:Math.round(process.uptime())});
+ if(u.pathname==='/api/model-sync/status')return send(res,200,{ok:true,configured:modelSyncConfigured(),authorized:modelSyncAuthorized(req),supabaseConfigured:!!(SUPABASE_URL&&SUPABASE_SECRET_KEY),build:BUILD});
+ if(u.pathname==='/api/model-sync/login'&&req.method==='POST'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'MODEL_SYNC_KEY 或 Supabase 環境變數尚未設定'});
+  try{
+   const body=await readJSONBody(req,8192),key=String(body.key||'');
+   if(!safeEqualText(key,MODEL_SYNC_KEY))return send(res,401,{ok:false,error:'同步碼不正確'});
+   const cookie='model_sync='+encodeURIComponent(modelSyncCookieValue())+'; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Strict';
+   res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','Set-Cookie':cookie,'X-Content-Type-Options':'nosniff'});
+   return res.end(JSON.stringify({ok:true,authorized:true}));
+  }catch(e){return send(res,400,{ok:false,error:e.message})}
+ }
+
+ if(u.pathname==='/api/holdings-sync'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'持股雲端同步尚未完成後端設定'});
+  if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'持股雲端同步尚未解鎖'});
+  if(req.method==='GET')return safeApi(res,'holdings-sync',async()=>({ok:true,...await cloudHoldingsState(),fetchedAt:new Date().toISOString()}));
+  if(req.method==='POST'){
+   try{const body=await readJSONBody(req);return send(res,200,await cloudUpsertHoldings(body.holdings))}catch(e){return send(res,400,{ok:false,error:e.message})}
+  }
+ }
+ if(u.pathname==='/api/model-trades'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'模型雲端同步尚未完成後端設定'});
+  if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'模型雲端同步尚未解鎖'});
+  if(req.method==='GET')return safeApi(res,'model-trades',async()=>({ok:true,...await cloudModelState(),fetchedAt:new Date().toISOString()}));
+  if(req.method==='POST'){
+   try{const body=await readJSONBody(req);const r=await cloudUpsertTrade(body.trade);return send(res,200,r)}catch(e){return send(res,400,{ok:false,error:e.message})}
+  }
+ }
+ if(u.pathname==='/api/model-trades/import'&&req.method==='POST'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'模型雲端同步尚未完成後端設定'});
+  if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'模型雲端同步尚未解鎖'});
+  try{
+   const body=await readJSONBody(req),trades=Array.isArray(body.trades)?body.trades:[];
+   if(trades.length>500)throw Error('too many trades');
+   for(const t of trades)await cloudUpsertTrade(t);
+   if(trades.length)await ensureModelSyncMeta();
+   return send(res,200,{ok:true,count:trades.length});
+  }catch(e){return send(res,400,{ok:false,error:e.message})}
+ }
+ if(u.pathname.startsWith('/api/model-trades/')&&req.method==='DELETE'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'模型雲端同步尚未完成後端設定'});
+  if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'模型雲端同步尚未解鎖'});
+  try{return send(res,200,await cloudDeleteTrade(decodeURIComponent(u.pathname.slice('/api/model-trades/'.length))))}catch(e){return send(res,400,{ok:false,error:e.message})}
+ }
+
  if(u.pathname==='/api/constituent-proof')return safeApi(res,'constituent-proof',async()=>{const rs=await Promise.all(ETF.map(async code=>{try{const c=await deadline(constituents(code),15000,null);if(!c)throw Error('official constituent source timed out');const expected=c.expected||META[code].expected,actual=c.items?.length||0,weights=c.items?.filter(x=>Number.isFinite(x.weight)).length||0,official=!!c.officialOnly&&isOfficialHostFor(code,c.sourceUrl||META[code].url);return{code,pass:!!(c.complete&&official&&actual>=expected&&weights>=expected),official,source:c.source,sourceUrl:c.sourceUrl||META[code].url,expected,actual,weightRows:weights,coveragePct:expected?Math.min(100,actual/expected*100):0,weightCoveragePct:expected?Math.min(100,weights/expected*100):0,asOf:c.asOf,note:c.note||null,errors:c.errors||[]}}catch(e){return{code,pass:false,official:true,source:META[code].source,sourceUrl:META[code].url,expected:META[code].expected,actual:0,weightRows:0,coveragePct:0,weightCoveragePct:0,note:e.message}}}));return{ok:true,build:BUILD,allPass:rs.every(x=>x.pass),constituents:rs,generatedAt:new Date().toISOString()}});
  if(u.pathname==='/api/core3-proof')return safeApi(res,'core3-proof',async()=>{
   const hist=ETF.map(historyProgress),modelTrade=modelTradeStaticProof();

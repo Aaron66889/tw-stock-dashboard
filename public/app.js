@@ -26,6 +26,10 @@ let marketTimer,slowTimer,buyTimer,nightTimer,selectedETF='0050',selectedBacktes
 let etfLiveTimer=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
+let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null};
+let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,message:'持股雲端同步檢查中'};
+let MODEL_PENDING_DELETES=loadJSON('v124_model_trade_pending_deletes',[]);
+
 function migrate1689Existing0050Trade(){
  const key='v1689_0050_10540_20_migrated';if(localStorage.getItem(key))return;
  const h=H.find(v=>v.t==='0050'),t=MODEL_TRADES?.some(v=>v.code==='0050'&&Number(v.shares)===20&&Math.abs(Number(v.entryPrice)-105.40)<.001);
@@ -38,7 +42,7 @@ function saveLastGood(k,v){try{localStorage.setItem('v124_lastgood_'+k,JSON.stri
 function loadLastGood(k){try{return JSON.parse(localStorage.getItem('v124_lastgood_'+k)||'null')}catch{return null}}
 function ageText(ts){if(!ts)return'';const m=Math.max(0,Math.round((Date.now()-Date.parse(ts))/60000));return m<1?'剛剛':m+'分鐘前'}
 function loadHoldings(){try{const x=JSON.parse(localStorage.getItem('twStockHoldingsV12'));return Array.isArray(x)?x:DEFAULT_H.map(v=>({...v}))}catch{return DEFAULT_H.map(v=>({...v}))}}
-function saveHoldings(){saveJSON('twStockHoldingsV12',H)}
+function saveHoldings(){saveJSON('twStockHoldingsV12',H);if(MODEL_SYNC?.ready&&HOLDINGS_SYNC?.ready)pushHoldingsCloud()}
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
 function dayKey(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date())}
 function fresh(ts,ms=90000){return ts&&Date.now()-Date.parse(ts)<ms}
@@ -358,6 +362,134 @@ let validationPoll=null;async function loadValidation(deep=false){try{const d=aw
 async function runDeepValidation(){clearTimeout(validationPoll);$('deepValidateBtn').disabled=true;try{await get('/api/history-warm?all=1');await loadValidation(true);const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;if(ready<4){$('validationOverall').innerHTML+=`<br><span class="note">完整回測歷史背景建立中：${hp.map(x=>x.code+' '+x.percent+'%').join('｜')}</span>`;validationPoll=setTimeout(runDeepValidation,3000)}}finally{$('deepValidateBtn').disabled=false}}
 
 
+
+function modelSyncSaveLocal(){saveJSON('v124_model_trades',MODEL_TRADES);saveJSON('v124_model_trade_pending_deletes',MODEL_PENDING_DELETES)}
+function modelTradeClean(t){const x=JSON.parse(JSON.stringify(t));delete x._syncDirty;delete x._cloudUpdatedAt;return x}
+function markModelTradeDirty(t){if(!t)return;t._syncDirty=true;t._syncUpdatedAt=new Date().toISOString()}
+async function modelSyncFetch(url,opts={}){
+ const c=new AbortController(),tm=setTimeout(()=>c.abort(),10000);
+ try{
+  const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opts.headers||{})},...opts,signal:c.signal});
+  let d={};try{d=await r.json()}catch(_){}
+  if(!r.ok){const e=Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}
+  return d;
+ }finally{clearTimeout(tm)}
+}
+function modelSyncBar(){
+ const st=MODEL_SYNC.status,good=MODEL_SYNC.ready,locked=st==='locked',setup=st==='setup',err=st==='error';
+ const tag=good?'🟢 已同步':locked?'🔒 未解鎖':setup?'🟡 尚未設定':'🟡 '+(err?'同步異常':'連線中');
+ const htag=HOLDINGS_SYNC.ready?'｜持股🟢':'｜持股⚪';
+ const at=MODEL_SYNC.lastAt?`｜${new Date(MODEL_SYNC.lastAt).toLocaleTimeString('zh-TW',{hour12:false})}`:'';
+ const buttons=good
+  ? `<div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn" onclick="syncAllCloud(true)">立即同步</button><button class="btn" onclick="uploadThisHoldingsToCloud()">上傳此裝置持股</button><button class="btn" onclick="downloadCloudHoldings()">下載雲端持股</button></div>`
+  : `<button class="btn primary" onclick="connectModelSync()">設定同步碼</button>`;
+ return `<div class="notice"><div class="row"><div><b>模型實戰雲端：${tag}${htag}</b><div class="note">${MODEL_SYNC.message||''}${HOLDINGS_SYNC.message?'｜'+HOLDINGS_SYNC.message:''}${at}</div></div>${buttons}</div></div>`;
+}
+
+async function syncHoldingsCloud(force=false){
+ if(HOLDINGS_SYNC.busy||!MODEL_SYNC.ready)return;
+ HOLDINGS_SYNC.busy=true;
+ try{
+  const d=await modelSyncFetch('/api/holdings-sync');
+  if(!d.initialized){
+   HOLDINGS_SYNC.ready=false;
+   HOLDINGS_SYNC.message='雲端尚無持股；請在持股正確的裝置按「上傳此裝置持股」';
+  }else{
+   H=(Array.isArray(d.holdings)?d.holdings:[]).map(x=>({t:String(x.t),n:String(x.n||x.t),s:Number(x.s)||0,c:Number(x.c)||0}));
+   saveJSON('twStockHoldingsV12',H);
+   renderHoldings();
+   HOLDINGS_SYNC.ready=true;
+   const h50=H.find(x=>x.t==='0050');
+   HOLDINGS_SYNC.message='持股已從雲端載入'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
+  }
+  HOLDINGS_SYNC.lastAt=d.fetchedAt||new Date().toISOString();
+ }catch(e){
+  HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股雲端暫時連不上，本機持股仍保留';
+ }finally{HOLDINGS_SYNC.busy=false}
+}
+
+async function uploadThisHoldingsToCloud(){
+ if(!MODEL_SYNC.ready)return alert('請先設定同步碼');
+ const h50=H.find(x=>x.t==='0050'),label=h50?`0050 ${Number(h50.s).toLocaleString()}股／均價 ${Number(h50.c).toFixed(2)}`:'目前沒有0050';
+ if(!confirm(`將「這台裝置」的持股覆蓋到雲端。\\n${label}\\n\\n確定嗎？`))return;
+ try{
+  await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H})});
+  HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='已以上傳的這台裝置持股覆蓋雲端';
+  await syncHoldingsCloud(true);renderModelTrades();
+  alert('雲端持股已更新。現在可到手機按「下載雲端持股」。');
+ }catch(e){alert('上傳失敗：'+(e.message||'未知錯誤'))}
+}
+async function downloadCloudHoldings(){
+ if(!MODEL_SYNC.ready)return alert('請先設定同步碼');
+ try{
+  const d=await modelSyncFetch('/api/holdings-sync');
+  if(!d.initialized)return alert('雲端還沒有持股資料。請先在桌機按「上傳此裝置持股」。');
+  H=(Array.isArray(d.holdings)?d.holdings:[]).map(x=>({t:String(x.t),n:String(x.n||x.t),s:Number(x.s)||0,c:Number(x.c)||0}));
+  saveJSON('twStockHoldingsV12',H);renderHoldings();
+  HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();
+  const h50=H.find(x=>x.t==='0050');
+  HOLDINGS_SYNC.message='已手動下載雲端持股'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
+  renderModelTrades();
+  alert('雲端持股已載入這台裝置。');
+ }catch(e){alert('下載失敗：'+(e.message||'未知錯誤'))}
+}
+
+async function pushHoldingsCloud(){
+ if(!MODEL_SYNC.ready)return;
+ try{
+  await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H})});
+  HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='持股已同步';
+ }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股同步失敗，本機仍保留'}
+}
+async function syncAllCloud(force=false){
+ await syncModelTrades(force);
+ if(MODEL_SYNC.ready)await syncHoldingsCloud(force);
+ renderModelTrades();
+}
+
+async function connectModelSync(){
+ const key=prompt('請輸入 MODEL_SYNC_KEY（每台裝置只需設定一次）');if(key===null||!String(key).trim())return;
+ try{
+  await modelSyncFetch('/api/model-sync/login',{method:'POST',body:JSON.stringify({key:String(key).trim()})});
+  MODEL_SYNC.status='checking';MODEL_SYNC.message='同步碼正確，正在讀取雲端交易…';renderModelTrades();
+  await syncAllCloud(true);
+ }catch(e){MODEL_SYNC.status=e.status===503?'setup':'locked';MODEL_SYNC.ready=false;MODEL_SYNC.message=e.message||'同步碼驗證失敗';renderModelTrades()}
+}
+async function syncDirtyModelTrades(){
+ if(!MODEL_SYNC.ready)return;
+ const deletes=[...new Set(MODEL_PENDING_DELETES)];
+ for(const id of deletes){
+  try{await modelSyncFetch('/api/model-trades/'+encodeURIComponent(id),{method:'DELETE'});MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(x=>x!==id)}
+  catch(e){if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.status='locked'};throw e}
+ }
+ const dirty=MODEL_TRADES.filter(t=>t._syncDirty);
+ if(dirty.length)await modelSyncFetch('/api/model-trades/import',{method:'POST',body:JSON.stringify({trades:dirty.map(modelTradeClean)})});
+ dirty.forEach(t=>t._syncDirty=false);modelSyncSaveLocal();
+}
+async function syncModelTrades(force=false){
+ if(MODEL_SYNC.busy)return;MODEL_SYNC.busy=true;
+ try{
+  let d=await modelSyncFetch('/api/model-trades');
+  MODEL_SYNC.ready=true;MODEL_SYNC.status='ready';MODEL_SYNC.message='Supabase 為正式來源；本機 localStorage 為離線備援。';
+  if(!d.initialized&&MODEL_TRADES.length){
+   await modelSyncFetch('/api/model-trades/import',{method:'POST',body:JSON.stringify({trades:MODEL_TRADES.map(modelTradeClean)})});
+   d=await modelSyncFetch('/api/model-trades');
+  }else{
+   await syncDirtyModelTrades();
+   d=await modelSyncFetch('/api/model-trades');
+  }
+  MODEL_TRADES=(Array.isArray(d.trades)?d.trades:[]).map(t=>({...t,_syncDirty:false}));
+  const deleted=new Set(d.deletedIds||[]);MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(id=>!deleted.has(id));
+  modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();renderModelTrades();
+ }catch(e){
+  MODEL_SYNC.ready=false;
+  if(e.status===401){MODEL_SYNC.status='locked';MODEL_SYNC.message='這台裝置尚未輸入同步碼。'}
+  else if(e.status===503){MODEL_SYNC.status='setup';MODEL_SYNC.message='Render 尚缺 MODEL_SYNC_KEY / Supabase 環境設定。'}
+  else{MODEL_SYNC.status='error';MODEL_SYNC.message='雲端暫時連不上，本機紀錄仍保留：'+(e.message||'未知錯誤')}
+  renderModelTrades();
+ }finally{MODEL_SYNC.busy=false}
+}
+
 function openModelTrade(code,layer=1){
  const x=statusFor(code);if(!x)return alert('模型尚未載入');
  $('mtCode').value=code;$('mtPrice').value=Number(x.px).toFixed(2);$('mtShares').value='';$('mtLayer').value=String(layer);
@@ -371,26 +503,42 @@ function saveModelTrade(){
  const trade={id:'mt_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),code,name:NAME[code],layer,entryAt:new Date().toISOString(),entryDate:dayKey(),entryPrice:price,shares,
   snapshot:{zones:x.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),score:x.r.score,chaseRisk:x.r.chaseRisk,environmentScore:x.r.environmentScore,health:x.r.health||null,night:lastNight?{last:lastNight.last,changePct:lastNight.changePct}:null,overseas:lastOverseas?.quotes?{NASDAQ:lastOverseas.quotes.NASDAQ?.changePct,SOX:lastOverseas.quotes.SOX?.changePct,TSM:lastOverseas.quotes.TSM?.changePct}:null,version:'V12.4',build:'R3.17'},
   exitAt:null,exitPrice:null,perf:null};
- MODEL_TRADES.push(trade);saveJSON('v124_model_trades',MODEL_TRADES);
+ markModelTradeDirty(trade);MODEL_TRADES.push(trade);modelSyncSaveLocal();
  const h=H.find(v=>v.t===code);
  if(h){const oldShares=Number(h.s)||0,oldCost=Number(h.c)||0,newShares=oldShares+shares;h.c=((oldShares*oldCost)+(shares*price))/newShares;h.s=newShares}
  else H.push({t:code,n:code,s:shares,c:price});
  saveHoldings();
- closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();addEvent(`${code} 已記錄模型第${layer}層實戰並同步持股：${shares}股 @ ${price.toFixed(2)}`,'trade');setPage('model')
+ closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncModelTrades(true);addEvent(`${code} 已記錄模型第${layer}層實戰並同步持股：${shares}股 @ ${price.toFixed(2)}`,'trade');setPage('model')
 }
 async function refreshModelTradePerformance(){
+ let changed=false;
  for(const t of MODEL_TRADES){
   if(t.exitAt)continue;
-  try{const z=t.snapshot?.zones||[],qs=new URLSearchParams({code:t.code,entryDate:t.entryDate,entryPrice:String(t.entryPrice),layer2Low:String(z[1]?.low??''),layer3Low:String(z[2]?.low??''),layer1High:String(z[0]?.high??'')});const p=await get('/api/trade-performance?'+qs.toString());if(p?.ok)t.perf=p}catch(_){}
+  try{
+   const z=t.snapshot?.zones||[],qs=new URLSearchParams({code:t.code,entryDate:t.entryDate,entryPrice:String(t.entryPrice),layer2Low:String(z[1]?.low??''),layer3Low:String(z[2]?.low??''),layer1High:String(z[0]?.high??'')});
+   const p=await get('/api/trade-performance?'+qs.toString());
+   if(p?.ok){
+    const prev=t.perf&&typeof t.perf==='object'?t.perf:{};
+    // 盤後/跨日若資料源暫時沒有 currentPrice，不准把最後有效損益洗成空值。
+    if(!Number.isFinite(Number(p.currentPrice))&&Number.isFinite(Number(prev.currentPrice)))p.currentPrice=prev.currentPrice;
+    if(!Number.isFinite(Number(p.currentReturnPct))&&Number.isFinite(Number(prev.currentReturnPct)))p.currentReturnPct=prev.currentReturnPct;
+    if(!Number.isFinite(Number(p.currentPnLPerShare))&&Number.isFinite(Number(prev.currentPnLPerShare)))p.currentPnLPerShare=prev.currentPnLPerShare;
+    t.perf={...prev,...p};markModelTradeDirty(t);changed=true
+   }
+  }catch(_){}
  }
- saveJSON('v124_model_trades',MODEL_TRADES);renderModelTrades()
+ modelSyncSaveLocal();renderModelTrades();if(changed)syncModelTrades(false)
 }
 function closeTrackedTrade(id){
  const t=MODEL_TRADES.find(x=>x.id===id);if(!t)return;const px=Number(lastLive?.quotes?.[t.code]?.last??t.perf?.currentPrice);
+ if(t.exitAt)return;
  const v=prompt(`輸入 ${t.code} 實際賣出價格`,Number.isFinite(px)?px.toFixed(2):'');if(v===null)return;const p=Number(v);if(!(p>0))return alert('價格不正確');
- t.exitAt=new Date().toISOString();t.exitPrice=p;t.realizedReturnPct=(p/t.entryPrice-1)*100;t.realizedPnL=(p-t.entryPrice)*t.shares;saveJSON('v124_model_trades',MODEL_TRADES);renderModelTrades()
+ t.exitAt=new Date().toISOString();t.exitPrice=p;t.realizedReturnPct=(p/t.entryPrice-1)*100;t.realizedPnL=(p-t.entryPrice)*t.shares;markModelTradeDirty(t);modelSyncSaveLocal();renderModelTrades();syncModelTrades(true)
 }
-function deleteTrackedTrade(id){if(!confirm('刪除這筆模型實戰紀錄？'))return;MODEL_TRADES=MODEL_TRADES.filter(x=>x.id!==id);saveJSON('v124_model_trades',MODEL_TRADES);renderModelTrades()}
+function deleteTrackedTrade(id){
+ if(!confirm('刪除這筆模型實戰紀錄？'))return;
+ MODEL_TRADES=MODEL_TRADES.filter(x=>x.id!==id);if(!MODEL_PENDING_DELETES.includes(id))MODEL_PENDING_DELETES.push(id);modelSyncSaveLocal();renderModelTrades();syncModelTrades(true)
+}
 function fubonEstimatedTradeCost(entryPrice,shares,currentPrice){
  const buyValue=Number(entryPrice)*Number(shares),sellValue=Number(currentPrice)*Number(shares);
  if(!(buyValue>0)||!(sellValue>0))return null;
@@ -401,7 +549,10 @@ function fubonEstimatedTradeCost(entryPrice,shares,currentPrice){
  return buyFee+sellFee+etfTax;
 }
 function modelNetMetrics(t){
- const p=t?.perf,px=Number(p?.currentPrice),entry=Number(t?.entryPrice),shares=Number(t?.shares);
+ const p=t?.perf,entry=Number(t?.entryPrice),shares=Number(t?.shares);
+ const rawPerfPx=p?.currentPrice,perfPx=(rawPerfPx==null||rawPerfPx==='')?null:Number(rawPerfPx);
+ const rawLivePx=lastLive?.quotes?.[t?.code]?.last,livePx=(rawLivePx==null||rawLivePx==='')?null:Number(rawLivePx);
+ const px=Number.isFinite(perfPx)&&perfPx>0?perfPx:(Number.isFinite(livePx)&&livePx>0?livePx:null);
  if(t?.exitAt){
   const gross=Number(t.realizedPnL);
   const exit=Number(t.exitPrice);
@@ -410,7 +561,10 @@ function modelNetMetrics(t){
   const base=entry*shares;
   return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null};
  }
- const gross=Number.isFinite(p?.currentPnLPerShare)?p.currentPnLPerShare*shares:null;
+ const rawPerShare=p?.currentPnLPerShare;
+ const perfPerShare=(rawPerShare==null||rawPerShare==='')?null:Number(rawPerShare);
+ const gross=Number.isFinite(perfPerShare)?perfPerShare*shares:
+   (Number.isFinite(px)&&Number.isFinite(entry)?(px-entry)*shares:null);
  const cost=fubonEstimatedTradeCost(entry,shares,px);
  const net=Number.isFinite(gross)&&Number.isFinite(cost)?gross-cost:null;
  const base=entry*shares;
@@ -419,9 +573,9 @@ function modelNetMetrics(t){
 function renderModelTrades(){
  const open=MODEL_TRADES.filter(t=>!t.exitAt),closed=MODEL_TRADES.filter(t=>t.exitAt);
  const metrics=MODEL_TRADES.map(modelNetMetrics),rets=metrics.map(x=>x.ret).filter(Number.isFinite),wins=rets.filter(x=>x>0).length;
- const pnl=metrics.reduce((sum,x)=>sum+(Number.isFinite(x.net)?x.net:0),0);
- $('liveTradeSummary').innerHTML=`<div class="box"><span class="k">模型實戰</span><b>${MODEL_TRADES.length}筆</b></div><div class="box"><span class="k">追蹤中</span><b>${open.length}筆</b></div><div class="box"><span class="k">目前/已結束獲利</span><b>${wins}/${rets.length}</b></div><div class="box"><span class="k">合計淨損益</span><b class="${cls(pnl)}">${Math.round(pnl).toLocaleString()}</b></div><div class="box"><span class="k">平均淨報酬</span><b class="${cls(mean(rets))}">${rets.length?pct(mean(rets)):'—'}</b></div>`;
- $('modelTradeList').innerHTML=MODEL_TRADES.length?MODEL_TRADES.slice().reverse().map(t=>{const p=t.perf,m=modelNetMetrics(t),ret=m.ret,pnl=m.net,h=p?.horizon||{};return`<div class="card"><div class="row"><div><b>${t.code}｜模型第${t.layer}層</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束淨損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b><small>${Number.isFinite(m.gross)&&Number.isFinite(m.cost)?`毛損益 ${Math.round(m.gross).toLocaleString()}｜估計成本 ${Math.round(m.cost)}元`:''}</small></div><div class="box"><span class="k">5日</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">MAE / MFE</span><b>${Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—'} / ${Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'}</b></div></div><div class="reading">進場快照：分數 ${t.snapshot.score}｜防追高 ${t.snapshot.chaseRisk}｜環境 ${fmt(t.snapshot.environmentScore)}｜歷史 ${p?.officialHistory?'TWSE官方':'備援/建立中'}。${p?`<br>第2層曾到：${p.reachedLayer2?'是':'否'}｜第3層曾到：${p.reachedLayer3?'是':'否'}｜進場追高：${p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—'}`:''}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`}).join(''):'<div class="notice">尚無模型實戰紀錄。請在ETF買點旁按「記錄模型買入」。</div>'
+ const validPnls=metrics.map(x=>x.net).filter(Number.isFinite),pnl=validPnls.reduce((sum,x)=>sum+x,0);
+ $('liveTradeSummary').innerHTML=`<div class="box"><span class="k">模型實戰</span><b>${MODEL_TRADES.length}筆</b></div><div class="box"><span class="k">追蹤中</span><b>${open.length}筆</b></div><div class="box"><span class="k">目前/已結束獲利</span><b>${wins}/${rets.length}</b></div><div class="box"><span class="k">合計淨損益</span><b class="${cls(pnl)}">${validPnls.length?Math.round(pnl).toLocaleString():'—'}</b></div><div class="box"><span class="k">平均淨報酬</span><b class="${cls(mean(rets))}">${rets.length?pct(mean(rets)):'—'}</b></div>`;
+ $('modelTradeList').innerHTML=modelSyncBar()+(MODEL_TRADES.length?MODEL_TRADES.slice().reverse().map(t=>{const p=t.perf,m=modelNetMetrics(t),ret=m.ret,pnl=m.net,h=p?.horizon||{};return`<div class="card"><div class="row"><div><b>${t.code}｜模型第${t.layer}層</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束淨損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b><small>${Number.isFinite(m.gross)&&Number.isFinite(m.cost)?`毛損益 ${Math.round(m.gross).toLocaleString()}｜估計成本 ${Math.round(m.cost)}元`:''}</small></div><div class="box"><span class="k">5日</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">MAE / MFE</span><b>${Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—'} / ${Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'}</b></div></div><div class="reading">進場快照：分數 ${t.snapshot.score}｜防追高 ${t.snapshot.chaseRisk}｜環境 ${fmt(t.snapshot.environmentScore)}｜歷史 ${p?.officialHistory?'TWSE官方':'備援/建立中'}。${p?`<br>第2層曾到：${p.reachedLayer2?'是':'否'}｜第3層曾到：${p.reachedLayer3?'是':'否'}｜進場追高：${p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—'}`:''}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`}).join(''):'<div class="notice">尚無模型實戰紀錄。請在ETF買點旁按「記錄模型買入」。</div>')
 }
 async function loadHistoryStatus(){
  try{
@@ -437,9 +591,9 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy();loadValidation(false)}
+function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),15000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy();loadValidation(false)}
 migrate1689Existing0050Trade();
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy()}})
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy();syncAllCloud(false)}})
 setInterval(()=>{
  const p=document.getElementById('constituentPage');
  if(p?.classList.contains('on'))loadConstituentPage(true);

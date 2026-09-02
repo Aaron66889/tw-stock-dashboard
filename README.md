@@ -523,3 +523,79 @@ app.js 完全未改；模型、Score、Gate、買點、Yahoo價格、持股、�
 - 顯示淨損益/淨報酬，並在下方保留毛損益與估計成本。
 - 小額富邦交易成本依使用者實際帳務樣本校正：買/賣手續費最低各估1元，ETF賣出證交稅0.1%；用於模型績效估算，不宣稱等同最終券商交割。
 - 我的持股、行情來源、大盤、夜盤、成分股、Score、Gate、歷史、回測皆不修改。
+
+## 16.8.31 Restore market OHLC only
+- 大盤現價、昨收、漲跌仍維持 Anue TSE01，不修改。
+- 今日開盤/最高/最低恢復舊版已使用成功的來源：
+  1. TWSE MIS `tse_t00.tw`
+  2. Yahoo `^TWII` 5m fallback
+- 「距今日高點」沿用既有前端公式。
+- ETF、成分股、夜盤、模型、Score、Gate、歷史、回測均不修改。
+
+## 16.8.32 Model trade cloud sync only
+- Supabase only stores `model_trades`; market/ETF/constituent/night/model/Gate/history/backtest code is unchanged.
+- Server uses `SUPABASE_URL` + `SUPABASE_SECRET_KEY` only; secret key never reaches browser.
+- New `MODEL_SYNC_KEY` protects the public dashboard's model-trade API.
+- Browser enters sync key once; server returns an HttpOnly/Secure/SameSite cookie.
+- First authenticated device with local model trades migrates them to Supabase automatically.
+- Cloud is authoritative after initialization; localStorage remains an offline backup.
+- Create/close/delete/performance updates sync to cloud. Delete uses a tombstone to prevent old devices from resurrecting deleted trades.
+- Poll cloud every 15 seconds and immediately on visibility return.
+
+## 16.8.33 Holdings cloud sync
+- Extends 16.8.32 cloud sync to `我的持股`.
+- Reuses the existing Supabase `model_trades` table with reserved id `__HOLDINGS_STATE__`; no new SQL/table required.
+- First authenticated desktop with correct holdings seeds cloud if no holdings state exists.
+- Thereafter Supabase is authoritative; phone/desktop pull the same holdings every 15 seconds.
+- Manual holding changes and model-buy holding changes push to cloud immediately.
+- Existing market/ETF/constituent/night/model/Gate/history/backtest functions remain unchanged.
+
+## 16.8.34 Holdings sync manual master
+- Prevents whichever device opens first from silently seeding cloud holdings.
+- Adds explicit `上傳此裝置持股` and `下載雲端持股` controls.
+- Desktop with the correct 3170-share state can force cloud to the correct holdings.
+- Phone then explicitly downloads cloud holdings.
+- Automatic holding writes only start after cloud holdings are initialized on that device.
+- Market/ETF/constituent/night/model/Gate/history/backtest are unchanged.
+
+
+## 16.8.35 Anue overseas primary
+- NASDAQ `GI:IXIC:INDEX`
+- SOX `GI:SOX:INDEX`
+- TSM ADR `USS:TSM:STOCK`
+- Yahoo Finance only fallback.
+- International quotes labeled ~15 minute delayed.
+- public/app.js unchanged.
+
+## 16.8.36 Model P/L last-price fix
+- 盤後/跨日資料源若短暫回傳空 currentPrice，不再把最後有效模型實戰損益洗成空值。
+- 新裝置若雲端 trade perf 尚未有 currentPrice，改用頁面已有的 ETF 最後成交價計算即時/盤後淨損益。
+- 合計淨損益沒有有效值時顯示 `—`，不再錯誤顯示 `0`。
+- 只修改模型實戰損益顯示/保存；行情、海外、夜盤、買點、Gate、回測、持股同步均不變。
+
+## 16.8.37 Model P/L null fix
+- Fixes JavaScript `Number(null) === 0` causing a missing `currentPnLPerShare` to be misread as zero gross P/L.
+- Missing per-share P/L now falls back to the valid current/last ETF price.
+- Example: 0050 20 @ 105.40 with last 106.25 => gross +17; estimated cost 8 => net +9.
+- No market/model/sync/backtest logic changes.
+
+## 16.8.38 Trade P/L ETF live source
+- Fixes model-trade P/L source: `tradePerformance()` now reads the ETF quote owner `liveEtf4()` directly.
+- Previously it read `RUNTIME.live`, which contains market/TSMC context rather than ETF quotes, so overnight a synced trade could retain a stale zero P/L.
+- Example with 0050 20 @ 105.40 and ETF last 106.25:
+  - gross +17
+  - estimated cost 8
+  - net +9
+  - net return about +0.43%
+- `public/app.js` is byte-identical to 16.8.37.
+- Market, overseas, night futures, buy model, Gate, backtest, holdings/model cloud sync are unchanged.
+
+## 16.8.39 #2/#3 night-only patch
+- ONLY `anueTxf()` and build marker changed.
+- Primary source is the official Cnyes TXF page `https://invest.cnyes.com/futures/TWF/TXF`.
+- Reads last/change/%/1-day low-high from the same Cnyes page.
+- Reference is recomputed as `last - reported change`; displayed changePct is recomputed from that reference.
+- Existing Anue quote candidates remain secondary; existing Yahoo WTX& remains final fallback.
+- Validation #2/#3 code itself is unchanged and will PASS only when the runtime source is actually Anue.
+- `public/app.js` is byte-identical to 16.8.38.
+- ETF, market, overseas, constituents, model, Gate, backtest, cloud sync and model P/L are untouched.
