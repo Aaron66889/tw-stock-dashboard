@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111827"><link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/styles.css?v=R3.20"><title>台股戰情16.8</title>
+<style>
+.buybox.layer-touched{border-color:#d9942f!important;background:rgba(217,148,47,.16)!important}
+.buybox.layer-touched .k,.buybox.layer-touched b{color:#f4b44f!important}
+.buybox.layer-confirmed{border-color:#e65353!important;background:rgba(230,83,83,.18)!important}
+.buybox.layer-confirmed .k,.buybox.layer-confirmed b{color:#ff6666!important}
+
+.etf-price-up{color:#ff5b5b!important}
+.etf-price-down{color:#35c978!important}
+</style>
+<style>
+/* 16.8.10 LIGHT FIX ONLY */
+.buybox.first:not(.layer-touched):not(.layer-confirmed){
+ border-color:#243954!important;background:#14233a!important;
+}
+.buybox.first:not(.layer-touched):not(.layer-confirmed) .k{color:#78a9d8!important}
+.buybox.first:not(.layer-touched):not(.layer-confirmed) b{color:#fff!important}
+</style>
+<style>
+.price-flash-up{animation:priceFlashUp .9s ease-out}
+.price-flash-down{animation:priceFlashDown .9s ease-out}
+@keyframes priceFlashUp{0%,55%{color:#ff5b63!important;text-shadow:0 0 9px rgba(255,91,99,.45)}100%{color:inherit;text-shadow:none}}
+@keyframes priceFlashDown{0%,55%{color:#39c987!important;text-shadow:0 0 9px rgba(57,201,135,.4)}100%{color:inherit;text-shadow:none}}
+</style>
+</head><body><main>
+<div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.20</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
+<nav class="topnav">
+<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="buy">ETF買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
+</nav>
+
+<div id="home" class="page on">
+<section id="preopenCard" class="card"><div class="sectiontitle">08:57 盤前預測三層</div><div id="preopenSummary" class="reading">尚未建立今日盤前基準。</div></section>
+<section class="card hero"><div class="sectiontitle">台股現貨大盤</div><div id="idx" class="index">—</div><div id="idxchg" class="change">—</div>
+<div class="grid4"><div class="box"><span class="k">今日開盤</span><b id="open">—</b></div><div class="box"><span class="k">今日最高</span><b id="high">—</b></div><div class="box"><span class="k">今日最低</span><b id="low">—</b></div><div class="box"><span class="k">距今日高點</span><b id="offHigh">—</b></div></div>
+<div class="grid4"><div class="box"><span class="k">現貨近5交易日</span><b id="ret5">—</b><small>只算TAIEX現貨</small></div><div class="box"><span class="k">現貨近20交易日</span><b id="ret20">—</b><small>不含夜盤</small></div><div class="box"><span class="k">市場廣度</span><b id="breadthHome">—</b><small id="breadthScope">上市集中市場</small></div><div class="box"><span class="k">台積電</span><b id="tsmcHome">—</b></div></div>
+<div id="plain" class="reading">等待行情。</div></section>
+<section class="card"><div class="sectiontitle">🌙 夜盤／海外摘要</div><div id="homeExternal" class="grid4"></div><div id="homeExternalText" class="reading">讀取中。</div></section>
+<section class="card"><div class="sectiontitle">現在最值得看的ETF</div><div class="note">直接顯示第一／理想／強力買點。模型可以回答「今日暫無合理買點」。</div><div id="homeBuyRanking"></div><div id="homeModelEvent" class="reading">戰情載入中。</div></section>
+</div>
+
+<div id="holdingsPage" class="page">
+<section class="card private"><div class="row"><div><div class="sectiontitle">我的持股｜私人頁</div><div class="note">不和公開買點混在一起；新訪客預設空白。</div></div><button class="btn primary" onclick="openHolding()">＋新增持股</button></div>
+<div id="holdingTotals" class="grid4"></div><div id="holdingManager"></div><div id="holdings"></div></section>
+</div>
+
+<div id="buy" class="page">
+<section class="card"><div class="sectiontitle">四檔ETF動態買點</div><div class="reading">價格約10秒更新；模型約30秒重算。第一層確認後，價格彈走只會顯示「已確認但離開／不追」，不會10秒反覆取消。</div></section><div id="buyCards"></div>
+</div>
+
+
+<div id="constituentPage" class="page">
+<section class="card"><div class="row"><div><div class="sectiontitle" id="constTitle">ETF 完整成分股雷達</div><div class="note" id="constDesc">0050/0056 元大官方、00878 國泰官方、00919 群益官方。只有完整持股且行情覆蓋達標才允許納入模型。</div></div><button class="btn primary" onclick="loadConstituentPage(true)">重新整理</button></div><div class="etftabs" id="constTabs"></div><div id="c0050Status" class="reading">等待讀取官方成分股。</div></section>
+<section class="card"><div class="sectiontitle">市場內部廣度</div><div id="c0050Summary" class="grid4"></div><div id="c0050Breadth" class="reading"></div></section>
+<section class="card"><div class="sectiontitle" id="constHeatTitle">前十大權值股熱力圖</div><div class="note">紅＝上漲、綠＝下跌；僅前十大使用卡片，其餘成分股改為緊湊清單。</div><div id="c0050Heat" class="constituent50"></div></section>
+<section class="card"><div class="sectiontitle">完整成分明細</div><div id="c0050Table"></div></section>
+</div>
+
+<div id="nightPage" class="page">
+<section class="card"><div class="sectiontitle">🌙 台指夜盤 WTX&</div><div id="nightFull"></div><div class="reading"><b>正負號：</b>永遠用成交價－參考價自行計算。整晚相對參考價與距今晚最高點分開。</div></section>
+<section class="card"><div class="sectiontitle">海外科技環境</div><div id="overseasFull" class="grid4"></div></section>
+
+</div>
+
+<div id="tomorrow" class="page">
+<section class="card"><div class="sectiontitle">明日台股環境</div><div id="tomorrowScore" class="score amber">尚未形成</div><div id="confidence" class="note">信心：—</div><div id="tomorrowPlain" class="reading">等待夜盤與海外訊號。</div><div id="tomorrowFactors" class="grid4"></div></section>
+</div>
+
+<div id="etfDetail" class="page">
+<section class="card"><div class="row"><div><div class="sectiontitle" id="detailTitle">0050</div><div class="note">買點｜成分健康｜歷史買點都放回ETF自身頁面。</div></div><div class="etftabs" id="detailTabs"></div></div><div id="detailBuy"></div></section>
+<section class="card"><div class="sectiontitle">成分健康度</div><div id="healthSummary"></div><div id="constHeat" class="heat"></div><div id="constNote" class="notice"></div></section>
+<section class="card"><div class="sectiontitle">歷史買點 vs 實際價格</div><svg id="historyChart" class="chart" viewBox="0 0 900 230" preserveAspectRatio="none"></svg><div class="legend"><span><i class="dot actual"></i>實際價</span><span><i class="dot l1"></i>第一層</span><span><i class="dot l2"></i>第二層</span><span><i class="dot l3"></i>第三層</span></div><div id="majorZone" class="reading"></div><div id="historyTable"></div></section>
+</div>
+
+<div id="model" class="page">
+<section class="card"><div class="sectiontitle">模型狀況／核心風控</div><div id="modelCards"></div></section>
+<section class="card"><div class="row"><div><div class="sectiontitle">我的實戰成績</div><div class="note">模型買入與自主買入分開統計；自主買入仍保存當下模型快照，但不計入模型績效。</div></div></div><div id="liveTradeSummary" class="grid5"></div><div id="modelTradeList"></div></section>
+<section class="card"><div class="sectiontitle">全歷史建立狀態</div><div class="note">服務啟動後自動建立四檔TWSE官方全歷史，不需要按回測才開始。完成前模型會明示使用備援。</div><div id="historyBuildStatus" class="grid4"></div></section>
+<section class="card"><div class="sectiontitle">全歷史回測</div><div class="note">上市日至今是主結果；近10／5／2／1年只是切片。使用還原權息序列避免除息假跌。</div><div class="etftabs" id="backtestTabs"></div><button class="btn primary" id="runBacktestBtn" onclick="runBacktest()">執行全歷史回測</button><div id="backtestResult" class="reading">尚未執行。</div></section>
+<section class="card"><div class="row"><div class="sectiontitle">今日模型事件</div><button class="btn danger" id="clearModelEventsBtn" onclick="clearModelEvents()">清除事件</button></div><div class="note" style="margin-bottom:8px">事件太多時可清除本機紀錄；後續新模型事件仍會繼續記錄。</div><div id="modelEvents"></div></section>
+<section class="card" id="validationCenter"><div class="row"><div><div class="sectiontitle">45項驗證中心</div><div class="note">不是規格清單：每格接實際功能／資料／回測訊號。PASS才亮綠燈。</div></div><button class="btn primary" id="deepValidateBtn" onclick="runDeepValidation()">執行完整驗證</button></div><div id="validationSummary" class="grid5"></div><div id="validationOverall" class="reading">驗證載入中。</div><div id="specGrid" class="specgrid"></div><div class="sectiontitle" style="margin-top:12px">新增3項核心風控</div><div id="coreValidation" class="grid3"></div></section>
+</div>
+
+<div id="logic" class="page">
+<section class="card"><div class="sectiontitle">V12.4 怎麼判斷？</div>
+<div class="reading"><b>現貨趨勢：</b>5／20日只用TAIEX現貨；買點本身使用ETF全歷史、5／20／60／120／250日結構、ATR與還原權息。</div>
+<div class="reading"><b>動態三層：</b>同框架、四檔獨立參數。利多只慢慢抬升買點，利空可較快反映。</div>
+<div class="reading"><b>防追高：</b>價格漲速若遠快於合理價中樞，啟動上修煞車。</div>
+<div class="reading"><b>參與率保護：</b>長期買不到且60／120／250日中樞確認上移，允許緩慢重錨。</div>
+<div class="reading"><b>防下逃：</b>只有新環境證據惡化才允許明顯下修；單純價格下跌不能讓球門一直後退。</div>
+<div class="reading"><b>資料硬Gate：</b>行情逾時、重大異常、急殺條件可暫停買點。</div></section>
+</div>
+
+<div id="qa" class="page">
+<section class="card"><div class="sectiontitle">💬 即時戰情留言＋免費問答</div><div class="note">0元GPT API：直接讀目前模型、夜盤、成分健康、歷史事件回答。</div><div id="qaEvents"></div><div id="chat" class="chat"></div>
+<div class="quick"><button class="btn" onclick="quickAsk('現在四檔哪個最好？')">四檔哪個最好？</button><button class="btn" onclick="quickAsk('0050為什麼不能買？')">0050為什麼不能買？</button><button class="btn" onclick="quickAsk('夜盤現在怎樣？')">夜盤現在怎樣？</button><button class="btn" onclick="quickAsk('剛剛發生什麼？')">剛剛發生什麼？</button></div>
+<div class="askrow"><input id="question" placeholder="例如：00878三層買點？"><button class="btn primary" onclick="sendAsk()">送出</button></div></section>
+</div>
+
+<footer>V12.4 FINAL R3.18｜紅＝漲、綠＝跌。公開行情與模型僅供資訊整理；模型不保證最低點或獲利。完整成分健康只有在來源回傳足夠覆蓋時才納入，資料不足時寧可停用，不拿前幾大成分冒充全部。</footer>
+</main>
+
+<div id="holdingModal" class="modal" onclick="if(event.target===this)closeHolding()"><div class="sheet"><div class="row"><div class="sectiontitle" id="holdingTitle">新增持股</div><button class="btn" onclick="closeHolding()">關閉</button></div><input id="editHoldingId" type="hidden">
+<div class="field"><label>股票／ETF代號</label><input id="hCode"></div><div class="field"><label>股數</label><input id="hShares" type="number"></div><div class="field"><label>平均成本</label><input id="hCost" type="number" step="0.01"></div><button class="btn primary" style="width:100%;margin-top:12px" onclick="saveHoldingForm()">儲存</button></div></div>
+
+
+<div id="modelTradeModal" class="modal" onclick="if(event.target===this)closeModelTrade()"><div class="sheet"><div class="row"><div class="sectiontitle" id="mtTradeTitle">記錄模型買入</div><button class="btn" onclick="closeModelTrade()">關閉</button></div>
+<input id="mtTradeType" type="hidden" value="model">
+<div class="field"><label>ETF</label><input id="mtCode" readonly></div>
+<div class="field"><label>實際成交價</label><input id="mtPrice" type="number" step="0.01"></div>
+<div class="field"><label>股數</label><input id="mtShares" type="number" step="1"></div>
+<div class="field" id="mtLayerField"><label>依模型哪一層買入</label><select id="mtLayer" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px"><option value="1">第一層</option><option value="2">第二／理想層</option><option value="3">第三／強力層</option></select></div>
+<div id="mtSnapshot" class="reading"></div><button id="mtSaveBtn" class="btn primary" style="width:100%;margin-top:12px" onclick="saveModelTrade()">保存這筆模型實戰</button></div></div>
+
+<script src="/app.js?v=R3.20"></script></body></html>

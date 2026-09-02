@@ -1,0 +1,40 @@
+V16.8.43-PREOPEN-TXF-LEAD
+================================
+Purpose
+- Use Taiwan index-futures day-session information from 08:45 to 08:57/08:58/08:59 in the pre-open three-layer prediction.
+
+Design
+1. Dedicated server sampler is active only on weekdays 08:45:00-08:59:59 Asia/Taipei, every 10 seconds.
+2. The 08:45 baseline is always the first observed TXF price after 08:45, avoiding ambiguity between futures after-hours open and regular-session open. If Render wakes late, confidence is reduced according to the start delay and observed span.
+3. Pre-open lead score blends:
+   - 65%: change from 08:45/open to now, normalized at +/-0.80%
+   - 22%: 5-minute momentum, normalized at +/-0.45%
+   - 13%: 3-minute momentum, normalized at +/-0.30%
+4. To prevent double counting TXF:
+   - normal TXF vs reference weight is 18%
+   - during 08:45-09:00 it becomes 12%
+   - dedicated 08:45 session-path signal adds at most 10% (scaled down when only partial observations exist)
+   - combined TXF influence during pre-open is therefore at most 22%, not 28%.
+5. The resulting environment score feeds all three raw pre-open layers through the existing model path.
+6. 08:57/08:58/08:59 pre-open draft snapshots store the TXF lead; 08:59:30 lock behavior is unchanged.
+7. After 09:00 this special lead signal automatically turns off; the intraday model continues with the prior environment logic.
+
+Unchanged
+- ETF-specific first-layer accessibility logic
+- score/gate fix from V16.8.41
+- manual-buy feature from V16.8.42
+- second/third layer core historical formulas
+- noBuyToday / hardVeto
+- holdings, Supabase, constituents, night page, model-trade tracking
+
+Verification points tomorrow
+- Open dashboard no later than ~08:45 so free Render instance is awake.
+- At 08:57 pre-open card should show '08:45台指日盤先行' with session %, 3m, 5m.
+- At 08:59:30 the locked snapshot must preserve that lead line and the three ETF layers.
+
+Deterministic formula spot-checks
+- Strong up path: session +0.80%, 5m +0.30%, 3m +0.15% => lead scoreNorm +0.862.
+- Strong down path: session -0.80%, 5m -0.30%, 3m -0.15% => lead scoreNorm -0.862.
+- Mild up path: session +0.20%, 5m +0.05%, 3m +0.02% => lead scoreNorm +0.196.
+- Flat path => 0.000.
+Direction is symmetric and monotonic.

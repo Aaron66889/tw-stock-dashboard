@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.42-MANUAL-BUY';
+const BUILD='16.8.43-PREOPEN-TXF-LEAD';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -27,7 +27,7 @@ const META={
  '00919':{name:'群益台灣精選高息',listed:'2022-10-20',expected:40,source:'Capital',url:'https://www.capitalfund.com.tw/etf/product/detail/195/buyback',portfolioUrl:'https://www.capitalfund.com.tw/etf/product/detail/195/portfolio',
    cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20,firstReanchor:.31}}
 };
-const cache=new Map(),nightSamples=[];
+const cache=new Map(),nightSamples=[],preopenTxfSamples=[];
 const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':12,'00919':8};
 let WARM_ACTIVE=false;
 const RUNTIME={live:null,ctx:null,nf:null,ovs:null,bm:null,refreshing:false,lastRefresh:null,errors:[]};
@@ -77,6 +77,8 @@ async function getBuffer(url,headers={}){const r=await fetchTimeout(url,{headers
 async function cached(key,ttl,fn){const c=cache.get(key),now=Date.now();if(c&&now-c.at<ttl)return {...c.v,cached:true};const v=await fn();cache.set(key,{at:now,v});return {...v,cached:false}}
 function stripTags(s){return String(s||'').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/&#x27;|&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g,' ').trim()}
 function ymdTaipei(d=new Date()){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(d)}
+function taipeiClock(d=new Date()){const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',weekday:'short',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(d).map(x=>[x.type,x.value]));return{day:ymdTaipei(d),weekday:parts.weekday,h:Number(parts.hour),m:Number(parts.minute),s:Number(parts.second)}}
+function txfPreopenWindowNow(d=new Date()){const t=taipeiClock(d),mins=t.h*60+t.m;return['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&mins>=525&&mins<540}
 function parseROCDate(s){const m=String(s||'').match(/(\d{3})[\/.-](\d{1,2})[\/.-](\d{1,2})/);return m?`${Number(m[1])+1911}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`:null}
 function parseISODate(s){const m=String(s||'').match(/(20\d{2})[\/.-](\d{1,2})[\/.-](\d{1,2})/);return m?`${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`:null}
 function dateMinus(days){const d=new Date(Date.now()-days*86400000);return ymdTaipei(d)}
@@ -407,28 +409,29 @@ async function anueTxf(){
   // 台指期 市場盤中 MM/DD HH:mm (UTC+8) <last> <change> <changePct>% ... 1日高低 <low> - <high>
   const px=plain.match(/台指期\s+市場(?:盤中|收盤|休市)[\s\S]{0,180}?([0-9,]+(?:\.\d+)?)\s+([+-][0-9,]+(?:\.\d+)?)\s+([+-][0-9.]+)%/);
   const rg=plain.match(/1日高低\s+([0-9,]+(?:\.\d+)?)\s*-\s*([0-9,]+(?:\.\d+)?)/);
+  const om=plain.match(/(?:開盤價?|今開)\s*([0-9,]+(?:\.\d+)?)/);
   const vm=plain.match(/成交量\s*([0-9,]+)\s*口/);
   if(!px)throw Error('Anue TXF page price fields not found');
   if(!rg)throw Error('Anue TXF page day-range fields not found');
-  const last=n(px[1]),reportedChange=n(px[2]),reportedPct=n(px[3]),low=n(rg[1]),high=n(rg[2]),volume=vm?n(vm[1]):null;
+  const last=n(px[1]),reportedChange=n(px[2]),reportedPct=n(px[3]),low=n(rg[1]),high=n(rg[2]),open=om?n(om[1]):null,volume=vm?n(vm[1]):null;
   if(!(last>0)||!Number.isFinite(reportedChange))throw Error('Anue TXF page invalid last/change');
   if(!(low>0&&high>0&&high>=low))throw Error('Anue TXF page invalid day range');
   const reference=last-reportedChange;
   if(!(reference>0))throw Error('Anue TXF page invalid reference');
   // 不直接相信頁面百分比，固定依同一 reference 自行重算，避免正負號/四捨五入混用。
   const change=last-reference,changePct=change/reference*100;
-  addNightSample(last);
+  addNightSample(last);addPreopenTxfSample(last);const preopenLead=preopenTxfLead(last);
   return{
    ok:true,available:true,
    source:'Anue 鉅亨 TXF 官網（正負號自行重算）',
    sourceUrl:url,fetchedAt:new Date().toISOString(),
-   last,reference,prevClose:reference,open:null,high,low,volume,
+   last,reference,prevClose:reference,open,high,low,volume,
    openInterest:null,bid:null,ask:null,
    change,changePct,
    reportedChange,reportedPct,
    offHighPoints:last-high,
    offHighPct:(last-high)/high*100,
-   momentum:nightMomentum(last,high,low),
+   momentum:nightMomentum(last,high,low),preopenLead,
    quoteSymbol:'TWF/TXF-page',
    highDefinition:'鉅亨 1日高點'
   };
@@ -441,14 +444,14 @@ async function anueTxf(){
    const reference=q.prevClose;
    if(!(q.last>0&&reference>0&&q.high>0&&q.low>0))throw Error('Anue TXF quote fields incomplete');
    const change=q.last-reference,changePct=change/reference*100;
-   addNightSample(q.last);
+   addNightSample(q.last);addPreopenTxfSample(q.last);const preopenLead=preopenTxfLead(q.last);
    return{
     ok:true,available:true,source:'Anue 鉅亨 TXF API（正負號自行重算）',
     sourceUrl:url,fetchedAt:new Date().toISOString(),
     last:q.last,reference,prevClose:reference,open:q.open,high:q.high,low:q.low,volume:q.volume,
     openInterest:null,bid:null,ask:null,change,changePct,
     offHighPoints:q.last-q.high,offHighPct:(q.last-q.high)/q.high*100,
-    momentum:nightMomentum(q.last,q.high,q.low),quoteSymbol:sym,
+    momentum:nightMomentum(q.last,q.high,q.low),preopenLead,quoteSymbol:sym,
     highDefinition:'鉅亨 1日高點'
    };
   }catch(e){errors.push(sym+':'+e.message)}
@@ -579,6 +582,22 @@ async function overseas(){
 
 function fieldNum(text,label){const esc=label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),m=text.match(new RegExp(esc+'\\s*([\\-+]?\\d[\\d,]*(?:\\.\\d+)?)'));return m?n(m[1]):null}
 function addNightSample(price){const now=Date.now();if(!(price>0))return;const last=nightSamples.at(-1);if(!last||now-last.at>=7000)nightSamples.push({at:now,price});while(nightSamples.length&&now-nightSamples[0].at>16*60*1000)nightSamples.shift()}
+function addPreopenTxfSample(price){
+ const now=new Date(),t=taipeiClock(now);if(!(price>0)||!txfPreopenWindowNow(now))return;
+ while(preopenTxfSamples.length&&preopenTxfSamples[0].day!==t.day)preopenTxfSamples.shift();
+ const ts=now.getTime(),last=preopenTxfSamples.at(-1),clockMinute=t.h*60+t.m+t.s/60;if(!last||ts-last.at>=7000)preopenTxfSamples.push({day:t.day,at:ts,price,clockMinute});
+ while(preopenTxfSamples.length&&ts-preopenTxfSamples[0].at>25*60*1000)preopenTxfSamples.shift();
+}
+function preopenTxfLead(last){
+ const now=new Date(),t=taipeiClock(now);if(!txfPreopenWindowNow(now)||!(last>0))return null;
+ const rows=preopenTxfSamples.filter(x=>x.day===t.day),first=rows[0]||null,open=first?.price;
+ if(!(open>0))return{active:true,available:false,day:t.day,reason:'08:45台指期樣本累積中',sampleCount:rows.length};
+ const nowMs=now.getTime();function delta(mins){const target=nowMs-mins*60000;let base=null;for(const x of rows){if(x.at<=target)base=x;else break}if(!base&&rows.length&&nowMs-rows[0].at>=mins*45000)base=rows[0];return base?{points:last-base.price,pct:(last-base.price)/base.price*100,base:base.price}:null}
+ const d3=delta(3),d5=delta(5),sessionPct=(last-open)/open*100,spanMinutes=first?Math.max(0,(nowMs-first.at)/60000):0,startDelayMinutes=Math.max(0,(first?.clockMinute??525)-525);
+ const components=[{v:normPct(sessionPct,.80),w:.65},{v:d5?normPct(d5.pct,.45):null,w:.22},{v:d3?normPct(d3.pct,.30):null,w:.13}],scoreNorm=weightedAvailable(components);
+ const spanQuality=clamp(spanMinutes/8,.20,1),startQuality=clamp(1-startDelayMinutes/12,.20,1),confidence=clamp(spanQuality*startQuality,.20,1);
+ return{active:true,available:Number.isFinite(scoreNorm),day:t.day,source:'08:45後首個觀測價',open,last,sessionChangePct:sessionPct,d3,d5,scoreNorm:Number.isFinite(scoreNorm)?clamp(scoreNorm,-1,1):null,confidence,spanMinutes,startDelayMinutes,sampleCount:rows.length};
+}
 function nightMomentum(last,high,low){
  const now=Date.now();function d(mins){const target=now-mins*60000;let base=null;for(const x of nightSamples){if(x.at<=target)base=x;else break}if(!base&&nightSamples.length&&now-nightSamples[0].at>mins*45000)base=nightSamples[0];return base?{points:last-base.price,pct:(last-base.price)/base.price*100,base:base.price}:null}
  const d1=d(1),d3=d(3),d5=d(5),d15=d(15),r=d3||d1;let direction='資料累積中',tone='neutral';
@@ -591,8 +610,8 @@ async function nightFutureYahoo(){
   const text=stripTags(await getText(url,{'Referer':'https://tw.stock.yahoo.com/future/'}));
   const last=fieldNum(text,'成交'),reference=fieldNum(text,'參考價')??fieldNum(text,'昨收'),open=fieldNum(text,'開盤'),high=fieldNum(text,'最高'),low=fieldNum(text,'最低'),volume=fieldNum(text,'總量'),oi=fieldNum(text,'未平倉'),bid=fieldNum(text,'買價'),ask=fieldNum(text,'賣價');
   if(!(last>0)||!(reference>0))throw Error('WTX fields not found');
-  const change=last-reference,changePct=change/reference*100;addNightSample(last);
-  return{ok:true,available:true,source:'Yahoo股市 WTX&（正負號自行重算）',sourceUrl:url,fetchedAt:new Date().toISOString(),last,reference,prevClose:reference,open,high,low,volume,openInterest:oi,bid,ask,change,changePct,offHighPoints:high>0?last-high:null,offHighPct:high>0?(last-high)/high*100:null,momentum:nightMomentum(last,high,low)};
+  const change=last-reference,changePct=change/reference*100;addNightSample(last);addPreopenTxfSample(last);const preopenLead=preopenTxfLead(last);
+  return{ok:true,available:true,source:'Yahoo股市 WTX&（正負號自行重算）',sourceUrl:url,fetchedAt:new Date().toISOString(),last,reference,prevClose:reference,open,high,low,volume,openInterest:oi,bid,ask,change,changePct,offHighPoints:high>0?last-high:null,offHighPct:high>0?(last-high)/high*100:null,momentum:nightMomentum(last,high,low),preopenLead};
  }catch(e){return{ok:false,available:false,source:'Yahoo股市 WTX&',sourceUrl:url,fetchedAt:new Date().toISOString(),reason:e.message}}
 }
 async function nightFuture(){try{return await anueTxf()}catch(e){const y=await nightFutureYahoo();return y?.ok?{...y,fallbackErrors:['Anue TXF:'+e.message]}:{...y,fallbackErrors:['Anue TXF:'+e.message]}}}
@@ -1340,7 +1359,10 @@ function buildEnvironment(code,ld,ctx,ovs,nf,health){
  const broad=ctx?.breadth;
  add('大盤',normPct(movePct(ld.market),2.5),code==='0050'?.14:.16);
  add('台積電',normPct(movePct(ld.tsmc),3),code==='0050'?.20:.08);
- add('台指夜盤',normPct(nf?.changePct,2.5),.18);
+ const lead=nf?.preopenLead,leadActive=!!(lead?.active&&lead?.available&&Number.isFinite(lead.scoreNorm));
+ // 08:45~09:00 avoid double-counting the same TXF: keep 12% for change vs reference, plus up to 10% for the actual day-session path since 08:45.
+ add('台指期相對參考價',normPct(nf?.changePct,2.5),leadActive?.12:.18);
+ if(leadActive)add('08:45台指日盤先行',lead.scoreNorm,.10*clamp(lead.confidence??1,.35,1));
  add('NASDAQ',normPct(ovs?.quotes?.NASDAQ?.changePct,2.2),code==='0050'?.10:.07);
  add('SOX',normPct(ovs?.quotes?.SOX?.changePct,3.5),code==='0050'?.15:.07);
  add('TSM ADR',normPct(ovs?.quotes?.TSM?.changePct,3.5),code==='0050'?.14:.06);
@@ -1373,7 +1395,7 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const chaseScore=-chaseRisk*.20,envScorePart=clamp(env.score*.08,-8,8),healthScorePart=health?.usable?clamp((health.score-50)*.12,-6,6):0;
  let score=58+priceFit+chaseScore+envScorePart+healthScorePart;if(hardVeto)score=Math.min(score,42);score=clamp(Math.round(score),0,100);
  const noBuyToday=!hardVeto&&(chaseRisk>=88||(score<40&&px>z1.high));
- return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason:noBuyToday?'現價偏離合理區過遠／追高風險過高，今日不硬生買點':null,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:'first-touch-v1',targetQuantile:cfg.q[0],...firstCal},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + proximity-correct score gate + environment/health + anti-chase + confirmed-center re-anchor'};
+ return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason:noBuyToday?'現價偏離合理區過遠／追高風險過高，今日不硬生買點':null,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:'first-touch-v1',targetQuantile:cfg.q[0],...firstCal},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + proximity-correct score gate + environment/health + anti-chase + confirmed-center re-anchor'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
@@ -1445,6 +1467,7 @@ async function backtest(code){
  const result={ok:true,ready:true,status:'READY',code,name:META[code].name,listed:META[code].listed,firstDate:v.first,lastDate:v.last,source:h.source,historyDays:h.rows.length,validation:v,corporateActions:h.corporateActions,scope:v.fullHistoryPass?'上市日至今完整歷史核心回測':`長期樣本回測（PARTIAL）：${v.first}～${v.last}，${v.rows}交易日；未宣稱上市日至今完整。`,slices,ab:{antiChaseOn:metrics(on),antiChaseOff:metrics(off)},walkForward:wf,generatedAt:new Date().toISOString()};cache.set(key,{at:Date.now(),v:result});return result;
 }
 
+async function preopenTxfPump(){if(!txfPreopenWindowNow())return;try{const nf=await nightFuture();RUNTIME.nf=nf}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}}
 async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',60000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cached('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
 function V(status,evidence,detail='',updatedAt=new Date().toISOString()){return{status,evidence,detail,updatedAt}}
 async function validationReport(deep=false){
@@ -1682,7 +1705,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/history-warm'){const code=u.searchParams.get('code'),all=u.searchParams.get('all')==='1';if(all)ETF.forEach(c=>enqueueHistory(c,false));else if(ETF.includes(code))enqueueHistory(code,true);return send(res,200,{ok:true,status:'WARMING',history:ETF.map(historyProgress)});}
  if(u.pathname==='/api/validation')return safeApi(res,'validation',()=>validationReport(u.searchParams.get('deep')==='1'));
  if(u.pathname==='/api/official-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'official-history',async()=>{if(!ETF.includes(code))return{ok:false,error:'unsupported code'};const h=await officialHistory(code);return h.ready?{ok:true,ready:true,code,source:h.source,validation:h.validation,corporateActions:h.corporateActions,adjustmentAnomalies:h.adjustmentAnomalies,rows:h.rows.length,first:h.rows[0]?.date,last:h.rows.at(-1)?.date}:{ok:true,ready:false,status:'WARMING',code,progress:h.progress}})}
- if(u.pathname==='/api/diagnostics')return send(res,200,{ok:true,version:VERSION,build:BUILD,marketSource:RUNTIME.live?.source||null,marketRealtime:RUNTIME.live?.realtime??null,lastRefresh:RUNTIME.lastRefresh,errors:RUNTIME.errors||[],historyQueue:ETF.map(historyProgress),historyAllPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),yahoo0050:{enabled:true,mode:'v8 chart period1/period2 adjusted OHLC'},goodinfo0050:{enabled:true,mode:'POST long-history',cachedRows:GOODINFO_0050_CACHE.rows.length,period:GOODINFO_0050_CACHE.period,error:GOODINFO_0050_CACHE.error,sourceUrl:GOODINFO_0050_CACHE.url||'https://goodinfo.tw/tw/ShowK_Chart.asp?STOCK_ID=0050&CHT_CAT2=DATE&STEP=DATA&PERIOD=6000&PRICE_ADJ=T'},now:new Date().toISOString()});
+ if(u.pathname==='/api/diagnostics')return send(res,200,{ok:true,version:VERSION,build:BUILD,marketSource:RUNTIME.live?.source||null,marketRealtime:RUNTIME.live?.realtime??null,lastRefresh:RUNTIME.lastRefresh,errors:RUNTIME.errors||[],preopenTxfLead:RUNTIME.nf?.preopenLead||null,preopenTxfSamples:preopenTxfSamples.length,historyQueue:ETF.map(historyProgress),historyAllPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),yahoo0050:{enabled:true,mode:'v8 chart period1/period2 adjusted OHLC'},goodinfo0050:{enabled:true,mode:'POST long-history',cachedRows:GOODINFO_0050_CACHE.rows.length,period:GOODINFO_0050_CACHE.period,error:GOODINFO_0050_CACHE.error,sourceUrl:GOODINFO_0050_CACHE.url||'https://goodinfo.tw/tw/ShowK_Chart.asp?STOCK_ID=0050&CHT_CAT2=DATE&STEP=DATA&PERIOD=6000&PRICE_ADJ=T'},now:new Date().toISOString()});
  if(u.pathname==='/api/etf-live'){
   try{
    const d=await deadline(liveEtf4(),7000,null),body=JSON.stringify(d||{ok:false,status:'TIMEOUT',source:'etf-live',quotes:{},error:'四檔ETF即時行情逾時',fetchedAt:new Date().toISOString()});
@@ -1716,6 +1739,9 @@ server.listen(PORT,'0.0.0.0',()=>{
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
  setInterval(refreshRuntime,120000);
+ // Dedicated 08:45~08:59:59 TXF sampler. It is idle outside the pre-open window and gives the 08:57/08:58/08:59 model the actual 12-minute day-session path.
+ setTimeout(preopenTxfPump,2500);
+ setInterval(preopenTxfPump,10000);
  setTimeout(autoWarmAllHistory,45000);
  setInterval(autoWarmAllHistory,30*60*1000);
 });
