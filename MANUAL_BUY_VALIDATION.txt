@@ -1,0 +1,18 @@
+V16.8.42-MANUAL-BUY
+========================
+Purpose:
+- Add "記錄自主買入" for real purchases made without a model trigger.
+- Preserve the full model snapshot at entry.
+- Keep manual trades out of model-trade performance statistics.
+- Continue tracking manual trade P/L, 5/20/60D, MAE/MFE, layer-2/layer-3 reach.
+- Update holdings and Supabase using the existing sync path.
+
+Unchanged:
+- First/second/third buy-point calculation
+- First-layer gate scoring
+- chaseRisk / hardVeto / noBuyToday
+- live quote / night futures / constituents / holdings / Supabase backend schema
+
+Compatibility:
+- Existing trades without tradeType are treated as model trades.
+- Supabase payload is JSON and preserves tradeType/manual snapshot fields.
