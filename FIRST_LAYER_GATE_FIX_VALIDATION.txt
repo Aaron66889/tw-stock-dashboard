@@ -1,0 +1,39 @@
+V16.8.41 FIRST-LAYER-GATE validation
+
+Scope
+- Server-side score direction used by the existing layer-1 confirmation Gate only.
+- Existing client confirmation threshold remains score >= 50 and chaseRisk < 88.
+- No layer-price, layer-2/layer-3, quote, night-future, constituent, holding, Supabase, model-trade, or UI logic is changed.
+
+Bug fixed
+Previous score term:
+  dist = (l1 - px) / px * 100
+  price term = clamp(-dist * 8, -20, 20)
+When px was ABOVE l1, dist was negative and -dist was positive. Therefore being farther above the buy point earned MORE score. As price fell into layer 1, that bonus disappeared, so score fell exactly when the buy zone was reached.
+
+New price-fit term
+- Above layer-1 zone: priceFit = clamp(14 - aboveZonePct*8, -8, 14)
+- Inside layer-1 zone: priceFit = 14
+- Below layer-1 zone: priceFit = clamp(14 - belowZonePct*4, 8, 14)
+This makes score improve monotonically as price approaches the first zone from above.
+
+Observed-screen scenario simulations (other components held constant)
+0050: zone 105.70-106.02, chaseRisk 73, environment -42, health 24
+- px 106.80: new score ~45
+- px 106.02 (zone high): new score ~51 => existing score>=50 Gate can pass if stable and no hardVeto
+- chaseRisk remains <88, so anti-chase hard stop is preserved
+
+00878: zone 33.36-33.44, chaseRisk 80, environment -30, health 46
+- px 33.65: new score ~48
+- px 33.44 (zone high): new score ~53 => existing score>=50 Gate can pass if stable and no hardVeto
+
+High chase protection
+- 0056 chaseRisk 93: noBuyToday remains true even if price is in zone
+- 00919 chaseRisk 100: noBuyToday remains true even if price is in zone
+
+Static/runtime checks
+- node --check server.js: PASS
+- node --check public/app.js: PASS
+- local startup: PASS
+- /api/diagnostics build: 16.8.41-FIRST-LAYER-GATE
+- /api/diagnostics ok: true

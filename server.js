@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.40-FIRST-LAYER-ACCESS';
+const BUILD='16.8.41-FIRST-LAYER-GATE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1366,10 +1366,14 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const zoneW=Math.max(.03,Math.min(atr*.10,px*.0016)),z=x=>({low:x-zoneW,high:x+zoneW,center:x});
  const marketCh=movePct(env.liveMarket),tsmcCh=movePct(env.liveTsmc),b=env.breadth;
  const knife=(Number.isFinite(marketCh)&&marketCh<-2.2?1:0)+(Number.isFinite(tsmcCh)&&tsmcCh<-3?1:0)+(b&&b.ratio<.22?1:0)+(env.score<-65?1:0);
- const stale=!fresh,hardVeto=stale||knife>=2,dist=(l1-px)/px*100;
- let score=58+clamp(-dist*8,-20,20)-chaseRisk*.20+clamp(env.score*.08,-8,8)+(health?.usable?clamp((health.score-50)*.12,-6,6):0);if(hardVeto)score=Math.min(score,42);score=clamp(Math.round(score),0,100);
- const noBuyToday=!hardVeto&&(chaseRisk>=88||(score<40&&px>l1));
- return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason:noBuyToday?'現價偏離合理區過遠／追高風險過高，今日不硬生買點':null,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:'first-touch-v1',targetQuantile:cfg.q[0],...firstCal},raw:{first:z(l1),second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + environment/health + anti-chase + confirmed-center re-anchor'};
+ const stale=!fresh,hardVeto=stale||knife>=2,z1=z(l1);
+ // Price-fit must improve as price approaches layer 1. The previous formula rewarded being farther ABOVE l1, so score fell exactly when the buy zone was reached.
+ const aboveZonePct=px>z1.high?(px-z1.high)/px*100:0,belowZonePct=px<z1.low?(z1.low-px)/px*100:0;
+ const priceFit=px>z1.high?clamp(14-aboveZonePct*8,-8,14):(px<z1.low?clamp(14-belowZonePct*4,8,14):14);
+ const chaseScore=-chaseRisk*.20,envScorePart=clamp(env.score*.08,-8,8),healthScorePart=health?.usable?clamp((health.score-50)*.12,-6,6):0;
+ let score=58+priceFit+chaseScore+envScorePart+healthScorePart;if(hardVeto)score=Math.min(score,42);score=clamp(Math.round(score),0,100);
+ const noBuyToday=!hardVeto&&(chaseRisk>=88||(score<40&&px>z1.high));
+ return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason:noBuyToday?'現價偏離合理區過遠／追高風險過高，今日不硬生買點':null,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:'first-touch-v1',targetQuantile:cfg.q[0],...firstCal},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + proximity-correct score gate + environment/health + anti-chase + confirmed-center re-anchor'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});

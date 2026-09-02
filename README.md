@@ -610,3 +610,14 @@ Scope is intentionally limited to the four ETF layer-1 buy points (0050/0056/008
 - Layer 1 gets a separate confirmed-center re-anchor rate. Layer 2/3 keep the previous slower re-anchor behavior.
 - The browser resets only the live layer-state once when it sees the new calibration version, and layer 1 is allowed to catch up to a higher server-approved target faster. Layer 2/3 keep their previous upward cap.
 - Backtest signal generation uses the same ETF-specific first-layer touch quantile and first-layer accessibility helper for price-core consistency.
+
+
+## 16.8.41 first-layer score/gate direction patch
+
+Scope is limited to the server-side score term used by the existing layer-1 confirmation Gate. Layer prices, layer-2/layer-3 logic, chase hard stop, UI, quotes, night futures, constituents, holdings, Supabase, and model-trade sync are unchanged.
+
+- Fixes the price-distance score direction: being farther above layer 1 no longer earns a larger score.
+- Price-fit now rises as live price approaches the first-zone high and reaches +14 inside the first zone.
+- The existing client Gate remains `score >= 50 && chaseRisk < 88`; the threshold itself is not weakened.
+- `chaseRisk >= 88` still produces `noBuyToday`.
+- Adds `scoreBreakdown` to `/api/buy-model` for future verification without changing the UI.
