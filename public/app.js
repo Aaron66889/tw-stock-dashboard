@@ -206,15 +206,16 @@ function handlePreopen(){
 }
 function initModel(code,r){
  const mk=z=>({zone:JSON.parse(JSON.stringify(z)),samples:[],confirmed:false,forming:false,fastPass:false,invalid:false,confirmCount:0,badCount:0,triggeredAt:null});
- return{layers:[mk(r.raw.first),mk(r.raw.second),mk(r.raw.third)],prevEnv:r.environmentScore,prevHealth:r.health?.score??null,lastPrice:r.price,lastAt:new Date().toISOString()}
+ return{layers:[mk(r.raw.first),mk(r.raw.second),mk(r.raw.third)],calibrationVersion:r.firstLayerCalibration?.version||'legacy',prevEnv:r.environmentScore,prevHealth:r.health?.score??null,lastPrice:r.price,lastAt:new Date().toISOString()}
 }
 function updateOne(code,r){
- if(r.error)return;let m=STATE.models[code]||initModel(code,r),atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
+ if(r.error)return;const calibrationVersion=r.firstLayerCalibration?.version||'legacy';let m=STATE.models[code];if(!m||m.calibrationVersion!==calibrationVersion)m=initModel(code,r);let atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
  // Participation protection after long no-signal streak in a confirmed bull structure.
  let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);
  if(days>=15&&r.history.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}
- const downCap=Math.max(.018,atr*.055),upCap=Math.max(.012,atr*.024);
- m.layers.forEach((L,i)=>{L.zone=moveZone(L.zone,targets[i],downCap,upCap,allowDown);L.samples.push(center(L.zone));L.samples=L.samples.slice(-6)});
+ const downCap=Math.max(.018,atr*.055),upCap=Math.max(.012,atr*.024),firstUpCap=Math.max(.018,atr*.055);
+ // First layer may catch up faster to a server-confirmed higher center; layers 2/3 retain the original slow anti-chase cap.
+ m.layers.forEach((L,i)=>{L.zone=moveZone(L.zone,targets[i],downCap,i===0?firstUpCap:upCap,allowDown);L.samples.push(center(L.zone));L.samples=L.samples.slice(-6)});
  const px=Number(lastLive?.quotes?.[code]?.last??r.price),firstCenter=center(m.layers[0].zone),rapid=m.lastPrice&&px<m.lastPrice-atr*.75&&px<m.layers[0].zone.low;
  m.layers.forEach((L,i)=>{const z=L.zone,inZone=px>=z.low&&px<=z.high,sd=L.samples.length>=4?Math.sqrt(L.samples.reduce((s,v)=>s+(v-L.samples.reduce((a,b)=>a+b,0)/L.samples.length)**2,0)/L.samples.length):999,stable=sd<=atr*.08;
   if(r.hardVeto){L.invalid=true;L.forming=false;L.fastPass=false;return}

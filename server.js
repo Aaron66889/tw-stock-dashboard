@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.39-NIGHT-ANUE-PAGE-ONLY';
+const BUILD='16.8.40-FIRST-LAYER-ACCESS';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -19,13 +19,13 @@ const HOLDINGS_SYNC_ID='__HOLDINGS_STATE__';
 const ETF=['0050','0056','00878','00919'];
 const META={
  '0050':{name:'元大台灣50',listed:'2003-06-30',expected:50,fundId:'1066',source:'Yuanta',url:'https://www.yuantaetfs.com/product/detail/0050/ratio',
-   cfg:{q:[.45,.25,.10],chaseBase:23,chasePctile:66,chaseDev:650,chaseR20:190,envShiftNeg:.020,envShiftPos:.0045,healthShift:.0040,reanchor:.18}},
+   cfg:{q:[.45,.25,.10],chaseBase:23,chasePctile:66,chaseDev:650,chaseR20:190,envShiftNeg:.020,envShiftPos:.0045,healthShift:.0040,reanchor:.18,firstReanchor:.30}},
  '0056':{name:'元大高股息',listed:'2007-12-26',expected:50,fundId:'1084',source:'Yuanta',url:'https://www.yuantaetfs.com/product/detail/0056/ratio',
-   cfg:{q:[.48,.27,.11],chaseBase:21,chasePctile:68,chaseDev:570,chaseR20:175,envShiftNeg:.016,envShiftPos:.0040,healthShift:.0032,reanchor:.20}},
+   cfg:{q:[.48,.27,.11],chaseBase:21,chasePctile:68,chaseDev:570,chaseR20:175,envShiftNeg:.016,envShiftPos:.0040,healthShift:.0032,reanchor:.20,firstReanchor:.32}},
  '00878':{name:'國泰永續高股息',listed:'2020-07-20',expected:30,source:'Cathay',url:'https://www.cathaysite.com.tw/fund-details/ECN?tab=portfolio',
-   cfg:{q:[.48,.27,.11],chaseBase:20,chasePctile:69,chaseDev:560,chaseR20:170,envShiftNeg:.016,envShiftPos:.0040,healthShift:.0033,reanchor:.21}},
+   cfg:{q:[.48,.27,.11],chaseBase:20,chasePctile:69,chaseDev:560,chaseR20:170,envShiftNeg:.016,envShiftPos:.0040,healthShift:.0033,reanchor:.21,firstReanchor:.33}},
  '00919':{name:'群益台灣精選高息',listed:'2022-10-20',expected:40,source:'Capital',url:'https://www.capitalfund.com.tw/etf/product/detail/195/buyback',portfolioUrl:'https://www.capitalfund.com.tw/etf/product/detail/195/portfolio',
-   cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20}}
+   cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20,firstReanchor:.31}}
 };
 const cache=new Map(),nightSamples=[];
 const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':12,'00919':8};
@@ -987,13 +987,27 @@ async function etfHistory(code){
 }
 function adjustedRows(rows){return rows.map(x=>{const ac=x.adjclose??x.close,f=x.close>0&&ac>0?ac/x.close:1;return{...x,aOpen:x.adjopen??(x.open!=null?x.open*f:null),aHigh:x.adjhigh??(x.high!=null?x.high*f:null),aLow:x.adjlow??(x.low!=null?x.low*f:null),aClose:ac,precision:x.high!=null&&x.low!=null?'ohlc':'close'}}).filter(x=>x.aClose>0)}
 function sma(a,k){if(a.length<k)return null;return a.slice(-k).reduce((s,x)=>s+x,0)/k}
-function histStats(rows){
+function histStats(rows,qs=[.45,.25,.10]){
  const raw=rows.filter(x=>x.close>0),adj=raw.map(x=>x.adjclose??x.close),tr=[],downs=[];
  for(let i=1;i<raw.length;i++){const f=raw[i].close>0&&raw[i].adjclose>0?raw[i].adjclose/raw[i].close:1,pf=raw[i-1].close>0&&raw[i-1].adjclose>0?raw[i-1].adjclose/raw[i-1].close:1;const prev=raw[i-1].close*pf,h=(raw[i].high??raw[i].close)*f,l=(raw[i].low??raw[i].close)*f;tr.push(Math.max(h-l,Math.abs(h-prev),Math.abs(l-prev)));if(l>0&&prev>0)downs.push(l/prev-1)}
  const d1=downs.slice(-252),d2=downs.slice(-504),d5=downs.slice(-1260),df=downs;
  const blend=q=>weightedAvailable([{v:quantile(df,q),w:.15},{v:quantile(d5,q),w:.25},{v:quantile(d2,q),w:.30},{v:quantile(d1,q),w:.30}]);
  const last=raw.at(-1)?.close??null,r20=raw.length>=21?((raw.at(-1).adjclose??raw.at(-1).close)/(raw.at(-21).adjclose??raw.at(-21).close)-1):null;
- return{prevClose:last,sma20:sma(adj,20),sma60:sma(adj,60),sma120:sma(adj,120),sma250:sma(adj,250),atr14:sma(tr,14),q45:blend(.45),q25:blend(.25),q10:blend(.10),r20,historyDays:raw.length,windowDays:{full:raw.length,y10:Math.min(raw.length,2520),y5:Math.min(raw.length,1260),y2:Math.min(raw.length,504),y1:Math.min(raw.length,252)},pullbackBlend:{full:.15,y5:.25,y2:.30,y1:.30}};
+ return{prevClose:last,sma20:sma(adj,20),sma60:sma(adj,60),sma120:sma(adj,120),sma250:sma(adj,250),atr14:sma(tr,14),q45:blend(qs[0]??.45),q25:blend(qs[1]??.25),q10:blend(qs[2]??.10),qTargets:qs,r20,historyDays:raw.length,windowDays:{full:raw.length,y10:Math.min(raw.length,2520),y5:Math.min(raw.length,1260),y2:Math.min(raw.length,504),y1:Math.min(raw.length,252)},pullbackBlend:{full:.15,y5:.25,y2:.30,y1:.30}};
+}
+function firstLayerPct({q1,atrPct,chaseRisk,envScore=0,healthScore=null,healthUsable=false,bull=false,centerGap=0,cfg}){
+ const a=clamp(Number.isFinite(atrPct)?atrPct:.012,.002,.05),histDepthRaw=Math.abs(Number.isFinite(q1)?q1:-.006);
+ // q1 is itself a historical intraday-low touch percentile. Keep layer 1 near that target instead of stacking a full extra 1% chase penalty on top of it.
+ const baseDepth=clamp(histDepthRaw,Math.min(.020,Math.max(.0025,a*.45)),Math.min(.020,a*1.25));
+ const chaseAdd=clamp((chaseRisk-55)/32,0,1)*a*.18;
+ const weakEnvAdd=envScore<0?clamp(-envScore/100,0,1)*a*.08:0;
+ const envSupport=envScore>0?clamp(envScore/100,0,1)*a*.10:0;
+ const healthSupport=healthUsable&&Number.isFinite(healthScore)&&healthScore>50?clamp((healthScore-50)/50,0,1)*a*.06:0;
+ const reanchorReduce=bull&&centerGap>0?Math.min(centerGap*(cfg.firstReanchor??cfg.reanchor??.20),a*.18):0;
+ const rawDepth=baseDepth+chaseAdd+weakEnvAdd-envSupport-healthSupport-reanchorReduce;
+ // Final accessibility guard: all adjustments may move layer 1 only about +/- 0.22~0.24 ATR around its historical touch target.
+ const minDepth=Math.max(.0025,baseDepth-a*.22),maxDepth=Math.min(.022,baseDepth+a*.24),finalDepth=clamp(rawDepth,minDepth,maxDepth);
+ return{p1:-finalDepth,baseDepth,rawDepth,finalDepth,minDepth,maxDepth,chaseAdd,weakEnvAdd,envSupport,healthSupport,reanchorReduce,atrPct:a};
 }
 function pricePercentile(rows,px){const a=rows.slice(-252).map(x=>x.close).filter(Number.isFinite);return a.length?a.filter(v=>v<=px).length/a.length*100:50}
 function movePct(q){return q&&q.last>0&&q.prevClose>0?(q.last-q.prevClose)/q.prevClose*100:null}
@@ -1337,23 +1351,25 @@ function buildEnvironment(code,ld,ctx,ovs,nf,health){
  return{score:clamp(base,-100,100),baseScore:base,parts,breadth:broad};
 }
 function modelOne(code,quote,hist,env,health,fresh=true){
- const cfg=META[code].cfg,st=histStats(hist.rows),px=quote?.last??st.prevClose,prev=quote?.prevClose??st.prevClose;if(!(px>0&&prev>0))throw Error('No current price '+code);
+ const cfg=META[code].cfg,st=histStats(hist.rows,cfg.q),px=quote?.last??st.prevClose,prev=quote?.prevClose??st.prevClose;if(!(px>0&&prev>0))throw Error('No current price '+code);
  const atr=st.atr14||prev*.012,pctile=pricePercentile(hist.rows,px),dev20=st.sma20?px/st.sma20-1:0,r20=st.r20||0;
  const chaseRisk=clamp(Math.round(cfg.chaseBase+Math.max(0,pctile-cfg.chasePctile)*1.25+Math.max(0,dev20)*cfg.chaseDev+Math.max(0,r20-.05)*cfg.chaseR20),0,100);
  const chasePenalty=clamp((chaseRisk-45)/55*.010,0,.010),envShift=env.score<0?clamp(env.score/100*cfg.envShiftNeg,-.022,0):clamp(env.score/100*cfg.envShiftPos,0,.006);
  const healthShift=health?.usable?clamp((health.score-50)/50*cfg.healthShift,-.004,.004):0;
- let p1=clamp(st.q45??-.006,-.020,-.0025)-chasePenalty+envShift+healthShift,p2=clamp(st.q25??-.012,-.038,-.006)-chasePenalty*.7+envShift*.9+healthShift*.8,p3=clamp(st.q10??-.022,-.065,-.013)-chasePenalty*.4+envShift*.8+healthShift*.6;
  const bull=st.sma20&&st.sma60&&st.sma120&&st.sma250&&st.sma20>st.sma60&&st.sma60>st.sma120&&st.sma120>st.sma250;
- // Slow re-anchor: long-term center may lift the floor, never chase current price directly.
- if(bull&&r20>0){const center=.42*st.sma20+.30*st.sma60+.18*st.sma120+.10*st.sma250,centerGap=center/(st.sma60||center)-1,re=clamp(centerGap*cfg.reanchor,0,.007);p1+=re;p2+=re*.75;p3+=re*.55}
+ const center=bull?(.42*st.sma20+.30*st.sma60+.18*st.sma120+.10*st.sma250):null,centerGap=bull&&r20>0&&center?Math.max(0,center/(st.sma60||center)-1):0;
+ const firstCal=firstLayerPct({q1:st.q45,atrPct:atr/prev,chaseRisk,envScore:env.score,healthScore:health?.score,healthUsable:!!health?.usable,bull:!!bull&&r20>0,centerGap,cfg});
+ let p1=firstCal.p1,p2=clamp(st.q25??-.012,-.038,-.006)-chasePenalty*.7+envShift*.9+healthShift*.8,p3=clamp(st.q10??-.022,-.065,-.013)-chasePenalty*.4+envShift*.8+healthShift*.6;
+ // Layer 2/3 keep the original slow re-anchor. Layer 1 uses firstLayerPct() and a separate confirmed-center re-anchor cap.
+ if(bull&&r20>0){const re=clamp(centerGap*cfg.reanchor,0,.007);p2+=re*.75;p3+=re*.55}
  let l1=prev*(1+p1),l2=prev*(1+p2),l3=prev*(1+p3);l2=Math.min(l2,l1-Math.max(atr*.35,prev*.004));l3=Math.min(l3,l2-Math.max(atr*.45,prev*.006));
  const zoneW=Math.max(.03,Math.min(atr*.10,px*.0016)),z=x=>({low:x-zoneW,high:x+zoneW,center:x});
  const marketCh=movePct(env.liveMarket),tsmcCh=movePct(env.liveTsmc),b=env.breadth;
  const knife=(Number.isFinite(marketCh)&&marketCh<-2.2?1:0)+(Number.isFinite(tsmcCh)&&tsmcCh<-3?1:0)+(b&&b.ratio<.22?1:0)+(env.score<-65?1:0);
  const stale=!fresh,hardVeto=stale||knife>=2,dist=(l1-px)/px*100;
  let score=58+clamp(-dist*8,-20,20)-chaseRisk*.20+clamp(env.score*.08,-8,8)+(health?.usable?clamp((health.score-50)*.12,-6,6):0);if(hardVeto)score=Math.min(score,42);score=clamp(Math.round(score),0,100);
- const noBuyToday=!hardVeto&&((chaseRisk>=88&&px-l1>atr*1.4)||(score<40&&px>l1));
- return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason:noBuyToday?'現價偏離合理區過遠／追高風險過高，今日不硬生買點':null,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},raw:{first:z(l1),second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + 5/20/60/120/250 trend + asymmetric environment + health when complete + anti-chase + slow re-anchor'};
+ const noBuyToday=!hardVeto&&(chaseRisk>=88||(score<40&&px>l1));
+ return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason:noBuyToday?'現價偏離合理區過遠／追高風險過高，今日不硬生買點':null,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:'first-touch-v1',targetQuantile:cfg.q[0],...firstCal},raw:{first:z(l1),second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + environment/health + anti-chase + confirmed-center re-anchor'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
@@ -1379,14 +1395,15 @@ function prepBacktest(rows){
  for(let i=1;i<a.length;i++){const prev=a[i-1].aClose,h=a[i].aHigh??a[i].aClose,l=a[i].aLow??a[i].aClose;tr[i]=Math.max(h-l,Math.abs(h-prev),Math.abs(l-prev));downs[i]=l/prev-1}
  return{a,tr,downs,pClose:prefix(a.map(x=>x.aClose)),pTr:prefix(tr)};
 }
-function signalSeries(rows,chaseScale=1){
- const {a,tr,downs,pClose,pTr}=prepBacktest(rows),sig=[];let qcache=null,lastSig=-999;
+function signalSeries(code,rows,chaseScale=1){
+ const cfg=META[code].cfg,{a,tr,downs,pClose,pTr}=prepBacktest(rows),sig=[];let qcache=null,lastSig=-999;
  for(let i=260;i<a.length-60;i++){
-  if(!qcache||i%20===0){const ds=downs.slice(1,i).filter(Number.isFinite),blend=q=>weightedAvailable([{v:quantile(ds,q),w:.15},{v:quantile(ds.slice(-1260),q),w:.25},{v:quantile(ds.slice(-504),q),w:.30},{v:quantile(ds.slice(-252),q),w:.30}]);qcache={q45:blend(.45),q25:blend(.25),q10:blend(.10)}}
+  if(!qcache||i%20===0){const ds=downs.slice(1,i).filter(Number.isFinite),blend=q=>weightedAvailable([{v:quantile(ds,q),w:.15},{v:quantile(ds.slice(-1260),q),w:.25},{v:quantile(ds.slice(-504),q),w:.30},{v:quantile(ds.slice(-252),q),w:.30}]);qcache={q45:blend(cfg.q[0]),q25:blend(cfg.q[1]),q10:blend(cfg.q[2])}}
   const prev=a[i-1].aClose,px=a[i-1].aClose,s20=avgP(pClose,i-1,20),slice=a.slice(Math.max(0,i-252),i).map(x=>x.aClose),pctile=slice.filter(v=>v<=px).length/(slice.length||1)*100,r20=i>=20?px/a[i-20].aClose-1:0,dev20=s20?px/s20-1:0;
-  const chase=chaseScale===0?0:clamp((25+Math.max(0,pctile-67)*1.25+Math.max(0,dev20)*620+Math.max(0,r20-.05)*185)*chaseScale,0,100),pen=chaseScale===0?0:clamp((chase-45)/55*.010,0,.010);
-  let p1=clamp(qcache.q45??-.006,-.020,-.0025)-pen,p2=clamp(qcache.q25??-.012,-.038,-.006)-pen*.7,p3=clamp(qcache.q10??-.022,-.065,-.013)-pen*.4;
-  const atr=(pTr[i]-pTr[Math.max(0,i-14)])/Math.min(14,i),l1=prev*(1+p1),l2=Math.min(prev*(1+p2),l1-Math.max(atr*.35,prev*.004)),l3=Math.min(prev*(1+p3),l2-Math.max(atr*.45,prev*.006));
+  const chase=chaseScale===0?0:clamp((cfg.chaseBase+Math.max(0,pctile-cfg.chasePctile)*1.25+Math.max(0,dev20)*cfg.chaseDev+Math.max(0,r20-.05)*cfg.chaseR20)*chaseScale,0,100),pen=chaseScale===0?0:clamp((chase-45)/55*.010,0,.010);
+  const atr=(pTr[i]-pTr[Math.max(0,i-14)])/Math.min(14,i),firstCal=firstLayerPct({q1:qcache.q45,atrPct:atr/prev,chaseRisk:chase,envScore:0,healthUsable:false,bull:false,centerGap:0,cfg});
+  let p1=firstCal.p1,p2=clamp(qcache.q25??-.012,-.038,-.006)-pen*.7,p3=clamp(qcache.q10??-.022,-.065,-.013)-pen*.4;
+  const l1=prev*(1+p1),l2=Math.min(prev*(1+p2),l1-Math.max(atr*.35,prev*.004)),l3=Math.min(prev*(1+p3),l2-Math.max(atr*.45,prev*.006));
   const day=a[i],dayLow=day.aLow??day.aClose,dayHigh=day.aHigh??day.aClose,rapid=(day.aOpen??day.aClose)<l3,hit=!rapid&&dayLow<=l1&&dayHigh>=l1;
   if(hit&&i-lastSig>=7){const entry=l1,fut={},lows=[];for(const k of [5,20,60])fut[k]=a[i+k].aClose/entry-1;for(let j=i;j<=Math.min(i+60,a.length-1);j++)lows.push({r:((a[j].aLow??a[j].aClose)/entry-1),date:a[j].date,price:(a[j].aLow??a[j].aClose),precision:a[j].aLow!=null?'ohlc':'close'});const wl=lows.reduce((w,x)=>!w||x.r<w.r?x:w,null);
    sig.push({i,date:day.date,entry,pctile,chase,ret5:fut[5],ret20:fut[20],ret60:fut[60],mae60:wl.r,lowDate:wl.date,lowPrice:wl.price,precision:wl.precision});lastSig=i}
@@ -1420,7 +1437,7 @@ async function backtest(code){
  if(!v?.dividendCoveragePass)return{ok:true,ready:false,status:'VALIDATION_FAIL',code,error:`企業行動調整資料不足：${v?.dividendEvents||0}/${v?.dividendExpectedMin||'?'}`,validation:v,source:h.source};
  if(h.adjustmentAnomalies?.length)return{ok:true,ready:false,status:'VALIDATION_FAIL',code,error:'價格尺度校正後仍有>30%異常跳動，禁止回測',validation:v,anomalies:h.adjustmentAnomalies,source:h.source};
  const key='bt:r3:'+code,old=cache.get(key);if(old&&Date.now()-old.at<6*60*60*1000)return old.v;
- const on=signalSeries(h.rows,1),off=signalSeries(h.rows,0),c75=signalSeries(h.rows,.75),c125=signalSeries(h.rows,1.25),wf=walkForward(h.rows,{'0.75':c75,'1':on,'1.25':c125}),slices={full:metrics(on),y10:metrics(on,yearsAgo(10)),y5:metrics(on,yearsAgo(5)),y2:metrics(on,yearsAgo(2)),y1:metrics(on,yearsAgo(1))};
+ const on=signalSeries(code,h.rows,1),off=signalSeries(code,h.rows,0),c75=signalSeries(code,h.rows,.75),c125=signalSeries(code,h.rows,1.25),wf=walkForward(h.rows,{'0.75':c75,'1':on,'1.25':c125}),slices={full:metrics(on),y10:metrics(on,yearsAgo(10)),y5:metrics(on,yearsAgo(5)),y2:metrics(on,yearsAgo(2)),y1:metrics(on,yearsAgo(1))};
  const result={ok:true,ready:true,status:'READY',code,name:META[code].name,listed:META[code].listed,firstDate:v.first,lastDate:v.last,source:h.source,historyDays:h.rows.length,validation:v,corporateActions:h.corporateActions,scope:v.fullHistoryPass?'上市日至今完整歷史核心回測':`長期樣本回測（PARTIAL）：${v.first}～${v.last}，${v.rows}交易日；未宣稱上市日至今完整。`,slices,ab:{antiChaseOn:metrics(on),antiChaseOff:metrics(off)},walkForward:wf,generatedAt:new Date().toISOString()};cache.set(key,{at:Date.now(),v:result});return result;
 }
 

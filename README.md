@@ -599,3 +599,14 @@ app.js 完全未改；模型、Score、Gate、買點、Yahoo價格、持股、�
 - Validation #2/#3 code itself is unchanged and will PASS only when the runtime source is actually Anue.
 - `public/app.js` is byte-identical to 16.8.38.
 - ETF, market, overseas, constituents, model, Gate, backtest, cloud sync and model P/L are untouched.
+
+## 16.8.40 first-layer accessibility patch
+
+Scope is intentionally limited to the four ETF layer-1 buy points (0050/0056/00878/00919) and the client-side catch-up of that layer. Existing night-futures, live quotes, constituents, holdings, Supabase/model-trade sync, UI, and layer-2/layer-3 logic are otherwise retained.
+
+- Layer 1 now uses each ETF's configured historical intraday-low touch quantile (`cfg.q[0]`) instead of a common fixed 45% quantile.
+- The historical layer-1 depth is sanity-bounded by that ETF's ATR, then chase/environment/health adjustments are allowed only within a narrow ATR band around the historical touch target. This prevents a normal first layer from being pushed into layer-2/layer-3 territory by stacked penalties.
+- `chaseRisk >= 88` is treated as `noBuyToday` rather than making a nominal first layer arbitrarily deep.
+- Layer 1 gets a separate confirmed-center re-anchor rate. Layer 2/3 keep the previous slower re-anchor behavior.
+- The browser resets only the live layer-state once when it sees the new calibration version, and layer 1 is allowed to catch up to a higher server-approved target faster. Layer 2/3 keep their previous upward cap.
+- Backtest signal generation uses the same ETF-specific first-layer touch quantile and first-layer accessibility helper for price-core consistency.

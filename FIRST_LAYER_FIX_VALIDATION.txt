@@ -1,0 +1,46 @@
+V16.8.40 FIRST-LAYER-ACCESS validation
+
+Scope:
+- 0050 / 0056 / 00878 / 00919 layer-1 accessibility
+- first-layer confirmed-center re-anchor
+- client layer-1 catch-up to a new server-approved target
+- no unrelated feature changes
+
+Static checks:
+- node --check server.js: PASS
+- node --check public/app.js: PASS
+- local HTTP startup: PASS
+- /api/diagnostics build: 16.8.40-FIRST-LAYER-ACCESS
+
+Changed production files vs V16.8.39:
+- server.js
+- public/app.js
+- README.md
+
+Core logic:
+- Each ETF now uses its configured q[0] target for the historical intraday-low touch percentile:
+  0050 45%, 0056 48%, 00878 48%, 00919 50%.
+- Layer 1 is centered on that historical target, sanity-bounded by ATR.
+- Chase/environment/health/re-anchor adjustments are bounded to a narrow ATR band around the historical target.
+- The old full extra chase penalty can no longer push layer 1 from roughly a normal pullback into ~3% territory.
+- chaseRisk >= 88 => noBuyToday; the system does not pretend a 3% deep point is still layer 1.
+- Layer 2/3 retain their original slower re-anchor/price-depth logic.
+- Browser state reinitializes once on calibration-version change so an old 104.x layer does not stay cached after deployment.
+
+Formula-direction tests:
+- final depth always stays within configured accessibility band: PASS
+- increasing chaseRisk (below no-buy threshold) never makes layer 1 shallower: PASS
+- positive environment/health support never makes layer 1 deeper: PASS
+- negative environment never makes layer 1 shallower: PASS
+- confirmed bull-center re-anchor never makes layer 1 deeper: PASS
+
+0050 stress example (illustrative, not live market data):
+current 107.60, q1=-2.00%, ATR=1.20%
+- chase 50 => layer-1 depth 1.500%, center ~105.99
+- chase 65 => layer-1 depth 1.567%, center ~105.91
+- chase 80 => layer-1 depth 1.669%, center ~105.80
+- chase 87 => layer-1 depth 1.716%, center ~105.75
+- chase >=88 => noBuyToday
+
+Note:
+The offline container could not obtain live ETF quotes/history from the external market source, so the final live four-ETF numbers must be checked after deployment through /api/buy-model. The API now returns firstLayerCalibration debug fields for that verification.
