@@ -19,13 +19,13 @@ const HOLDINGS_SYNC_ID='__HOLDINGS_STATE__';
 const ETF=['0050','0056','00878','00919'];
 const META={
  '0050':{name:'元大台灣50',listed:'2003-06-30',expected:50,fundId:'1066',source:'Yuanta',url:'https://www.yuantaetfs.com/product/detail/0050/ratio',
-   cfg:{q:[.45,.25,.10],chaseBase:23,chasePctile:66,chaseDev:650,chaseR20:190,envShiftNeg:.020,envShiftPos:.0045,healthShift:.0040,reanchor:.18}},
+   cfg:{q:[.45,.25,.10],chaseBase:23,chasePctile:66,chaseDev:650,chaseR20:190,envShiftNeg:.020,envShiftPos:.0045,healthShift:.0040,reanchor:.32}},
  '0056':{name:'元大高股息',listed:'2007-12-26',expected:50,fundId:'1084',source:'Yuanta',url:'https://www.yuantaetfs.com/product/detail/0056/ratio',
-   cfg:{q:[.48,.27,.11],chaseBase:21,chasePctile:68,chaseDev:570,chaseR20:175,envShiftNeg:.016,envShiftPos:.0040,healthShift:.0032,reanchor:.20}},
+   cfg:{q:[.48,.27,.11],chaseBase:21,chasePctile:68,chaseDev:570,chaseR20:175,envShiftNeg:.016,envShiftPos:.0040,healthShift:.0032,reanchor:.35}},
  '00878':{name:'國泰永續高股息',listed:'2020-07-20',expected:30,source:'Cathay',url:'https://www.cathaysite.com.tw/fund-details/ECN?tab=portfolio',
-   cfg:{q:[.48,.27,.11],chaseBase:20,chasePctile:69,chaseDev:560,chaseR20:170,envShiftNeg:.016,envShiftPos:.0040,healthShift:.0033,reanchor:.21}},
+   cfg:{q:[.48,.27,.11],chaseBase:20,chasePctile:69,chaseDev:560,chaseR20:170,envShiftNeg:.016,envShiftPos:.0040,healthShift:.0033,reanchor:.36}},
  '00919':{name:'群益台灣精選高息',listed:'2022-10-20',expected:40,source:'Capital',url:'https://www.capitalfund.com.tw/etf/product/detail/195/buyback',portfolioUrl:'https://www.capitalfund.com.tw/etf/product/detail/195/portfolio',
-   cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20}}
+   cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.34}}
 };
 const cache=new Map(),nightSamples=[];
 const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':12,'00919':8};
@@ -1340,9 +1340,9 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const cfg=META[code].cfg,st=histStats(hist.rows),px=quote?.last??st.prevClose,prev=quote?.prevClose??st.prevClose;if(!(px>0&&prev>0))throw Error('No current price '+code);
  const atr=st.atr14||prev*.012,pctile=pricePercentile(hist.rows,px),dev20=st.sma20?px/st.sma20-1:0,r20=st.r20||0;
  const chaseRisk=clamp(Math.round(cfg.chaseBase+Math.max(0,pctile-cfg.chasePctile)*1.25+Math.max(0,dev20)*cfg.chaseDev+Math.max(0,r20-.05)*cfg.chaseR20),0,100);
- const chasePenalty=clamp((chaseRisk-45)/55*.010,0,.010),envShift=env.score<0?clamp(env.score/100*cfg.envShiftNeg,-.022,0):clamp(env.score/100*cfg.envShiftPos,0,.006);
+ const chasePenalty=clamp((chaseRisk-45)/55*.008,0,.008),envShift=env.score<0?clamp(env.score/100*cfg.envShiftNeg,-.024,0):clamp(env.score/100*cfg.envShiftPos,0,.008);
  const healthShift=health?.usable?clamp((health.score-50)/50*cfg.healthShift,-.004,.004):0;
- let p1=clamp(st.q45??-.006,-.020,-.0025)-chasePenalty+envShift+healthShift,p2=clamp(st.q25??-.012,-.038,-.006)-chasePenalty*.7+envShift*.9+healthShift*.8,p3=clamp(st.q10??-.022,-.065,-.013)-chasePenalty*.4+envShift*.8+healthShift*.6;
+ let p1=clamp(st.q45??-.006,-.035,-.012)-chasePenalty+envShift+healthShift,p2=clamp(st.q25??-.012,-.048,-.008)-chasePenalty*.7+envShift*.9+healthShift*.8,p3=clamp(st.q10??-.022,-.075,-.015)-chasePenalty*.4+envShift*.8+healthShift*.6;
  const bull=st.sma20&&st.sma60&&st.sma120&&st.sma250&&st.sma20>st.sma60&&st.sma60>st.sma120&&st.sma120>st.sma250;
  // Slow re-anchor: long-term center may lift the floor, never chase current price directly.
  if(bull&&r20>0){const center=.42*st.sma20+.30*st.sma60+.18*st.sma120+.10*st.sma250,centerGap=center/(st.sma60||center)-1,re=clamp(centerGap*cfg.reanchor,0,.007);p1+=re;p2+=re*.75;p3+=re*.55}
@@ -1384,8 +1384,8 @@ function signalSeries(rows,chaseScale=1){
  for(let i=260;i<a.length-60;i++){
   if(!qcache||i%20===0){const ds=downs.slice(1,i).filter(Number.isFinite),blend=q=>weightedAvailable([{v:quantile(ds,q),w:.15},{v:quantile(ds.slice(-1260),q),w:.25},{v:quantile(ds.slice(-504),q),w:.30},{v:quantile(ds.slice(-252),q),w:.30}]);qcache={q45:blend(.45),q25:blend(.25),q10:blend(.10)}}
   const prev=a[i-1].aClose,px=a[i-1].aClose,s20=avgP(pClose,i-1,20),slice=a.slice(Math.max(0,i-252),i).map(x=>x.aClose),pctile=slice.filter(v=>v<=px).length/(slice.length||1)*100,r20=i>=20?px/a[i-20].aClose-1:0,dev20=s20?px/s20-1:0;
-  const chase=chaseScale===0?0:clamp((25+Math.max(0,pctile-67)*1.25+Math.max(0,dev20)*620+Math.max(0,r20-.05)*185)*chaseScale,0,100),pen=chaseScale===0?0:clamp((chase-45)/55*.010,0,.010);
-  let p1=clamp(qcache.q45??-.006,-.020,-.0025)-pen,p2=clamp(qcache.q25??-.012,-.038,-.006)-pen*.7,p3=clamp(qcache.q10??-.022,-.065,-.013)-pen*.4;
+  const chase=chaseScale===0?0:clamp((25+Math.max(0,pctile-67)*1.25+Math.max(0,dev20)*620+Math.max(0,r20-.05)*185)*chaseScale,0,100),pen=chaseScale===0?0:clamp((chase-45)/55*.008,0,.008);
+  let p1=clamp(qcache.q45??-.006,-.035,-.012)-pen,p2=clamp(qcache.q25??-.012,-.048,-.008)-pen*.7,p3=clamp(qcache.q10??-.022,-.075,-.015)-pen*.4;
   const atr=(pTr[i]-pTr[Math.max(0,i-14)])/Math.min(14,i),l1=prev*(1+p1),l2=Math.min(prev*(1+p2),l1-Math.max(atr*.35,prev*.004)),l3=Math.min(prev*(1+p3),l2-Math.max(atr*.45,prev*.006));
   const day=a[i],dayLow=day.aLow??day.aClose,dayHigh=day.aHigh??day.aClose,rapid=(day.aOpen??day.aClose)<l3,hit=!rapid&&dayLow<=l1&&dayHigh>=l1;
   if(hit&&i-lastSig>=7){const entry=l1,fut={},lows=[];for(const k of [5,20,60])fut[k]=a[i+k].aClose/entry-1;for(let j=i;j<=Math.min(i+60,a.length-1);j++)lows.push({r:((a[j].aLow??a[j].aClose)/entry-1),date:a[j].date,price:(a[j].aLow??a[j].aClose),precision:a[j].aLow!=null?'ohlc':'close'});const wl=lows.reduce((w,x)=>!w||x.r<w.r?x:w,null);
