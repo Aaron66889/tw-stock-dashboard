@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.45-THREE-LAYER-REANCHOR';
+const BUILD='16.8.46-REALTIME-BREADTH';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -496,18 +496,109 @@ async function live(extra=[]){
 }
 async function openapi(p){return getJSON('https://openapi.twse.com.tw/v1/'+p)}
 function numByKeys(o,patterns){if(!o)return null;for(const[k,v]of Object.entries(o))if(patterns.some(p=>p.test(k))){const x=n(v);if(x!=null)return x}return null}
-function breadthServer(arr){
- if(!Array.isArray(arr)||!arr.length)return null;
- const r=arr.at(-1),up=numByKeys(r,[/上漲/i,/漲家/i]),down=numByKeys(r,[/下跌/i,/跌家/i]),flat=numByKeys(r,[/持平/i,/平盤/i])||0;
- if(up==null||down==null)return null;const total=up+down+flat;
- return{up,down,flat,total,upPct:total?up/total*100:null,downPct:total?down/total*100:null,flatPct:total?flat/total*100:null,ratio:total?up/total:.5,scope:'上市集中市場',source:'TWSE opendata/twtazu_od'};
+function breadthInt(v){const m=String(v??'').replace(/,/g,'').match(/-?\d+/);return m?Number(m[0]):null}
+function breadthResult({up,down,flat=0,untraded=0,noCompare=0,universe=null,quoted=null,source,sourceDate,asOf,mode,scope='上市股票',usableForModel=true,coverage=null,detail=null}){
+ if(!Number.isFinite(up)||!Number.isFinite(down))return null;
+ up=Number(up);down=Number(down);flat=Number(flat)||0;untraded=Number(untraded)||0;noCompare=Number(noCompare)||0;
+ const total=up+down+flat,cov=Number.isFinite(coverage)?coverage:(Number.isFinite(universe)&&universe>0&&Number.isFinite(quoted)?quoted/universe:null);
+ return{up,down,flat,total,untraded,noCompare,universe:Number.isFinite(universe)?universe:null,quoted:Number.isFinite(quoted)?quoted:null,
+  upPct:total?up/total*100:null,downPct:total?down/total*100:null,flatPct:total?flat/total*100:null,ratio:total?up/total:.5,
+  coverage:cov,scope,source,sourceDate:sourceDate||null,asOf:asOf||new Date().toISOString(),mode,usableForModel:!!usableForModel,
+  realtime:mode==='live-derived',official:mode==='official-final',detail:detail||null};
+}
+async function officialBreadthToday(){
+ const day=ymdTaipei(),key=day.replace(/-/g,''),url=`https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=${key}&type=MS&response=json&_=${Date.now()}`;
+ const d=await getJSONQuick(url,{'User-Agent':'Mozilla/5.0','Referer':'https://www.twse.com.tw/','Cache-Control':'no-cache'},6500);
+ const tables=Array.isArray(d?.tables)?d.tables:[];
+ let up=null,down=null,flat=0,untraded=0,noCompare=0,found=false;
+ for(const t of tables){
+  const fields=t?.fields||[],stockIdx=fields.findIndex(x=>String(x).trim()==='股票');
+  if(stockIdx<0)continue;
+  for(const row of (t?.data||[])){
+   const label=String(row?.[0]??'').replace(/<[^>]+>/g,'').trim(),v=breadthInt(row?.[stockIdx]);
+   if(v==null)continue;
+   if(/^上漲/.test(label)){up=v;found=true}
+   else if(/^下跌/.test(label)){down=v;found=true}
+   else if(/^持平/.test(label))flat=v;
+   else if(/^未成交/.test(label))untraded=v;
+   else if(/^無比價/.test(label))noCompare=v;
+  }
+ }
+ if(!found||up==null||down==null)throw Error('TWSE MI_INDEX 今日漲跌家數尚未發布');
+ return breadthResult({up,down,flat,untraded,noCompare,source:'TWSE MI_INDEX 官方收盤',sourceDate:day,asOf:new Date().toISOString(),mode:'official-final',scope:'上市股票（官方）',usableForModel:true,coverage:1,detail:'收盤後採證交所官方「股票」漲跌家數'});
+}
+async function breadthUniverse(){
+ return cached('breadth:universe:v2',6*60*60*1000,async()=>{
+  // Use TWSE's all-security snapshot only as a code universe; 4-digit non-zero codes remove ETFs/warrants/ETNs.
+  const d=await twseDailyAll(),codes=Object.keys(d?.map||{}).filter(c=>/^[1-9]\d{3}$/.test(c));
+  if(codes.length<700)throw Error('上市股票母體不足 '+codes.length);
+  return codes.sort();
+ });
+}
+async function liveBreadthDerived(){
+ const codes=await breadthUniverse(),chunks=[];for(let i=0;i<codes.length;i+=60)chunks.push(codes.slice(i,i+60));
+ const errors=[],rows=(await mapLimit(chunks,6,async chunk=>{
+  try{
+   const syms=chunk.map(c=>'TWS:'+c+':STOCK').join(',');
+   const url='https://ws.api.cnyes.com/ws/api/v1/quote/quotes/'+syms+'?column=FORMAT&_='+(Date.now()+'_'+Math.random().toString(36).slice(2));
+   const d=await getJSONQuick(url,{'User-Agent':'Mozilla/5.0','Referer':'https://www.cnyes.com/','Cache-Control':'no-cache, no-store, max-age=0','Pragma':'no-cache','Accept-Encoding':'identity'},4500);
+   return (d?.data||[]).map(x=>({code:String(x?.['200010']||'').trim(),last:n(x?.['200026']),prev:n(x?.['200031']),change:n(x?.['200027']),volume:n(x?.['200036'])}));
+  }catch(e){errors.push(e.message||String(e));return[]}
+ })).flat();
+ const by=new Map(rows.filter(x=>/^[1-9]\d{3}$/.test(x.code)).map(x=>[x.code,x])),eps=1e-9;
+ let up=0,down=0,flat=0,untraded=0,noCompare=0,quoted=0,traded=0;
+ for(const code of codes){
+  const q=by.get(code);
+  if(!q||!(q.last>0)){continue}
+  quoted++;
+  if(!(q.prev>0)){noCompare++;continue}
+  const hasTrade=(Number.isFinite(q.volume)&&q.volume>0)||Math.abs(Number(q.change)||0)>eps;
+  if(!hasTrade){untraded++;continue}
+  traded++;
+  const ch=Number.isFinite(q.change)?q.change:q.last-q.prev;
+  if(ch>eps)up++;else if(ch<-eps)down++;else flat++;
+ }
+ const coverage=codes.length?quoted/codes.length:0,tradedCoverage=codes.length?traded/codes.length:0;
+ if(coverage<.72||up+down+flat<500)throw Error(`即時廣度覆蓋不足 ${(coverage*100).toFixed(0)}% / 有效${up+down+flat}`);
+ return breadthResult({up,down,flat,untraded,noCompare,universe:codes.length,quoted,coverage,source:'TWSE上市股票母體＋Anue即時個股報價',sourceDate:ymdTaipei(),asOf:new Date().toISOString(),mode:'live-derived',scope:'上市股票即時估算',usableForModel:true,
+  detail:`即時衍生｜報價覆蓋 ${(coverage*100).toFixed(0)}%｜有效漲跌平 ${up+down+flat}｜未成交 ${untraded}｜無比價/缺參考 ${noCompare}${errors.length?`｜批次錯誤 ${errors.length}`:''}`});
+}
+const BREADTH_RUNTIME={value:null,refreshing:false,lastAttempt:0,error:null};
+async function refreshBreadthRuntime(force=false){
+ const now=Date.now();if(BREADTH_RUNTIME.refreshing)return BREADTH_RUNTIME.value;
+ if(!force&&BREADTH_RUNTIME.value&&now-BREADTH_RUNTIME.lastAttempt<25000)return BREADTH_RUNTIME.value;
+ BREADTH_RUNTIME.refreshing=true;BREADTH_RUNTIME.lastAttempt=now;
+ try{
+  const t=taipeiClock(),mins=t.h*60+t.m,weekday=['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday);
+  let value=null;
+  if(weekday&&mins>810){
+   try{value=await officialBreadthToday()}catch(_){value=await liveBreadthDerived()}
+  }else if(weekday&&mins>=540){
+   value=await liveBreadthDerived();
+  }else{
+   // Before 09:00 there is no current-session breadth. Never reuse an old row as today's live breadth.
+   value=null;
+  }
+  if(value){BREADTH_RUNTIME.value=value;BREADTH_RUNTIME.error=null}
+  return value;
+ }catch(e){
+  BREADTH_RUNTIME.error=e.message||String(e);
+  const old=BREADTH_RUNTIME.value,age=old?.asOf?Date.now()-Date.parse(old.asOf):Infinity;
+  if(old&&old.sourceDate===ymdTaipei()&&age<120000)return{...old,detail:(old.detail||'')+'｜暫用最近2分鐘快照',stale:true,usableForModel:age<90000};
+  return null;
+ }finally{BREADTH_RUNTIME.refreshing=false}
+}
+async function marketBreadthRealtime(){
+ const v=await refreshBreadthRuntime(false);
+ return v;
 }
 async function context(){
  const errors=[];let breadth=null,turnover=null,institutional=null;
- try{breadth=await openapi('opendata/twtazu_od')}catch(e){errors.push('breadth:'+e.message)}
- try{turnover=await openapi('exchangeReport/FMTQIK')}catch(e){errors.push('turnover:'+e.message)}
- try{institutional=await getJSON('https://www.twse.com.tw/rwd/zh/fund/T86?response=json&selectType=ALLBUT0999&_='+Date.now(),{'Referer':'https://www.twse.com.tw/'})}catch(e){errors.push('institutional:'+e.message)}
- return{ok:!!(breadth||turnover||institutional),fetchedAt:new Date().toISOString(),breadth:breadthServer(breadth),turnover,institutional,errors};
+ try{breadth=await marketBreadthRealtime()}catch(e){errors.push('breadth:'+e.message)}
+ try{turnover=await cached('ctx:turnover',60000,()=>openapi('exchangeReport/FMTQIK'))}catch(e){errors.push('turnover:'+e.message)}
+ try{institutional=await cached('ctx:institutional',120000,()=>getJSON('https://www.twse.com.tw/rwd/zh/fund/T86?response=json&selectType=ALLBUT0999&_='+Date.now(),{'Referer':'https://www.twse.com.tw/'}))}catch(e){errors.push('institutional:'+e.message)}
+ if(BREADTH_RUNTIME.error)errors.push('breadth-live:'+BREADTH_RUNTIME.error);
+ return{ok:!!(breadth||turnover||institutional),fetchedAt:new Date().toISOString(),breadth,turnover,institutional,errors};
 }
 
 async function twseTaiexMonth(iso){
@@ -1367,7 +1458,7 @@ function buildEnvironment(code,ld,ctx,ovs,nf,health){
  add('NASDAQ',normPct(ovs?.quotes?.NASDAQ?.changePct,2.2),code==='0050'?.10:.07);
  add('SOX',normPct(ovs?.quotes?.SOX?.changePct,3.5),code==='0050'?.15:.07);
  add('TSM ADR',normPct(ovs?.quotes?.TSM?.changePct,3.5),code==='0050'?.14:.06);
- if(broad)add('上市廣度',(broad.ratio-.5)*2,.08);
+ if(broad?.usableForModel)add('上市廣度',(broad.ratio-.5)*2,.08);
  if(health?.usable)add('ETF成分健康',(health.score-50)/50,code==='0050'?.18:.24);
  const den=parts.reduce((s,x)=>s+x.w,0);
  const base=den?parts.reduce((s,x)=>s+x.v*x.w,0)/den*100:0;
@@ -1395,7 +1486,7 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  let openCapApplied=false;
  if(sessionOpen>0){const maxL1Center=sessionOpen-zoneW;if(l1>maxL1Center){l1=maxL1Center;openCapApplied=true}}
  l2=Math.min(l2,l1-Math.max(atr*.35,prev*.004));l3=Math.min(l3,l2-Math.max(atr*.45,prev*.006));
- const marketCh=movePct(env.liveMarket),tsmcCh=movePct(env.liveTsmc),b=env.breadth;
+ const marketCh=movePct(env.liveMarket),tsmcCh=movePct(env.liveTsmc),b=env.breadth?.usableForModel?env.breadth:null;
  const knife=(Number.isFinite(marketCh)&&marketCh<-2.2?1:0)+(Number.isFinite(tsmcCh)&&tsmcCh<-3?1:0)+(b&&b.ratio<.22?1:0)+(env.score<-65?1:0);
  const stale=!fresh,hardVeto=stale||knife>=2,z1=z(l1);
  // Price-fit must improve as price approaches layer 1. The previous formula rewarded being farther ABOVE l1, so score fell exactly when the buy zone was reached.
@@ -1417,7 +1508,7 @@ async function buyModel(){
  const healthTimeout=c=>({ok:true,code:c,usable:false,score:null,divergence:'官方成分來源逾時，暫不計分',sourceCoverage:0,quoteCoverage:0,items:[],reason:'constituent deadline exceeded',source:'timeout'});
  const [ld,ctx,ovs,nf,harr,hhealth]=await Promise.all([
   deadline(live().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),8000,{ok:false,quotes:{},market:null,tsmc:null,error:'market deadline exceeded',fetchedAt:null}),
-  deadline(cached('ctx',60000,context).catch(()=>null),6000,null),
+  deadline(cached('ctx',30000,context).catch(()=>null),6000,null),
   deadline(cached('ovs',45000,overseas).catch(()=>null),6000,null),
   deadline(nightFuture().catch(()=>null),6000,null),
   Promise.all(ETF.map(async c=>[c,await deadline(etfHistory(c).catch(e=>({ok:false,rows:[],source:'history error',validation:{fullHistoryPass:false},error:e.message})),7000,historyTimeout(c))])),
@@ -1483,7 +1574,7 @@ async function backtest(code){
 }
 
 async function preopenTxfPump(){if(!txfPreopenWindowNow())return;try{const nf=await nightFuture();RUNTIME.nf=nf}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}}
-async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',60000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cached('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
+async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cached('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
 function V(status,evidence,detail='',updatedAt=new Date().toISOString()){return{status,evidence,detail,updatedAt}}
 async function validationReport(deep=false){
  const out={},errors=[...(RUNTIME.errors||[])],ld=RUNTIME.live,ctx=RUNTIME.ctx,nf=RUNTIME.nf,ovs=RUNTIME.ovs,bm=RUNTIME.bm;
@@ -1507,7 +1598,7 @@ async function validationReport(deep=false){
  out[5]=V('WAIT','需真實08:57–08:59:30由瀏覽器端鎖定');out[6]=V('PASS','首頁具08:57–09:00盤前優先邏輯');out[7]=V(bm&&Object.values(bm.models||{}).some(x=>x&&'noBuyToday' in x)?'PASS':'PARTIAL','支援「今日暫無合理買點」');out[8]=V(new Set(ETF.map(c=>JSON.stringify(META[c].cfg))).size===4?'PASS':'FAIL','四檔使用獨立參數');out[9]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.first?.low)?'PASS':'PARTIAL','第一層為動態區間');out[10]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.third?.low)?'PASS':'PARTIAL','三層價格輸出');out[11]=V(bm&&ETF.some(c=>Number.isFinite(bm.models?.[c]?.score))?'PASS':'PARTIAL','綜合評分輸出');out[12]=V('PASS','前端分層狀態機支援分批');out[13]=V(bm&&ETF.some(c=>'hardVeto' in (bm.models?.[c]||{}))?'PASS':'PARTIAL','硬Gate含資料失效/急殺');out[14]=V(bm&&ETF.some(c=>bm.models?.[c]?.history?.sma250)?'PASS':'PARTIAL','5/20/60/120/250納入');out[15]=V('PASS','買點上修有速度上限');out[16]=V(bm&&ETF.some(c=>'bullStructure' in (bm.models?.[c]?.history||{}))?'PASS':'PARTIAL','中樞慢速重新定錨');
  out[17]=V('WAIT','瀏覽器歷史紀錄由前端補驗');out[18]=V('WAIT','實際價格同步由前端補驗');out[19]=V('WAIT','重複區間折疊由前端補驗');out[20]=V('WAIT','需累積7日買點歷史');
  const hs=bm?.health||{},usable=ETF.filter(c=>hs[c]?.usable).length,connected=ETF.filter(c=>hs[c]&&hs[c].sourceCoverage>0).length;out[21]=V(usable===4?'PASS':connected?'PARTIAL':'FAIL',`成分來源已連線 ${connected}/4；完整健康可計分 ${usable}/4`);out[22]=V(connected?'PASS':'PARTIAL',`成分資料畫面可顯示 ${connected}/4；不足者明示不計分`);out[23]=V(usable===4?'PASS':usable?'PARTIAL':'WAIT',`健康度可正式計分 ${usable}/4`);out[24]=V(usable?'PASS':'WAIT','健康度可用時採權重式分歧/背離');out[25]=V('PASS','健康度位於各ETF detail頁');out[26]=V('PARTIAL','新有效日期會保存版本；待實際換股事件驗證');out[27]=V('PARTIAL','沒有當時版本就禁止今日成分倒灌歷史');
- out[28]=V(ctx?.breadth?.total?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平`:'廣度來源暫不可用');out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');out[33]=V(ld?.quotes?'PASS':'PARTIAL','持股行情使用TWSE MIS約10秒');out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?.dataFresh?'模型行情時間戳新鮮':'資料逾時即停止確認');out[35]=V('PASS','回前景立即刷新');out[36]=V('PASS','行情10秒/模型30秒');
+ out[28]=V(ctx?.breadth?.total&&ctx.breadth?.sourceDate===ymdTaipei()?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平｜${ctx.breadth.mode}｜${ctx.breadth.sourceDate||'—'}${Number.isFinite(ctx.breadth.coverage)?`｜覆蓋${Math.round(ctx.breadth.coverage*100)}%`:''}`:'廣度來源暫不可用／盤前不沿用舊資料');out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');out[33]=V(ld?.quotes?'PASS':'PARTIAL','持股行情使用TWSE MIS約10秒');out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?.dataFresh?'模型行情時間戳新鮮':'資料逾時即停止確認');out[35]=V('PASS','回前景立即刷新');out[36]=V('PASS','行情10秒/模型30秒');
  if(deep)ETF.forEach(c=>enqueueHistory(c,false));const hp=ETF.map(c=>historyProgress(c)),ready=hp.filter(x=>x.status==='READY').length;out[37]=V(ready===4?'PASS':ready?'PARTIAL':'WAIT',`四檔可回測完整樣本 ${ready}/4`,hp.map(x=>`${x.code}:${x.status} ${x.first||'—'}→${x.last||'—'} ${x.rows||0}日`).join('｜'));out[38]=V('PASS','主結果全歷史；10/5/2/1年只做切片');
  let corpPass=0,btReady=0,wfPass=0,abPass=0,kpiPass=0,cred=[];for(const c of ETF){const h=diskRead(readyFile(c));if(h?.validation?.dividendCoveragePass&&h?.validation?.adjustmentPass)corpPass++;if(h?.rows?.length){try{const b=await backtest(c);if(b.ready){btReady++;const w=b.walkForward?.metrics,on=b.ab?.antiChaseOn,off=b.ab?.antiChaseOff,m=b.slices?.full,mins={'0050':20,'0056':20,'00878':10,'00919':5};if((w?.signals||0)>=mins[c])wfPass++;if(Number.isFinite(on?.highEntryRate)&&Number.isFinite(off?.highEntryRate)&&on.highEntryRate<=off.highEntryRate)abPass++;if([m?.avg5,m?.avg20,m?.avg60,m?.worstMAE60].every(Number.isFinite))kpiPass++;cred.push(`${c}:歷史${b.historyDays}日/WF${w?.signals||0}`)}}catch(e){cred.push(`${c}:回測錯誤 ${e.message}`)}}}
  out[39]=V(wfPass===4?'PASS':btReady?'PARTIAL':'WAIT',`Walk-forward樣本門檻 ${wfPass}/4`,cred.join('｜'));out[40]=V(corpPass===4?'PASS':corpPass?'PARTIAL':ready?'FAIL':'WAIT',`除息/分割/還原驗證 ${corpPass}/4`);out[41]=V(abPass===4?'PASS':btReady?'PARTIAL':'WAIT',`防追高A/B可驗證 ${abPass}/4`);out[42]=V(kpiPass===4?'PASS':btReady?'PARTIAL':'WAIT',`5/20/60、MAE、參與率等KPI ${kpiPass}/4`);out[43]=V(btReady===4?'PASS':btReady?'PARTIAL':'WAIT',`可信度輸出 ${btReady}/4`,cred.join('｜'));out[44]=V('PASS','全站紅漲綠跌');out[45]=V('PASS',`全站版本 ${VERSION} / build ${BUILD}`);
@@ -1732,7 +1823,7 @@ const server=http.createServer(async(req,res)=>{
   }
  }
  if(u.pathname==='/api/market')return safeApi(res,'market',async()=>{const d=await deadline(live((u.searchParams.get('symbols')||'').split(',')),8500,null);return d||{ok:false,status:'TIMEOUT',source:'market',error:'外部行情來源逾時；前端將自動沿用最後成功資料並重試',fetchedAt:new Date().toISOString()}});
- if(u.pathname==='/api/context')return safeApi(res,'context',()=>cached('ctx',60000,context));
+ if(u.pathname==='/api/context')return safeApi(res,'context',()=>cached('ctx',30000,context));
  if(u.pathname==='/api/taiex-history')return safeApi(res,'taiex-history',async()=>{const h=await taiexHistory();return{...h,ret5:periodReturn(h.rows,5),ret20:periodReturn(h.rows,20)}});
  if(u.pathname==='/api/overseas')return safeApi(res,'overseas',()=>cached('ovs',45000,overseas));
  if(u.pathname==='/api/night-future')return safeApi(res,'night-future',()=>nightFuture());
@@ -1754,6 +1845,8 @@ server.listen(PORT,'0.0.0.0',()=>{
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
  setInterval(refreshRuntime,120000);
+ setTimeout(()=>refreshBreadthRuntime(true).catch(()=>{}),8000);
+ setInterval(()=>{const t=taipeiClock(),m=t.h*60+t.m;if(['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&m>=540)refreshBreadthRuntime(false).catch(()=>{})},30000);
  // Dedicated 08:45~08:59:59 TXF sampler. It is idle outside the pre-open window and gives the 08:57/08:58/08:59 model the actual 12-minute day-session path.
  setTimeout(preopenTxfPump,2500);
  setInterval(preopenTxfPump,10000);

@@ -1,0 +1,23 @@
+V16.8.46-REALTIME-BREADTH
+=============================
+Fix:
+- Remove stale TWSE opendata/twtazu_od breadth as a live model input.
+- During 09:00–13:30 derive TWSE stock breadth from the current listed-stock universe plus live Anue quotes.
+- Refresh live breadth about every 30 seconds.
+- Require >=72% quote coverage and >=500 valid up/down/flat stocks or reject the breadth input.
+- Before 09:00 do NOT reuse an old breadth row as today's breadth; it is excluded from the model.
+- After close prefer the same-day official TWSE MI_INDEX "股票" up/down/flat counts.
+- If same-day official final is not yet published, use the final live-derived snapshot instead.
+- Model environment and knife gate only use breadth when usableForModel=true.
+- UI now shows live/official mode, source date/time, and quote coverage.
+
+Why:
+The prior opendata/twtazu_od endpoint can return an old report date, which silently contaminated current environment scoring.
+
+Unchanged:
+- Three-layer buy prices / coherent re-anchor
+- Cash-open anti-chase cap
+- First-layer score gate
+- 08:45 TXF preopen lead
+- Manual/model trade tracking
+- Holdings / Supabase / night futures / constituents
