@@ -1,0 +1,26 @@
+V16.8.44-OPEN-CAP-ANTICHASE
+================================
+Purpose
+- After 09:00, the first buy layer is a pullback entry and may NEVER be quoted above the ETF's actual opening price for that trading day.
+- The HIGH edge of Layer 1 is capped at sessionOpen; Layer 2/3 are pushed down only if needed to preserve spacing.
+- 08:57~08:59:30 pre-open prediction is NOT capped because the actual ETF open is not yet known.
+- At/after 09:00 the calibration version changes, forcing the client to discard the pre-open dynamic layer state and initialize from the post-open capped raw zones.
+- Frontend re-anchor and long-no-signal participation bump are also capped so they cannot later lift Layer 1 above the opening price.
+- A layer is a downward threshold: px <= zone.high counts as touched/reached even if price already fell below zone.low.
+- chaseRisk remains in price calibration and score. After the ETF has returned to/below its opening price, chaseRisk>=88 is not applied a second time as an unconditional client/server veto. hardVeto remains unchanged.
+
+Example
+- session open = 106.80
+- statistical Layer-1 zone would be 107.12~107.46
+- V16.8.44 caps Layer-1 high to 106.80 (same zone width preserved), and re-spaces Layer 2/3 below it.
+- If current price is 107.00, the model waits for a pullback instead of asking the user to buy higher than the open.
+- If current price later falls to <=106.80, Layer 1's price threshold is reached.
+
+Unchanged
+- First-layer historical/ATR calibration itself
+- Layer 2/3 base statistical formulas
+- 08:45 TXF lead signal
+- 08:57/08:58/08:59 pre-open snapshot and 08:59:30 lock
+- score>=50 confirmation requirement
+- hardVeto / stale-data / falling-knife protection
+- manual-buy/model-buy records, holdings, Supabase, night market, constituents

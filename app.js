@@ -54,6 +54,9 @@ function resetDaily(){const d=dayKey();if(STATE.day===d)return;const old=STATE;i
 function ztxt(z){return z&&Number.isFinite(z.low)&&Number.isFinite(z.high)?`${z.low.toFixed(2)}–${z.high.toFixed(2)}`:'—'}
 function center(z){return z?(z.low+z.high)/2:null}
 function moveZone(cur,target,maxDown,maxUp,allowDown=true){if(!cur)return JSON.parse(JSON.stringify(target));const c=center(cur),t=center(target),half=(cur.high-cur.low)/2;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
+function cashSessionOpen(code){const d=taipeiNow(),wd=d.getDay(),m=d.getHours()*60+d.getMinutes(),o=Number(lastLive?.quotes?.[code]?.open);return wd>=1&&wd<=5&&m>=540&&o>0?o:null}
+function shiftZoneCenter(z,c){const half=(z.high-z.low)/2;return{low:c-half,high:c+half,center:c}}
+function enforceCashOpenCeiling(code,zones,atr){const o=cashSessionOpen(code);if(!(o>0)||!Array.isArray(zones)||zones.length<3)return zones;const out=zones.map(z=>JSON.parse(JSON.stringify(z)));if(out[0].high>o){const w=out[0].high-out[0].low;out[0]={low:o-w,high:o,center:o-w/2}}const prev=Number(lastLive?.quotes?.[code]?.prevClose)||o,g12=Math.max(atr*.35,prev*.004),g23=Math.max(atr*.45,prev*.006);let c0=center(out[0]),c1=center(out[1]),c2=center(out[2]);if(c1>c0-g12){c1=c0-g12;out[1]=shiftZoneCenter(out[1],c1)}if(c2>c1-g23){c2=c1-g23;out[2]=shiftZoneCenter(out[2],c2)}return out}
 function layerView(L,px){if(!L)return'WAIT';if(L.invalid)return'INVALID';if(L.confirmed){if(px>L.zone.high)return'CONFIRMED_ABOVE';if(px<L.zone.low)return'CONFIRMED_BELOW';return'CONFIRMED_IN'}if(L.fastPass)return'FAST_PASS';if(L.forming)return'FORMING';return'WAIT'}
 function flashLivePrices(){
  for(const c of ETF){
@@ -73,7 +76,8 @@ function flashLivePrices(){
 function layerTouchState(L,px){
  if(!L?.zone||!Number.isFinite(px))return'IDLE';
  if(L.confirmed)return'CONFIRMED';
- if(px>=L.zone.low&&px<=L.zone.high)return'TOUCHED';
+ // A buy layer is a downward threshold: once price is at or below its high edge, it has been touched even if price already moved through the whole band.
+ if(px<=L.zone.high)return'TOUCHED';
  if(L.triggeredAt||L.forming||L.confirmCount>0)return'TOUCHED';
  return'IDLE';
 }
@@ -213,15 +217,22 @@ function updateOne(code,r){
  // Participation protection after long no-signal streak in a confirmed bull structure.
  let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);
  if(days>=15&&r.history.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}
- const downCap=Math.max(.018,atr*.055),upCap=Math.max(.012,atr*.024),firstUpCap=Math.max(.018,atr*.055);
- // First layer may catch up faster to a server-confirmed higher center; layers 2/3 retain the original slow anti-chase cap.
- m.layers.forEach((L,i)=>{L.zone=moveZone(L.zone,targets[i],downCap,i===0?firstUpCap:upCap,allowDown);L.samples.push(center(L.zone));L.samples=L.samples.slice(-6)});
+ // The participation/re-anchor layer is not allowed to undo the server's post-open anti-chase ceiling.
+ targets=enforceCashOpenCeiling(code,targets,atr);
+ const downCap=Math.max(.018,atr*.055),layerUpCap=Math.max(.018,atr*.055);
+ // R16.8.45: the three-layer ladder moves coherently. Layer 1/2/3 use the same upward adaptation speed.
+ // The server targets already carry the same confirmed-center re-anchor; enforceCashOpenCeiling() still prevents
+ // Layer 1 from rising above today's cash open and keeps Layer 2/3 below it with minimum spacing.
+ m.layers.forEach((L,i)=>{L.zone=moveZone(L.zone,targets[i],downCap,layerUpCap,allowDown)});
+ const cappedNow=enforceCashOpenCeiling(code,m.layers.map(L=>L.zone),atr);m.layers.forEach((L,i)=>{L.zone=cappedNow[i];L.samples.push(center(L.zone));L.samples=L.samples.slice(-6)});
  const px=Number(lastLive?.quotes?.[code]?.last??r.price),firstCenter=center(m.layers[0].zone),rapid=m.lastPrice&&px<m.lastPrice-atr*.75&&px<m.layers[0].zone.low;
- m.layers.forEach((L,i)=>{const z=L.zone,inZone=px>=z.low&&px<=z.high,sd=L.samples.length>=4?Math.sqrt(L.samples.reduce((s,v)=>s+(v-L.samples.reduce((a,b)=>a+b,0)/L.samples.length)**2,0)/L.samples.length):999,stable=sd<=atr*.08;
+ m.layers.forEach((L,i)=>{const z=L.zone,inZone=px>=z.low&&px<=z.high,priceReached=px<=z.high,sd=L.samples.length>=4?Math.sqrt(L.samples.reduce((s,v)=>s+(v-L.samples.reduce((a,b)=>a+b,0)/L.samples.length)**2,0)/L.samples.length):999,stable=sd<=atr*.08;
   if(r.hardVeto){L.invalid=true;L.forming=false;L.fastPass=false;return}
   if(L.confirmed){L.invalid=false;return}
   if(rapid&&i===0){L.fastPass=true;L.forming=false;return}else L.fastPass=false;
-  if(inZone&&stable&&r.score>=50&&r.chaseRisk<88){L.confirmCount++;L.forming=true}else if(Math.abs(px-center(z))<=atr*.28&&stable){L.forming=true;L.confirmCount=Math.max(0,L.confirmCount-1)}else{L.forming=false;L.confirmCount=Math.max(0,L.confirmCount-1)}
+  // Layers are downward buy thresholds, not narrow price-only boxes. Falling below a layer still counts as having reached it.
+  // chaseRisk is already embedded in the price and score; the client only respects the server's final noBuyToday/hardVeto decision.
+  if(priceReached&&stable&&r.score>=50&&!r.noBuyToday){L.confirmCount++;L.forming=true}else if((priceReached||Math.abs(px-center(z))<=atr*.28)&&stable){L.forming=true;L.confirmCount=Math.max(0,L.confirmCount-1)}else{L.forming=false;L.confirmCount=Math.max(0,L.confirmCount-1)}
   if(L.confirmCount>=2){L.confirmed=true;L.triggeredAt=L.triggeredAt||new Date().toISOString();addEvent(`${code} 第${i+1}層正式確認：${ztxt(z)}，現價${px.toFixed(2)}。`,'buy')}
  });
  if(r.hardVeto&&m.layers.some(L=>L.confirmed)){m.layers.forEach(L=>{L.badCount=(L.badCount||0)+1;if(L.badCount>=3){L.confirmed=false;L.invalid=true}})}
@@ -241,7 +252,7 @@ function renderHomeRanking(){
  $('homeBuyRanking').innerHTML=a.map(([c,x])=>`<div class="card buycard"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${x.r.noBuyToday?'今日暫無合理買點':stageText(x.activeStatus,x.activeLayer+1)}</span></div><div class="score">${x.r.score}<small>/100</small></div></div>${x.r.noBuyToday?`<div class="notice"><b>今日暫無合理買點：</b>${x.r.noBuyReason}<br>參考合理區仍保留：① ${ztxt(x.m.layers[0].zone)} ② ${ztxt(x.m.layers[1].zone)} ③ ${ztxt(x.m.layers[2].zone)}</div>`:`<div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(selectedETF)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一買點',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想買點',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力買點',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div>`}<button class="btn" onclick="openDetail('${c}')">成分股／歷史買點</button> <button class="btn primary" onclick="openModelTrade('${c}',1)">記錄模型買入</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div>`).join('')||'模型載入中';
  const ev=EVENTS.at(-1);$('homeModelEvent').innerHTML='<b>戰情：</b>'+(ev?ev.text:'尚無重大模型事件。')
 }
-function explain(c,x){if(x.r.hardVeto)return`硬Gate啟動：${x.r.hardVetoReason}。資料／急殺條件解除前不確認買點。`;if(x.r.noBuyToday)return x.r.noBuyReason;if(x.statuses[0]==='CONFIRMED_IN')return`第一筆分批條件成立；不代表最低點。`;if(x.statuses[0]==='CONFIRMED_ABOVE')return`第一層先前已確認，但現價離開買區；不要追價，等回測。`;if(x.statuses[0]==='CONFIRMED_BELOW')return`第一層已確認且被穿越，第一層不會跟著往下逃，開始觀察第二層。`;if(x.statuses[0]==='FAST_PASS')return`快速穿透保護：不一次打滿三層，先等重新收斂。`;if(x.statuses[0]==='FORMING')return`價格已接近／進入第一層，但需連續收斂才正式確認。`;return`尚未進第一層；向上有限速防追高，向下需新環境證據才允許明顯下修。`}
+function explain(c,x){if(x.r.hardVeto)return`硬Gate啟動：${x.r.hardVetoReason}。資料／急殺條件解除前不確認買點。`;if(x.r.noBuyToday)return x.r.noBuyReason;if(x.statuses[0]==='CONFIRMED_IN')return`第一筆分批條件成立；不代表最低點。`;if(x.statuses[0]==='CONFIRMED_ABOVE')return`第一層先前已確認，但現價離開買區；不要追價，等回測。`;if(x.statuses[0]==='CONFIRMED_BELOW')return`第一層已確認且被穿越，第一層不會跟著往下逃，開始觀察第二層。`;if(x.statuses[0]==='FAST_PASS')return`快速穿透保護：不一次打滿三層，先等重新收斂。`;if(x.statuses[0]==='FORMING')return`價格已接近／進入第一層，但需連續收斂才正式確認。`;if(x.px<=x.m.layers[0].zone.high)return`價格已達第一層門檻；正在等待穩定度／分數確認，跌穿區間不會被當成「沒碰到」。`;return`尚未達第一層；盤中第一層上緣不會高於今日開盤價，價格上漲時不往上追。`}
 function etfPriceClass(code,px){
  const q=lastLive?.quotes?.[code],last=Number(px??q?.last),prev=Number(q?.prevClose);
  if(!Number.isFinite(last)||!Number.isFinite(prev))return'';

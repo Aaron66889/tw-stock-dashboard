@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.43-PREOPEN-TXF-LEAD';
+const BUILD='16.8.45-THREE-LAYER-REANCHOR';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -70,6 +70,7 @@ async function getJSON(url,headers={},tries=2){let e;for(let i=0;i<tries;i++){tr
 async function getJSONQuick(url,headers={},ms=4500){const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json,text/plain,*/*','Accept-Language':'zh-TW,zh;q=0.9',...headers}},ms);const text=await r.text();if(!r.ok)throw Error('HTTP '+r.status+' '+new URL(url).hostname);const t=text.trim();if(!(t.startsWith('{')||t.startsWith('[')))throw Error('來源回傳非JSON：'+new URL(url).hostname+'｜'+t.slice(0,45).replace(/\s+/g,' '));return JSON.parse(t)}
 function deadline(p,ms,fallback){return Promise.race([p,new Promise(resolve=>setTimeout(()=>resolve(fallback),ms))])}
 function twMarketOpenNow(){const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date()).map(x=>[x.type,x.value]));const wd=parts.weekday,m=Number(parts.hour)*60+Number(parts.minute);return ['Mon','Tue','Wed','Thu','Fri'].includes(wd)&&m>=540&&m<=810}
+function twAfterCashOpenNow(){const t=taipeiClock(),m=t.h*60+t.m;return ['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&m>=540}
 
 async function getText(url,headers={},tries=2){let e;for(let i=0;i<tries;i++){try{const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html,application/xhtml+xml,*/*','Accept-Language':'zh-TW,zh;q=0.9',...headers}},9000);if(!r.ok)throw Error('HTTP '+r.status);return await r.text()}catch(x){e=x;if(i+1<tries)await sleep(250*(i+1))}}throw e}
 async function postText(url,headers={},ms=15000){const r=await fetchTimeout(url,{method:'POST',headers:{'User-Agent':'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0)','Accept':'text/html,application/xhtml+xml,*/*','Accept-Language':'zh-TW,zh;q=0.9','Content-Type':'application/x-www-form-urlencoded','Cache-Control':'no-cache','Pragma':'no-cache','If-Modified-Since':'Sat, 1 Jan 2000 00:00:00 GMT',...headers},body:''},ms);if(!r.ok)throw Error('HTTP '+r.status);return await r.text()}
@@ -1382,10 +1383,18 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const center=bull?(.42*st.sma20+.30*st.sma60+.18*st.sma120+.10*st.sma250):null,centerGap=bull&&r20>0&&center?Math.max(0,center/(st.sma60||center)-1):0;
  const firstCal=firstLayerPct({q1:st.q45,atrPct:atr/prev,chaseRisk,envScore:env.score,healthScore:health?.score,healthUsable:!!health?.usable,bull:!!bull&&r20>0,centerGap,cfg});
  let p1=firstCal.p1,p2=clamp(st.q25??-.012,-.038,-.006)-chasePenalty*.7+envShift*.9+healthShift*.8,p3=clamp(st.q10??-.022,-.065,-.013)-chasePenalty*.4+envShift*.8+healthShift*.6;
- // Layer 2/3 keep the original slow re-anchor. Layer 1 uses firstLayerPct() and a separate confirmed-center re-anchor cap.
- if(bull&&r20>0){const re=clamp(centerGap*cfg.reanchor,0,.007);p2+=re*.75;p3+=re*.55}
- let l1=prev*(1+p1),l2=prev*(1+p2),l3=prev*(1+p3);l2=Math.min(l2,l1-Math.max(atr*.35,prev*.004));l3=Math.min(l3,l2-Math.max(atr*.45,prev*.006));
+ // R16.8.45 coherent three-layer re-anchor:
+ // when the confirmed market center rises, all three buy layers receive the SAME percentage-point re-anchor.
+ // This preserves the ladder instead of letting Layer 1 chase upward alone while Layer 2/3 lag behind.
+ if(bull&&r20>0&&firstCal.reanchorReduce>0){const re=firstCal.reanchorReduce;p2+=re;p3+=re}
  const zoneW=Math.max(.03,Math.min(atr*.10,px*.0016)),z=x=>({low:x-zoneW,high:x+zoneW,center:x});
+ let l1=prev*(1+p1),l2=prev*(1+p2),l3=prev*(1+p3);
+ // R16.8.44 hard anti-chase rule: after the 09:00 cash open is known, Layer-1's HIGH edge may never be above today's ETF open.
+ // If the statistical/re-anchor target rises above the open, cap Layer 1 at the open and push Layer 2/3 down only as much as needed to preserve spacing.
+ const cashOpenCapActive=twAfterCashOpenNow(),sessionOpen=cashOpenCapActive?n(quote?.open):null,uncappedL1=l1;
+ let openCapApplied=false;
+ if(sessionOpen>0){const maxL1Center=sessionOpen-zoneW;if(l1>maxL1Center){l1=maxL1Center;openCapApplied=true}}
+ l2=Math.min(l2,l1-Math.max(atr*.35,prev*.004));l3=Math.min(l3,l2-Math.max(atr*.45,prev*.006));
  const marketCh=movePct(env.liveMarket),tsmcCh=movePct(env.liveTsmc),b=env.breadth;
  const knife=(Number.isFinite(marketCh)&&marketCh<-2.2?1:0)+(Number.isFinite(tsmcCh)&&tsmcCh<-3?1:0)+(b&&b.ratio<.22?1:0)+(env.score<-65?1:0);
  const stale=!fresh,hardVeto=stale||knife>=2,z1=z(l1);
@@ -1394,8 +1403,14 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const priceFit=px>z1.high?clamp(14-aboveZonePct*8,-8,14):(px<z1.low?clamp(14-belowZonePct*4,8,14):14);
  const chaseScore=-chaseRisk*.20,envScorePart=clamp(env.score*.08,-8,8),healthScorePart=health?.usable?clamp((health.score-50)*.12,-6,6):0;
  let score=58+priceFit+chaseScore+envScorePart+healthScorePart;if(hardVeto)score=Math.min(score,42);score=clamp(Math.round(score),0,100);
- const noBuyToday=!hardVeto&&(chaseRisk>=88||(score<40&&px>z1.high));
- return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason:noBuyToday?'現價偏離合理區過遠／追高風險過高，今日不硬生買點':null,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:'first-touch-v1',targetQuantile:cfg.q[0],...firstCal},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + proximity-correct score gate + environment/health + anti-chase + confirmed-center re-anchor'};
+ const aboveSessionOpen=sessionOpen>0&&px>sessionOpen;
+ // High chaseRisk is a hard no-buy only while price is still above today's open (or before the cash open exists).
+ // Once price has returned to/below the open, chaseRisk remains a score penalty but is not applied a second time as a veto.
+ const chaseNoBuy=chaseRisk>=88&&(!(sessionOpen>0)||aboveSessionOpen);
+ const noBuyToday=!hardVeto&&(chaseNoBuy||(score<40&&px>z1.high));
+ const noBuyReason=noBuyToday?(chaseNoBuy&&sessionOpen>0?`現價仍高於今日開盤 ${sessionOpen.toFixed(2)}，追高風險過高；不往上追買。`:'現價偏離合理區過遠／追高風險過高，今日不硬生買點'):null;
+ const calibrationVersion=sessionOpen>0?'first-touch-open-cap-v3-three-layer-live':'first-touch-open-cap-v3-three-layer-preopen';
+ return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});

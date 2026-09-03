@@ -1,0 +1,28 @@
+V16.8.45-THREE-LAYER-REANCHOR
+=================================
+Purpose
+- Fix the inconsistency where Layer 1 re-anchored upward faster than Layer 2/3.
+- Make all three buy layers participate in the same confirmed-center re-anchor.
+- Keep the ladder dynamic while preserving the post-open anti-chase ceiling.
+
+Core behavior
+1. Server:
+   - Layer 1 already receives firstCal.reanchorReduce.
+   - Layer 2 and Layer 3 now receive the exact same reanchorReduce percentage-point adjustment.
+   - This preserves the relative ladder during a confirmed center rise.
+2. Client:
+   - Layer 1/2/3 now use the same upward adaptation cap (ATR * 0.055, floor 0.018).
+   - No layer is intentionally left behind with the former ATR * 0.024 cap.
+3. Anti-chase remains:
+   - After 09:00, Layer 1 HIGH <= ETF cash-session open.
+   - Layer 2 and Layer 3 must remain below Layer 1 with minimum ATR/price spacing.
+4. A calibration-version bump resets persisted model zones once after deployment.
+
+Unchanged
+- First-layer accessibility formula
+- Score / price-fit gate
+- hardVeto / noBuyToday
+- 08:45 TXF lead signal
+- model/manual trade recording
+- holdings / Supabase
+- quote, constituents, night futures, UI structure
