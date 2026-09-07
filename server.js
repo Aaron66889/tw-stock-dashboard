@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.55-VALIDATION-FRESHNESS-FIX';
+const BUILD='16.8.57-OPEN-AND-VALIDATION-FIX';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -327,6 +327,32 @@ async function liveEtf4(){
    }
   }catch(e){errors.push('TWSE MIS field fill: '+(e.message||String(e)))}
  }
+ // Cash-session open is required by the existing anti-chase ceiling.
+ // Some ETF transports return fresh last/prev but leave open blank.
+ // Fill ONLY missing session fields from the already-existing Yahoo 1m/meta path.
+ // Never overwrite a valid live last price.
+ if(twMarketOpenNow()){
+  const needOpen=ETF.filter(c=>quotes[c]?.last>0&&!(Number(quotes[c]?.open)>0));
+  if(needOpen.length){
+   try{
+    const ys=await Promise.all(needOpen.map(async c=>[
+     c,
+     await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
+    ]));
+    for(const [c,y] of ys){
+     if(!y||!(Number(y.open)>0)||!quotes[c])continue;
+     const z=quotes[c];
+     z.open=Number(y.open);
+     if(!(Number(z.high)>0)&&Number(y.high)>0)z.high=Number(y.high);
+     if(!(Number(z.low)>0)&&Number(y.low)>0)z.low=Number(y.low);
+     if(!(Number(z.prevClose)>0)&&Number(y.prevClose)>0)z.prevClose=Number(y.prevClose);
+     z.openSource='Yahoo Finance 1m/meta';
+     z.source=(z.source||'ETF live')+'＋Yahoo開盤補全';
+    }
+   }catch(e){errors.push('Yahoo ETF open fill: '+(e.message||String(e)))}
+  }
+ }
+
  const openRequired=twMarketOpenNow(),now=Date.now(),today=ymdTaipei();
  // Save each complete quote. A single transport wobble may reuse only the same-day quote for <=90 seconds.
  for(const c of ETF){
@@ -1495,7 +1521,7 @@ async function buyModel(){
  const marketFresh=marketFieldsOk&&Number.isFinite(marketAgeMs)&&marketAgeMs<90000;
  const quoteStatus=Object.fromEntries(ETF.map(c=>{const q=etfLd?.quotes?.[c]||{},qat=Date.parse(q.serverFetchedAt||etfLd?.fetchedAt||0),ageMs=qat?Date.now()-qat:Infinity;
   const fieldsOk=Number(q.last)>0&&Number(q.prevClose)>0&&(!openRequired||Number(q.open)>0),ok=fieldsOk&&ageMs<90000;
-  return[c,{ok,fieldsOk,ageMs:Number.isFinite(ageMs)?ageMs:null,last:Number(q.last)||null,prevClose:Number(q.prevClose)||null,open:Number(q.open)||null,source:q.source||null,lastGoodFallback:!!q.lastGoodFallback}]}));
+  return[c,{ok,fieldsOk,ageMs:Number.isFinite(ageMs)?ageMs:null,last:Number(q.last)||null,prevClose:Number(q.prevClose)||null,open:Number(q.open)||null,openSource:q.openSource||null,source:q.source||null,lastGoodFallback:!!q.lastGoodFallback}]}));
  const etfQuotesOk=ETF.every(c=>quoteStatus[c].ok);
  const etfFresh=etfQuotesOk;
  const fresh=marketFresh&&etfFresh;
@@ -1590,7 +1616,9 @@ async function validationReport(deep=false){
  out[5]=V('WAIT','需真實08:57–08:59:30由瀏覽器端鎖定');out[6]=V('PASS','首頁具08:57–09:00盤前優先邏輯');out[7]=V(bm&&Object.values(bm.models||{}).some(x=>x&&'noBuyToday' in x)?'PASS':'PARTIAL','支援「今日暫無合理買點」');out[8]=V(new Set(ETF.map(c=>JSON.stringify(META[c].cfg))).size===4?'PASS':'FAIL','四檔使用獨立參數');out[9]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.first?.low)?'PASS':'PARTIAL','第一層為動態區間');out[10]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.third?.low)?'PASS':'PARTIAL','三層價格輸出');out[11]=V(bm&&ETF.some(c=>Number.isFinite(bm.models?.[c]?.score))?'PASS':'PARTIAL','綜合評分輸出');out[12]=V('PASS','前端分層狀態機支援分批');out[13]=V(bm&&ETF.some(c=>'hardVeto' in (bm.models?.[c]||{}))?'PASS':'PARTIAL','硬Gate含資料失效/急殺');out[14]=V(bm&&ETF.some(c=>bm.models?.[c]?.history?.sma250)?'PASS':'PARTIAL','5/20/60/120/250納入');out[15]=V('PASS','買點上修有速度上限');out[16]=V(bm&&ETF.some(c=>'bullStructure' in (bm.models?.[c]?.history||{}))?'PASS':'PARTIAL','中樞慢速重新定錨');
  out[17]=V('WAIT','瀏覽器歷史紀錄由前端補驗');out[18]=V('WAIT','實際價格同步由前端補驗');out[19]=V('WAIT','重複區間折疊由前端補驗');out[20]=V('WAIT','需累積7日買點歷史');
  const hs=bm?.health||{},usable=ETF.filter(c=>hs[c]?.usable).length,connected=ETF.filter(c=>hs[c]&&hs[c].sourceCoverage>0).length;out[21]=V(usable===4?'PASS':connected?'PARTIAL':'FAIL',`成分來源已連線 ${connected}/4；完整健康可計分 ${usable}/4`);out[22]=V(connected?'PASS':'PARTIAL',`成分資料畫面可顯示 ${connected}/4；不足者明示不計分`);out[23]=V(usable===4?'PASS':usable?'PARTIAL':'WAIT',`健康度可正式計分 ${usable}/4`);out[24]=V(usable?'PASS':'WAIT','健康度可用時採權重式分歧/背離');out[25]=V('PASS','健康度位於各ETF detail頁');out[26]=V('PARTIAL','新有效日期會保存版本；待實際換股事件驗證');out[27]=V('PARTIAL','沒有當時版本就禁止今日成分倒灌歷史');
- out[28]=V(ctx?.breadth?.total&&ctx.breadth?.sourceDate===ymdTaipei()?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平｜${ctx.breadth.mode}｜${ctx.breadth.sourceDate||'—'}${Number.isFinite(ctx.breadth.coverage)?`｜覆蓋${Math.round(ctx.breadth.coverage*100)}%`:''}`:`廣度來源暫不可用${BREADTH_RUNTIME.error?'｜'+BREADTH_RUNTIME.error:''}／盤前不沿用舊資料`);out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');out[33]=V(bm?.etfQuotesOk?'PASS':'PARTIAL',bm?.etfQuotesOk?'四檔ETF模型與畫面共用專屬即時quote（Anue主來源）':'四檔ETF模型quote不完整');out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?`marketFresh=${bm.marketFresh?'OK':'FAIL'}(${bm.marketAgeMs!=null?Math.round(bm.marketAgeMs/1000)+'s':'—'}${bm.marketLastGoodFallback?',緩衝':''})｜etfFresh=${bm.etfFresh?'OK':'FAIL'}｜${ETF.map(c=>{const q=bm.quoteStatus?.[c],age=q?.ageMs!=null?Math.round(q.ageMs/1000)+'s':'—';return`${c}:${q?.ok?'OK':`缺${q?.last?'':'現價/'}${q?.prevClose?'':'昨收/'}${twMarketOpenNow()&&!q?.open?'開盤':''}`}(${age}${q?.lastGoodFallback?',緩衝':''})`}).join('｜')}`:'等待模型資料');
+ out[28]=V(ctx?.breadth?.total&&ctx.breadth?.sourceDate===ymdTaipei()?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平｜${ctx.breadth.mode}｜${ctx.breadth.sourceDate||'—'}${Number.isFinite(ctx.breadth.coverage)?`｜覆蓋${Math.round(ctx.breadth.coverage*100)}%`:''}`:`廣度來源暫不可用${BREADTH_RUNTIME.error?'｜'+BREADTH_RUNTIME.error:''}／盤前不沿用舊資料`);out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');const etfPriceCount=ETF.filter(c=>Number(bm?.quotes?.[c]?.last)>0).length;out[33]=V(etfPriceCount===4?'PASS':etfPriceCount?'PARTIAL':'WAIT',`四檔ETF即時現價 ${etfPriceCount}/4｜持股市值損益使用同一即時quote`);out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?`marketFresh=${bm.marketFresh?'OK':'FAIL'}(${bm.marketAgeMs!=null?Math.round(bm.marketAgeMs/1000)+'s':'—'}${bm.marketLastGoodFallback?',緩衝':''})｜etfFresh=${bm.etfFresh?'OK':'FAIL'}｜${ETF.map(c=>{const q=bm.quoteStatus?.[c],age=q?.ageMs!=null?Math.round(q.ageMs/1000)+'s':'—';return`${c}:${q?.ok?'OK':`缺${q?.last?'':'現價/'}${q?.prevClose?'':'昨收/'}${twMarketOpenNow()&&!q?.open?'開盤':''}`}(${age}${q?.lastGoodFallback?',緩衝':''}${q?.openSource?',open='+q.openSource:''})`}).join('｜')}`:'等待模型資料');
+ out[35]=V('PASS','visibilitychange 回到前景時，前端立即重抓 ETF／大盤／環境／夜盤／模型／雲端同步');
+ out[36]=V('PASS','實際刷新頻率：ETF盤中5秒（非盤中10秒）／大盤10秒／夜盤10秒／環境30秒／模型30秒');
  if(deep)ETF.forEach(c=>enqueueHistory(c,false));const hp=ETF.map(c=>historyProgress(c)),ready=hp.filter(x=>x.backtestReadyPass===true).length;out[37]=V(ready===4?'PASS':ready?'PARTIAL':'WAIT',`四檔可回測完整樣本 ${ready}/4`,hp.map(x=>`${x.code}:${x.status}${x.backtestReadyPass?'✓':'✗'} ${x.first||'—'}→${x.last||'—'} ${x.rows||0}日`).join('｜'));out[38]=V('PASS','主結果全歷史；10/5/2/1年只做切片');
  let corpPass=0,btReady=0,wfPass=0,abPass=0,kpiPass=0,cred=[];for(const c of ETF){const h=diskRead(readyFile(c));if(h?.validation?.dividendCoveragePass&&h?.validation?.adjustmentPass)corpPass++;if(h?.rows?.length){try{const b=await backtest(c);if(b.ready){btReady++;const w=b.walkForward?.metrics,on=b.ab?.antiChaseOn,off=b.ab?.antiChaseOff,m=b.slices?.full,mins={'0050':20,'0056':20,'00878':10,'00919':5};if((w?.signals||0)>=mins[c])wfPass++;if(Number.isFinite(on?.highEntryRate)&&Number.isFinite(off?.highEntryRate)&&on.highEntryRate<=off.highEntryRate)abPass++;if([m?.avg5,m?.avg20,m?.avg60,m?.worstMAE60].every(Number.isFinite))kpiPass++;cred.push(`${c}:歷史${b.historyDays}日/WF${w?.signals||0}`)}}catch(e){cred.push(`${c}:回測錯誤 ${e.message}`)}}}
  out[39]=V(wfPass===4?'PASS':btReady?'PARTIAL':'WAIT',`Walk-forward樣本門檻 ${wfPass}/4`,cred.join('｜'));out[40]=V(corpPass===4?'PASS':corpPass?'PARTIAL':ready?'FAIL':'WAIT',`除息/分割/還原驗證 ${corpPass}/4`);out[41]=V(abPass===4?'PASS':btReady?'PARTIAL':'WAIT',`防追高A/B可驗證 ${abPass}/4`);out[42]=V(kpiPass===4?'PASS':btReady?'PARTIAL':'WAIT',`5/20/60、MAE、參與率等KPI ${kpiPass}/4`);out[43]=V(btReady===4?'PASS':btReady?'PARTIAL':'WAIT',`可信度輸出 ${btReady}/4`,cred.join('｜'));out[44]=V('PASS','全站紅漲綠跌');out[45]=V('PASS',`全站版本 ${VERSION} / build ${BUILD}`);

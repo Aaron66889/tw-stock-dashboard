@@ -190,7 +190,7 @@ async function loadEtfLive(){
    renderHoldings();
    renderHomeRanking();
    renderBuyCards();
-   if(selectedETF)renderDetailBuy();
+   if(selectedETF)renderDetailBuy();if(VALIDATION)renderSpecs();
   }
  }catch(e){console.warn('[ETF-LIVE]',e?.message||e)}
  etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?5000:10000);
@@ -203,7 +203,7 @@ async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x
   lastLive={...c.data,quotes:{...(c.data.quotes||{}),...yahooETF}};renderMarket();renderHoldings();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}console.warn('[MARKET]',e?.message||e)}marketTimer=setTimeout(loadMarket,10000)}
 async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();slowTimer=setTimeout(loadSlow,30000)}
 async function loadNight(){clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();nightTimer=setTimeout(loadNight,10000)}
-async function loadBuy(){clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){$('freshPill').textContent='● 模型資料降級／暫停確認';$('freshPill').className='pill warn'}updateState();renderAllModel()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
+async function loadBuy(){clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){$('freshPill').textContent='● 模型資料降級／暫停確認';$('freshPill').className='pill warn'}updateState();renderAllModel();if(VALIDATION)renderSpecs()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
 
 function renderMarket(){
  if(lastLive?.market){const q=lastLive.market,ch=(q.last-q.prevClose)/q.prevClose*100;$('idx').textContent=q.last.toLocaleString('zh-TW',{maximumFractionDigits:2});$('idxchg').textContent=(ch>=0?'▲ ':'▼ ')+Math.abs(q.last-q.prevClose).toFixed(2)+'點　'+pct(ch);$('idxchg').className='change '+cls(ch);$('open').textContent=fmt(q.open);$('high').textContent=fmt(q.high);$('low').textContent=fmt(q.low);$('offHigh').textContent=q.high?pct((q.last-q.high)/q.high*100):'—';let text='目前多空震盪。';if(ch>0)text='大盤現貨高於昨收；仍要搭配市場廣度與台積電判斷是不是全面上漲。';if(ch<0)text='大盤現貨低於昨收；先看低點承接與市場廣度是否繼續惡化。';$('plain').innerHTML='<b>白話：</b>'+text}
@@ -390,7 +390,12 @@ function clientValidation(base){const c={...(base||{})};const now=taipeiNow(),m=
  const histCodes=ETF.filter(x=>(HIST[x]||[]).length);c[17]={status:histCodes.length===4?'PASS':histCodes.length?'PARTIAL':'WAIT',evidence:`已保存買點歷史 ${histCodes.length}/4檔`};c[18]={status:histCodes.length===4?'PASS':histCodes.length?'PARTIAL':'WAIT',evidence:'歷史紀錄同步保存實際價格'};
  const folded=ETF.some(x=>(HIST[x]||[]).some(v=>(v.count||0)>1));c[19]={status:folded?'PASS':histCodes.length?'WAIT':'WAIT',evidence:folded?'已出現重複買點折疊並保留count/維持時間':'等待重複買點情境'};
  const zones=ETF.filter(x=>majorZone(x));c[20]={status:zones.length===4?'PASS':zones.length?'PARTIAL':'WAIT',evidence:`近7日主要買點區可用 ${zones.length}/4`};
- c[31]={status:H.length?'PASS':'WAIT',evidence:H.length?`私人持股 ${H.length}筆，沿用 twStockHoldingsV12`:'尚無私人持股'};c[33]={status:lastLive?.quotes?'PASS':'WAIT',evidence:'持股頁使用ETF即時行情更新'};
+ c[31]={status:H.length?'PASS':'WAIT',evidence:H.length?`私人持股 ${H.length}筆，沿用 twStockHoldingsV12`:'尚無私人持股'};
+ const livePriceCount=ETF.filter(x=>Number(lastLive?.quotes?.[x]?.last)>0||Number(lastBuy?.quotes?.[x]?.last)>0).length;
+ const backend33=c[33];
+ c[33]=livePriceCount===4
+  ?{status:'PASS',evidence:'四檔ETF現價皆可用；持股市值損益隨即時行情更新'}
+  :(backend33?.status==='PASS'?backend33:{status:livePriceCount?'PARTIAL':'WAIT',evidence:`目前即時現價 ${livePriceCount}/4；等待四檔行情齊全`});
  // #1 is a composite browser-side legacy-feature check, not a single market API boolean.
  const legacyClient=[
   ['大盤',!!lastLive?.market],

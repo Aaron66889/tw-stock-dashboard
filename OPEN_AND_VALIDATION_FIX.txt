@@ -1,0 +1,16 @@
+V16.8.57-OPEN-AND-VALIDATION-FIX
+
+Combined fixes:
+- #34: if ETF open is missing during cash session, fill only missing open/high/low/prevClose from existing Yahoo 1m/meta function. Never overwrite live last.
+- #34: diagnostics show open source.
+- #33: validate 4/4 current prices, not the stricter model-open completeness condition.
+- #33: frontend no longer overwrites backend PASS with startup WAIT.
+- Validation cards re-render after ETF/model refresh.
+- #35/#36 backend PASS fixes carried forward.
+
+Unchanged:
+- 00878 Cathay official Excel
+- #1 composite validation
+- #4 / #26 / #27
+- all layer formulas / reanchor / open anti-chase ceiling / Score / Gate / chaseRisk
+- 08:45 TXF / breadth / trades / holdings / Supabase

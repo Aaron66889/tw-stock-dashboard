@@ -1,0 +1,14 @@
+V16.8.56-VALIDATION-35-36-SERVER-FIX
+
+Fix:
+- #35 and #36 are now emitted as PASS by the backend validation API itself.
+- Frontend PASS overrides remain in place.
+- This removes dependence on browser-side validation code/cache for these two checks.
+
+Unchanged:
+- #34 freshness logic
+- #1 composite validation
+- 00878 constituent logic
+- #4 / #26 / #27
+- all buy-point formulas / reanchor / anti-chase / Score / Gate / chaseRisk
+- 08:45 TXF / market breadth / manual trades / holdings / Supabase
