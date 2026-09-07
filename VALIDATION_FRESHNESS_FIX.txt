@@ -1,0 +1,22 @@
+V16.8.55-VALIDATION-FRESHNESS-FIX
+
+Only these requested items changed:
+1) #34 marketFresh now recognizes the same-day <=90s MARKET_LAST_GOOD fallback by fallbackAgeMs.
+   It no longer rejects a valid buffer just because the original fetchedAt is old.
+2) #34 diagnostics now show market age and buffer use.
+3) #35 frontend validation now reflects the already-existing visibilitychange immediate refresh.
+4) #36 frontend validation now reflects the already-existing actual refresh rates.
+5) #1 validation is composite instead of using only ld.market to judge all V12.3 core features.
+
+UNCHANGED:
+- #4 momentum logic
+- #26 / #27
+- 00878 Cathay official Excel constituent fix
+- all buy-point formulas
+- 3-layer reanchor
+- open anti-chase
+- Score / Gate / chaseRisk thresholds
+- 08:45 TXF
+- market breadth formula/source
+- manual/model trades
+- holdings / Supabase

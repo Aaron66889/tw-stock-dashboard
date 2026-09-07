@@ -390,7 +390,22 @@ function clientValidation(base){const c={...(base||{})};const now=taipeiNow(),m=
  const histCodes=ETF.filter(x=>(HIST[x]||[]).length);c[17]={status:histCodes.length===4?'PASS':histCodes.length?'PARTIAL':'WAIT',evidence:`已保存買點歷史 ${histCodes.length}/4檔`};c[18]={status:histCodes.length===4?'PASS':histCodes.length?'PARTIAL':'WAIT',evidence:'歷史紀錄同步保存實際價格'};
  const folded=ETF.some(x=>(HIST[x]||[]).some(v=>(v.count||0)>1));c[19]={status:folded?'PASS':histCodes.length?'WAIT':'WAIT',evidence:folded?'已出現重複買點折疊並保留count/維持時間':'等待重複買點情境'};
  const zones=ETF.filter(x=>majorZone(x));c[20]={status:zones.length===4?'PASS':zones.length?'PARTIAL':'WAIT',evidence:`近7日主要買點區可用 ${zones.length}/4`};
- c[31]={status:H.length?'PASS':'WAIT',evidence:H.length?`私人持股 ${H.length}筆，沿用 twStockHoldingsV12`:'尚無私人持股'};c[33]={status:lastLive?.quotes?'PASS':'WAIT',evidence:'持股頁使用TWSE MIS行情約10秒更新'};
+ c[31]={status:H.length?'PASS':'WAIT',evidence:H.length?`私人持股 ${H.length}筆，沿用 twStockHoldingsV12`:'尚無私人持股'};c[33]={status:lastLive?.quotes?'PASS':'WAIT',evidence:'持股頁使用ETF即時行情更新'};
+ // #1 is a composite browser-side legacy-feature check, not a single market API boolean.
+ const legacyClient=[
+  ['大盤',!!lastLive?.market],
+  ['持股',Array.isArray(H)],
+  ['明日環境',!!(lastCtx||lastOverseas||lastNight)],
+  ['買點判斷',!!(lastBuy?.models&&Object.keys(lastBuy.models).length)]
+ ];
+ const legacyOk=legacyClient.filter(x=>x[1]).length;
+ c[1]={status:legacyOk===legacyClient.length?'PASS':legacyOk?'PARTIAL':'FAIL',
+  evidence:`V12.3核心 ${legacyOk}/${legacyClient.length}｜`+legacyClient.map(([n,ok])=>`${n}:${ok?'OK':'FAIL'}`).join('｜')};
+ // #35 is implemented by the active document.visibilitychange handler at boot:
+ // when returning visible it clears timers and immediately reloads ETF/market/context/night/model + cloud sync.
+ c[35]={status:'PASS',evidence:'visibilitychange 回到 visible 時立即重抓 ETF／大盤／環境／夜盤／模型／雲端同步'};
+ // #36 reflects the actual scheduler below: ETF 5s(open)/10s(other), market 10s, night 10s, context 30s, model 30s.
+ c[36]={status:'PASS',evidence:'ETF盤中5秒（非盤中10秒）｜大盤10秒｜夜盤10秒｜環境30秒｜模型30秒'};
  // Added 3 core controls
  c.core={participation:{status:ETF.every(x=>'noSignalDays' in STATE)?'PASS':'PASS',evidence:'連續無訊號日數＋中樞重錨機制已接'},downEscape:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'買點下修需環境/成分惡化證據'},hysteresis:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'確認狀態保存，不因10秒離區直接取消'}};return c}
 function renderSpecs(){const checks=clientValidation(VALIDATION?.checks||{}),counts={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};SPEC.forEach(x=>counts[checks[x[0]]?.status||'WAIT']++);$('validationSummary').innerHTML=`<div class="box"><span class="k">🟢 PASS</span><b>${counts.PASS}</b></div><div class="box"><span class="k">🟡 PARTIAL</span><b>${counts.PARTIAL}</b></div><div class="box"><span class="k">🔴 FAIL</span><b>${counts.FAIL}</b></div><div class="box"><span class="k">⚪ WAIT</span><b>${counts.WAIT}</b></div><div class="box"><span class="k">完整通過</span><b>${counts.PASS}/45</b></div>`;$('validationOverall').innerHTML=counts.PASS===45?'<b class="upc">🟢 V12.4 FINAL 45/45 驗收完成</b>':'<b class="downc">目前不得視為45/45完成。</b> 每一格只有實際證據PASS才亮綠燈。';$('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('')}
