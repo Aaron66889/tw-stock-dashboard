@@ -1,0 +1,30 @@
+V16.8.47-DATA-CONSISTENCY
+===============================
+Only data-consistency fixes; model parameters are unchanged.
+
+1) ETF quote ownership
+- liveEtf4() now exposes last / prevClose / open / high / low / volume.
+- buyModel() directly consumes liveEtf4() for 0050/0056/00878/00919.
+- The price shown on the page and the price/open used by modelOne() now come from the same ETF quote owner.
+- dataFresh requires both market context and all four ETF quotes to be fresh and complete.
+- Fixes the front-end typo lastBuy.results -> lastBuy.models.
+
+2) Breadth official-close lock
+- During the session breadth remains ~30-second live-derived.
+- Once same-day official TWSE MI_INDEX breadth is obtained after close, it is locked for that day.
+- The 30-second background scheduler stops requesting breadth after the official lock.
+- Lock clears automatically on the next Taiwan calendar day.
+
+3) Browser stale-breadth fallback
+- If /api/context fails, same-day official breadth may still display.
+- live-derived breadth fallback is allowed only if same-day and <= 2 minutes old.
+- Prior-day breadth is never resurrected by localStorage.
+
+Unchanged
+- First/second/third buy-point formulas
+- Three-layer coherent re-anchor
+- 09:00 open-price anti-chase ceiling
+- Score / gate / chaseRisk parameters
+- 08:45 TXF lead
+- Manual/model trade tracking
+- Holdings / Supabase / constituent logic / night futures

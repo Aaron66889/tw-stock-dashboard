@@ -41,6 +41,15 @@ function saveJSON(k,v){localStorage.setItem(k,JSON.stringify(v))}
 function saveLastGood(k,v){try{localStorage.setItem('v124_lastgood_'+k,JSON.stringify({at:new Date().toISOString(),data:v}))}catch{}}
 function loadLastGood(k){try{return JSON.parse(localStorage.getItem('v124_lastgood_'+k)||'null')}catch{return null}}
 function ageText(ts){if(!ts)return'';const m=Math.max(0,Math.round((Date.now()-Date.parse(ts))/60000));return m<1?'剛剛':m+'分鐘前'}
+function safeCtxLastGood(c){
+ if(!c?.data)return null;
+ const x={...c.data},b=x.breadth,age=Date.now()-Date.parse(c.at||0),sameDay=b?.sourceDate===dayKey();
+ // Same-day official close is valid for the rest of that day.
+ // A live-derived snapshot is displayable only briefly; never resurrect yesterday's breadth.
+ const keep=!!(sameDay&&(b?.official||age<=120000));
+ x.breadth=keep?b:null;
+ return x;
+}
 function loadHoldings(){try{const x=JSON.parse(localStorage.getItem('twStockHoldingsV12'));return Array.isArray(x)?x:DEFAULT_H.map(v=>({...v}))}catch{return DEFAULT_H.map(v=>({...v}))}}
 function saveHoldings(){saveJSON('twStockHoldingsV12',H);if(MODEL_SYNC?.ready&&HOLDINGS_SYNC?.ready)pushHoldingsCloud()}
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
@@ -159,7 +168,7 @@ async function loadEtfLive(){
      const old=Number(lastLive.quotes[c]?.last),next=Number(q.last);
      lastLive.quotes[c]={...q,fetchTime:new Date().toISOString()};
      if(old>0&&next!==old)ETF_PRICE_FLASH[c]=next>old?'up':'down';
-     const r=lastBuy?.results?.[c];
+     const r=lastBuy?.models?.[c];
      if(r){r.price=next;updateOne(c,r)}
     }
    }
@@ -177,7 +186,7 @@ async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x
  saveLastGood('market',d);renderMarket();renderHoldings();$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){
   const yahooETF={};for(const code of ETF)if(lastLive?.quotes?.[code]?.last>0)yahooETF[code]=lastLive.quotes[code];
   lastLive={...c.data,quotes:{...(c.data.quotes||{}),...yahooETF}};renderMarket();renderHoldings();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}console.warn('[MARKET]',e?.message||e)}marketTimer=setTimeout(loadMarket,10000)}
-async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=c.data;if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();slowTimer=setTimeout(loadSlow,30000)}
+async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();slowTimer=setTimeout(loadSlow,30000)}
 async function loadNight(){clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();nightTimer=setTimeout(loadNight,10000)}
 async function loadBuy(){clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){$('freshPill').textContent='● 模型資料降級／暫停確認';$('freshPill').className='pill warn'}updateState();renderAllModel()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
 
