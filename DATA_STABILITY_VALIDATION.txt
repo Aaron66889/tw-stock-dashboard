@@ -1,0 +1,33 @@
+V16.8.49-DATA-STABILITY
+========================
+Targeted fixes only:
+
+1) #28 market breadth
+- breadthUniverse() now uses an Array-safe dedicated cache.
+- Fixes "codes.filter is not a function".
+- Live breadth transport remains TWSE MIS primary + Anue gap fill.
+- Breadth model weight / thresholds are unchanged.
+
+2) 00878 29/30
+- Cathay official workbook parser now scans ALL worksheets and merges holdings by stock code.
+- Handles shifted code columns / listed-vs-OTC workbook layouts / decimal-vs-percent weights.
+- No constituent code is hard-coded.
+- Constituent caches bumped to r330.
+
+3) #34 intermittent dataFresh
+- Adds same-day <=90 second last-good buffering for ETF quotes.
+- Adds same-day <=90 second last-good buffering for market context used by buyModel.
+- Per-ETF freshness is measured from each quote's original timestamp.
+- #34 now shows quote age and whether a short buffer was used.
+- After 90 seconds without a fresh quote, Gate still FAILs as before.
+
+UNCHANGED:
+- Layer 1/2/3 formulas
+- Three-layer re-anchor
+- Cash-open anti-chase ceiling
+- score / Gate / chaseRisk thresholds
+- 08:45 TXF preopen logic
+- Manual/model trade tracking
+- Holdings / Supabase
+- Homepage touched-state fix
+- Backtest validator fix

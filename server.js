@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.48-TARGETED-BUGFIXES';
+const BUILD='16.8.49-DATA-STABILITY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -274,6 +274,21 @@ async function yahooTwOne(code,isIndex=false){
  };
 }
 
+const ETF_QUOTE_LAST_GOOD={};
+const MARKET_LAST_GOOD={data:null,at:0,day:null};
+function etfQuoteComplete(q,openRequired=twMarketOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||Number(q?.open)>0)}
+async function liveStable(extra=[]){
+ let d=null,err=null;
+ try{d=await live(extra)}catch(e){err=e}
+ const now=Date.now(),day=ymdTaipei(),openRequired=twMarketOpenNow();
+ const usable=!!(d?.market?.last>0&&d?.fetchedAt&&(!openRequired||d.realtime!==false));
+ if(usable){MARKET_LAST_GOOD.data=d;MARKET_LAST_GOOD.at=now;MARKET_LAST_GOOD.day=day;return d}
+ if(MARKET_LAST_GOOD.data&&MARKET_LAST_GOOD.day===day&&now-MARKET_LAST_GOOD.at<=90000){
+  return{...MARKET_LAST_GOOD.data,lastGoodFallback:true,fallbackAgeMs:now-MARKET_LAST_GOOD.at};
+ }
+ if(d)return d;
+ throw err||Error('market live unavailable');
+}
 async function liveEtf4(){
  const quotes={},errors=[];
  // Primary: Anue. Keep its live last price when available.
@@ -312,9 +327,30 @@ async function liveEtf4(){
    }
   }catch(e){errors.push('TWSE MIS field fill: '+(e.message||String(e)))}
  }
- const openRequired=twMarketOpenNow();
- const incomplete=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequired&&!(quotes[c]?.open>0)));
- return{ok:incomplete.length===0,source:'Anue 鉅亨 primary + TWSE field completion',fetchedAt:new Date().toISOString(),quotes,
+ const openRequired=twMarketOpenNow(),now=Date.now(),today=ymdTaipei();
+ // Save each complete quote. A single transport wobble may reuse only the same-day quote for <=90 seconds.
+ for(const c of ETF){
+  const q=quotes[c];
+  if(etfQuoteComplete(q,openRequired)){
+   q.serverFetchedAt=q.serverFetchedAt||new Date().toISOString();
+   ETF_QUOTE_LAST_GOOD[c]={q:{...q},at:Date.parse(q.serverFetchedAt)||now,day:today};
+  }
+ }
+ for(const c of ETF){
+  if(etfQuoteComplete(quotes[c],openRequired))continue;
+  const lg=ETF_QUOTE_LAST_GOOD[c];
+  if(!lg||lg.day!==today||now-lg.at>90000)continue;
+  if(!quotes[c])quotes[c]={...lg.q,source:(lg.q.source||'即時')+'｜last-good緩衝',lastGoodFallback:true};
+  else{
+   const z=quotes[c],q=lg.q;
+   for(const k of ['last','prevClose','open','high','low','volume','time','date'])if(!(Number(z[k])>0)&&z[k]!==0&&q[k]!=null)z[k]=q[k];
+   z.source=(z.source||q.source||'即時')+'｜last-good欄位緩衝';z.lastGoodFallback=true;
+   // If the current transport supplied a fresh last, keep its fresh timestamp; otherwise preserve the old timestamp.
+   if(!(z.serverFetchedAt&&Number(z.last)>0))z.serverFetchedAt=q.serverFetchedAt;
+  }
+ }
+ const incomplete=ETF.filter(c=>!etfQuoteComplete(quotes[c],openRequired));
+ return{ok:incomplete.length===0,source:'Anue 鉅亨 primary + TWSE field completion + 90s last-good',fetchedAt:new Date().toISOString(),quotes,
   missing:ETF.filter(c=>!quotes[c]?.last),incomplete,errors};
 }
 
@@ -503,12 +539,16 @@ async function officialBreadthToday(){
  return breadthResult({up,down,flat,untraded,noCompare,source:'TWSE MI_INDEX 官方收盤',sourceDate:day,asOf:new Date().toISOString(),mode:'official-final',scope:'上市股票（官方）',usableForModel:true,coverage:1,detail:'收盤後採證交所官方「股票」漲跌家數'});
 }
 async function breadthUniverse(){
- return cached('breadth:universe:v2',6*60*60*1000,async()=>{
-  // Use TWSE's all-security snapshot only as a code universe; 4-digit non-zero codes remove ETFs/warrants/ETNs.
-  const d=await twseDailyAll(),codes=Object.keys(d?.map||{}).filter(c=>/^[1-9]\d{3}$/.test(c));
-  if(codes.length<700)throw Error('上市股票母體不足 '+codes.length);
-  return codes.sort();
- });
+ // Do NOT use the generic cached() helper here: cached() spreads objects and therefore turns an Array
+ // into an object with numeric keys. Market breadth needs a real Array because liveBreadthDerived()
+ // calls filter()/slice()/length on it.
+ const key='breadth:universe:v3-array',ttl=6*60*60*1000,now=Date.now(),hit=cache.get(key);
+ if(hit&&now-hit.at<ttl&&Array.isArray(hit.v))return hit.v.slice();
+ // Use TWSE's all-security snapshot only as a code universe; 4-digit non-zero codes remove ETFs/warrants/ETNs.
+ const d=await twseDailyAll(),codes=Object.keys(d?.map||{}).filter(c=>/^[1-9]\d{3}$/.test(c)).sort();
+ if(codes.length<700)throw Error('上市股票母體不足 '+codes.length);
+ cache.set(key,{at:now,v:codes.slice()});
+ return codes;
 }
 async function liveBreadthDerived(){
  const codes=await breadthUniverse(),errors=[],by=new Map();
@@ -1131,318 +1171,60 @@ async function cathayConstituents(date){
  for(const iso of dates){
   try{
    const sd=iso.replaceAll('-','/'),buf=await getBuffer('https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel?FundCode=CN&SearchDate='+encodeURIComponent(sd));
-   const wb=XLSX.read(buf,{type:'buffer'}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});
-   // First use the header-aware parser. This survives formatted code strings,
-   // shifted columns, or additional labels in Cathay's official workbook.
-   let items=normalizeConstituentTableRows(rows,'國泰官方ETF權重Excel');
-   // Broad fallback for workbook variants whose header labels are unusual.
-   if(items.length<META['00878'].expected){
+   const wb=XLSX.read(buf,{type:'buffer'}),all=[];
+   // Cathay workbooks may separate listed / OTC holdings or move the table between sheets.
+   // Parse EVERY sheet and merge by stock code; never hard-code a constituent.
+   for(const sheetName of wb.SheetNames||[]){
+    const ws=wb.Sheets[sheetName];
+    if(!ws)continue;
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});
+    let items=normalizeConstituentTableRows(rows,'國泰官方ETF權重Excel');
     const extra=[];
     for(const r of rows){
      let code=null,codeIdx=-1;
-     for(let j=0;j<Math.min(r.length,5);j++){
-      const m=String(r[j]??'').trim().match(/(?:^|\D)(\d{4,6})(?:\D|$)/);
+     // Search the first several columns because OTC / workbook-format variants may shift the code column.
+     for(let j=0;j<Math.min(r.length,8);j++){
+      const s=String(r[j]??'').trim(),m=s.match(/(?:^|\D)(\d{4,6})(?:\D|$)/);
       if(m){code=m[1];codeIdx=j;break}
      }
      if(!code)continue;
      let name='';
-     for(let j=codeIdx+1;j<Math.min(r.length,codeIdx+4);j++){
+     for(let j=codeIdx+1;j<Math.min(r.length,codeIdx+5);j++){
       const s=String(r[j]??'').trim();
-      if(s&&!/^[-+]?\d+(?:\.\d+)?%?$/.test(s)){name=s;break}
+      if(s&&!/^[-+]?\d+(?:\.\d+)?%?$/.test(s)&&!/^(上市|上櫃|OTC|TWSE)$/i.test(s)){name=s;break}
      }
      let weight=null;
+     // Prefer an explicitly formatted percentage.
      for(let j=0;j<r.length;j++){
       const s=String(r[j]??'').trim();
       if(s.includes('%')){const x=n(s);if(x!=null&&x>=0&&x<=30){weight=x;break}}
      }
+     // Otherwise inspect numeric tail columns. Tiny decimal ratios are converted to percent.
      if(weight==null){
-      for(let j=r.length-1;j>=0;j--){const x=n(r[j]);if(x!=null&&x>=0&&x<=30){weight=x;break}}
+      for(let j=r.length-1;j>=0;j--){
+       let x=n(r[j]);if(x==null||x<0)continue;
+       if(x>0&&x<.2)x*=100;
+       if(x<=30){weight=x;break}
+      }
      }
      if(name&&weight!=null)extra.push({code,name,weight,weightSource:'國泰官方ETF權重Excel'});
     }
     items=[...new Map([...items,...extra].map(x=>[x.code,x])).values()];
+    all.push(...items.map(x=>({...x,_sheet:sheetName})));
    }
-   const uniq=[...new Map(items.map(x=>[x.code,x])).values()].sort((a,b)=>(b.weight||0)-(a.weight||0));
+   const uniq=[...new Map(all.map(x=>[x.code,x])).values()].sort((a,b)=>(b.weight||0)-(a.weight||0));
    if(uniq.length>=20){
     const expected=META['00878'].expected,complete=uniq.length>=expected;
-    return{code:'00878',asOf:iso,effectiveDate:iso,items:uniq,complete,expected,officialOnly:true,source:'國泰官方ETF權重Excel',sourceUrl:'https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel',historicalAvailable:true,
+    return{code:'00878',asOf:iso,effectiveDate:iso,items:uniq.map(({_sheet,...x})=>x),complete,expected,officialOnly:true,
+     source:'國泰官方ETF權重Excel（全工作表）',sourceUrl:'https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel',historicalAvailable:true,
      note:complete?`國泰官方完整Excel，共 ${uniq.length} 檔。`:`只取得 ${uniq.length}/${expected}，不計健康度。`};
    }
   }catch(e){lastErr=e}
  }
  throw lastErr||Error('Cathay holdings unavailable');
 }
-
-
-function isOfficialHostFor(code,url){
- try{const h=new URL(url).hostname.toLowerCase();if(code==='0050'||code==='0056')return h==='yuantaetfs.com'||h.endsWith('.yuantaetfs.com');if(code==='00878')return h==='cathaysite.com.tw'||h.endsWith('.cathaysite.com.tw');if(code==='00919')return h==='capitalfund.com.tw'||h.endsWith('.capitalfund.com.tw');return false}catch(_){return false}
-}
-function absUrl(base,u){try{return new URL(String(u||'').replaceAll('\\/','/').replace(/\\u0026/g,'&').replace(/&amp;/g,'&'),base).href}catch(_){return null}}
-function discoverOfficialCandidates(code,base,html){
- const raw=String(html||''),found=[];
- const add=u=>{const x=absUrl(base,u);if(x&&isOfficialHostFor(code,x)&&!/\.(?:png|jpg|jpeg|gif|svg|css|woff2?)(?:\?|$)/i.test(x)&&!found.includes(x))found.push(x)};
- // href/src/data-* attributes and quoted URL fragments in scripts/state.
- for(const m of raw.matchAll(/(?:href|src|data-url|data-href|data-download|download-url)\s*=\s*["']([^"']+)["']/gi))add(m[1]);
- for(const m of raw.matchAll(/["']([^"']{1,320}(?:download|export|excel|xlsx|csv|buyback|pcf|StkWeights)[^"']{0,220})["']/gi))add(m[1]);
- return found.filter(u=>/(download|export|excel|xlsx|csv|buyback|pcf|stkweights)/i.test(u));
-}
-function parseSheetRows(buf){
- if(!XLSX)throw Error('xlsx module unavailable');const wb=XLSX.read(buf,{type:'buffer'}),out=[];
- for(const sn of wb.SheetNames){const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,raw:false,defval:''});if(rows?.length)out.push(...rows)}
- return out;
-}
-function normalizeConstituentTableRows(rows,sourceLabel){
- const items=[];let header=-1,idxCode=-1,idxName=-1,idxWeight=-1,idxShares=-1;
- for(let i=0;i<Math.min(rows.length,80);i++){
-  const z=(rows[i]||[]).map(x=>String(x).trim());const joined=z.join('|');
-  if(/(股票|商品|證券).{0,4}(代碼|代號)/.test(joined)&&/(名稱)/.test(joined)){header=i;idxCode=z.findIndex(x=>/(股票|商品|證券).{0,4}(代碼|代號)|^代碼$|^代號$/.test(x));idxName=z.findIndex(x=>/名稱/.test(x));idxWeight=z.findIndex(x=>/權重|比重/.test(x));idxShares=z.findIndex(x=>/股數|數量/.test(x));break}
- }
- if(header<0)return items;
- for(let i=header+1;i<rows.length;i++){
-  const r=rows[i]||[],code=String(r[idxCode]??'').trim().match(/\d{4,6}/)?.[0];if(!code)continue;
-  const name=String(r[idxName]??code).trim(),weight=idxWeight>=0?n(r[idxWeight]):null,shares=idxShares>=0?n(r[idxShares]):null;
-  if(name&&(/^[0-9]{4,6}$/.test(code)))items.push({code,name,weight:Number.isFinite(weight)?weight:null,shares:Number.isFinite(shares)?shares:null,weightSource:sourceLabel});
- }
- return [...new Map(items.map(x=>[x.code,x])).values()];
-}
-async function fetchAndParseOfficialDocument(code,url){
- if(!isOfficialHostFor(code,url))throw Error('non-official URL blocked');const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/html,*/*','Referer':META[code].url}},12000);if(!r.ok)throw Error('HTTP '+r.status);
- const ct=String(r.headers.get('content-type')||'').toLowerCase(),buf=Buffer.from(await r.arrayBuffer()),txt=buf.toString('utf8').replace(/^\uFEFF/,'').trim();
- if(ct.includes('json')||txt.startsWith('{')||txt.startsWith('[')){
-  try{const data=JSON.parse(txt),items=(code==='0050'||code==='0056')?parseYuantaWeightJSON(code,data):parseGenericOfficialJSON(data,'官方JSON');if(items.length)return{items,kind:'json'}}catch(_){}
- }
- const isZipXlsx=buf.length>4&&buf[0]===0x50&&buf[1]===0x4b&&buf[2]===0x03&&buf[3]===0x04,isOleXls=buf.length>8&&buf[0]===0xd0&&buf[1]===0xcf&&buf[2]===0x11&&buf[3]===0xe0;
- if(ct.includes('sheet')||ct.includes('excel')||/\.(xlsx?|xlsm)(?:\?|$)/i.test(url)||isZipXlsx||isOleXls){
-  const items=normalizeConstituentTableRows(parseSheetRows(buf),'官方Excel');if(items.length)return{items,kind:'excel'};
- }
- if(ct.includes('csv')||/\.csv(?:\?|$)/i.test(url)){
-  const rows=txt.split(/\r?\n/).map(csvCells),items=normalizeConstituentTableRows(rows,'官方CSV');if(items.length)return{items,kind:'csv'};
- }
- const items=code==='00919'?parseCapitalOfficialFullHTML(txt):parseYuantaPCFFullHTML(txt);if(items.length)return{items,kind:'html'};
- throw Error('official document parsed 0 constituents');
-}
-function parseGenericOfficialJSON(data,label='官方JSON'){
- const out=[];for(const o of deepObjects(data)){
-  const c=String(pickField(o,['stockCode','StockCode','stkCode','StkCode','symbol','Symbol','code','Code','stockNo','StockNo'])??'').trim();if(!/^\d{4,6}$/.test(c))continue;
-  const name=String(pickField(o,['stockName','StockName','stkName','StkName','name','Name','chineseName','ChineseName'])??c).trim();let weight=n(pickField(o,['weight','Weight','ratio','Ratio','percentage','Percentage','percent','Percent','stockWeight','StockWeight']));if(weight!=null&&weight>0&&weight<=1)weight*=100;const shares=n(pickField(o,['shares','Shares','qty','Qty','quantity','Quantity','stockQty','StockQty']));
-  if(name)out.push({code:c,name,weight:Number.isFinite(weight)?weight:null,shares:Number.isFinite(shares)?shares:null,weightSource:label});
- }
- return[...new Map(out.map(x=>[x.code,x])).values()];
-}
-function parseYuantaPCFFullHTML(html){
- const text=stripTags(html).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(),items=[];
- const chunks=text.split(/(?=股票代碼\s*\d{4,6}\b)/g);
- for(const chunk of chunks){
-  const cm=chunk.match(/股票代碼\s*(\d{4,6})\b/);if(!cm)continue;
-  const code=cm[1];
-  const nm=chunk.match(/股票名稱\s*(.*?)\s*(?=是否為現金替代|可否參予最小實物申購|股數|股票代碼|$)/);
-  const sm=chunk.match(/股數\s*([\d,]+)/);
-  if(!sm)continue;
-  const name=(nm?.[1]||code).trim();
-  const shares=n(sm[1]);
-  if(shares>0)items.push({code,name,shares,weight:null,weightSource:'元大官方PCF'});
- }
- return[...new Map(items.map(x=>[x.code,x])).values()];
-}
-function parseCapitalOfficialFullHTML(html){
- const text=stripTags(html),start=text.indexOf('股票'),end=text.indexOf('期貨',start),seg=start>=0?text.slice(start,end>start?end:undefined):text,items=[];
- const re=/(?:^|\s)(\d{4,6})\s+(.{1,50}?)\s+(\d+(?:\.\d+)?)%\s+([\d,]{3,})(?=\s|$)/g;let m;while((m=re.exec(seg)))items.push({code:m[1],name:m[2].trim(),weight:n(m[3]),shares:n(m[4]),weightSource:'群益官方申購買回清單'});return[...new Map(items.map(x=>[x.code,x])).values()];
-}
-async function deriveWeightsFromShares(items){
- if(!items?.length)return items||[];const q=await quoteCodes(items.map(x=>x.code)).catch(()=>({}));let total=0;const rows=items.map(x=>{const px=q[x.code]?.last,v=(x.shares>0&&px>0)?x.shares*px:null;if(v)total+=v;return{...x,_basketValue:v}});return rows.map(x=>({...x,weight:Number.isFinite(x.weight)?x.weight:(x._basketValue&&total?x._basketValue/total*100:null),weightSource:Number.isFinite(x.weight)?x.weightSource:(x._basketValue&&total?'官方PCF股數×TWSE現價估算':x.weightSource),_basketValue:undefined}));
-}
-function parseYuantaRatio(code,html){
- const text=stripTags(html),items=[],re=/商品代碼\s*(\d{4,6})\s*商品名稱\s*([^\d]+?)\s*商品數量\s*[\d,]+\s*商品權重\s*([\d.]+)/g;let m;
- while((m=re.exec(text)))items.push({code:m[1],name:m[2].trim(),weight:n(m[3]),weightSource:'Yuanta ratio'});
- const date=(text.match(/(?:Trade Date|交易日期)\s*:?\s*(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})/i)||[])[1];
- return{date:parseISODate(date)||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
-}
-function pickField(o,names){
- if(!o||typeof o!=='object')return null;
- const entries=Object.entries(o);
- for(const name of names){const hit=entries.find(([k])=>k.toLowerCase()===name.toLowerCase());if(hit)return hit[1]}
- return null;
-}
-function deepObjects(v,out=[]){
- if(Array.isArray(v)){for(const x of v)deepObjects(x,out)}
- else if(v&&typeof v==='object'){out.push(v);for(const x of Object.values(v))if(x&&typeof x==='object')deepObjects(x,out)}
- return out;
-}
-function parseYuantaWeightJSON(code,data){
- const rows=[],objs=deepObjects(data);
- for(const o of objs){
-  const rawCode=pickField(o,['StkCode','StockCode','stockCode','Symbol','symbol','Code','code','StkNo','stockNo']);
-  const c=String(rawCode??'').trim();
-  if(!/^\d{4,6}$/.test(c))continue;
-  const name=String(pickField(o,['StkName','StockName','stockName','Name','name','CName','ChineseName'])??'').trim();
-  let w=n(pickField(o,['Weight','weight','StkWeight','StockWeight','stockWeight','Ratio','ratio','Percentage','percentage','Percent','percent','Weights']));
-  if(w!=null&&w>0&&w<=1)w*=100;
-  const shares=n(pickField(o,['StkQty','StockQty','stockQty','Quantity','quantity','Qty','qty','Shares','shares']));
-  if(w!=null&&w>=0&&w<=100)rows.push({code:c,name:name||c,weight:w,shares,weightSource:'Yuanta StkWeights API'});
- }
- const uniq=[...new Map(rows.map(x=>[x.code,x])).values()];
- return uniq.sort((a,b)=>b.weight-a.weight);
-}
-
-async function yuantaApiConstituents(code){
- const fundId=META[code].fundId;if(!fundId)throw Error('Yuanta fundId missing');
- const dates=[ymdTaipei(),dateMinus(1),dateMinus(2),dateMinus(3),dateMinus(4)].map(x=>x.replaceAll('-','/'));
- const bases=['https://etfapi.yuantaetfs.com/api/StkWeights','https://www.yuantaetfs.com/api/StkWeights','https://yuantaetfs.com/api/StkWeights'];
- const headers={'Referer':META[code].url,'Origin':'https://www.yuantaetfs.com','X-Requested-With':'XMLHttpRequest','Accept':'application/json, text/plain, */*','Sec-Fetch-Site':'same-site','Sec-Fetch-Mode':'cors'};
- let lastErr=null;
- for(const base of bases){
-  for(const dt of ['',...dates]){
-   const qs=new URLSearchParams({date:dt,fundid:fundId});const url=base+'?'+qs.toString();
-   try{const d=await getJSON(url,headers,1),items=parseYuantaWeightJSON(code,d);if(items.length>=META[code].expected)return{items:items.slice(0,META[code].expected),sourceUrl:url,kind:'StkWeights API',asOf:dt?dt.replaceAll('/','-'):null};lastErr=Error(`Yuanta API only ${items.length} @ ${url}`)}catch(e){lastErr=e}
-  }
- }
- throw lastErr||Error('Yuanta StkWeights unavailable');
-}
-
-
-function parseMoneyDJHoldings(code,html){
- const text=stripTags(html).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(),items=[];
- // Example: 台積電(2330.TW) 57.40 568,615,359.00
- const re=/([^\s()]{1,40})\((\d{4,6})\.TW\)\s+(\d+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)/g;let m;
- while((m=re.exec(text))){
-  const name=m[1].trim(),c=m[2],weight=n(m[3]),shares=n(m[4]);
-  if(/^\d{4,6}$/.test(c)&&Number.isFinite(weight)&&weight>=0&&weight<=100)
-   items.push({code:c,name,weight,shares,weightSource:'MoneyDJ全部持股'});
- }
- const date=(text.match(/持股明細\s*資料日期[:：]?\s*(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})/)||
-             text.match(/資料日期[:：]?\s*(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})/)||[])[1];
- return{date:parseISODate(date)||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
-}
-async function moneyDJConstituents(code){
- const expected=META[code].expected;
- const urls=[
-  `https://www.moneydj.com/etf/x/basic/basic0007b.xdjhtm?etfid=${code}.tw`,
-  `https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=${code}.tw&topc=`
- ];
- let best={date:ymdTaipei(),items:[]},errors=[];
- for(const url of urls){
-  try{
-   const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.moneydj.com/'},1),6500,null);
-   if(!html){errors.push('timeout '+url);continue}
-   const p=parseMoneyDJHoldings(code,html);
-   if(p.items.length>best.items.length)best=p;
-   if(p.items.length>=expected)return{
-    code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),
-    complete:true,expected,officialOnly:false,thirdParty:true,
-    source:'MoneyDJ 完整持股明細',sourceUrl:url,historicalAvailable:false,
-    note:`完整成分與權重由 MoneyDJ 全部持股頁取得；個股即時漲跌由 dashboard 行情模組自行取得。已解析 ${p.items.length}/${expected} 檔。`,
-    attempts:[{source:'MoneyDJ',ok:true,count:p.items.length,url}]
-   };
-   errors.push(`parsed ${p.items.length}/${expected} ${url}`);
-  }catch(e){errors.push(e.message)}
- }
- return{
-  code,asOf:best.date,effectiveDate:best.date,items:best.items,complete:false,expected,
-  officialOnly:false,thirdParty:true,source:'MoneyDJ 持股來源未完整',
-  sourceUrl:urls[0],historicalAvailable:false,
-  note:`只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,
-  errors:errors.slice(-4),attempts:[{source:'MoneyDJ',ok:best.items.length>=expected,count:best.items.length,error:errors.at(-1)||null,url:urls[0]}]
- };
-}
-function parsePocketHoldings(code,html){
- const text=stripTags(html).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(),items=[];
- // Pocket holding rows: stock code, name, weight%, holding quantity, 股.
- // Restrict to ordinary Taiwan stock codes; ignore cash, receivables and futures.
- const re=/(?:^|\s)(\d{4,6})\s+(.{1,45}?)\s+(\d+(?:\.\d+)?)%\s+([\d,]+)\s+股(?=\s|$)/g;let m;
- while((m=re.exec(text))){
-  const c=m[1],name=m[2].trim(),weight=n(m[3]),shares=n(m[4]);
-  if(/^\d{4,6}$/.test(c)&&Number.isFinite(weight)&&weight>=0&&weight<=100)items.push({code:c,name,weight,shares,weightSource:'口袋證券持股明細'});
- }
- const dates=[...text.matchAll(/資料日期\s*[:：]?\s*(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})/g)].map(x=>parseISODate(x[1])).filter(Boolean);
- return{date:dates.at(-1)||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
-}
-async function pocketConstituents(code){
- const expected=META[code].expected,url=`https://www.pocket.tw/etf/tw/${code}/fundholding?page=&parent=&source=`;
- const variants=[url,`https://www.pocket.tw/etf/tw/${code}/fundholding`],lastErr=[];
- let best={date:ymdTaipei(),items:[]};
- for(const u of variants){
-  try{
-   const html=await deadline(getText(u,{'Accept':'text/html,application/xhtml+xml','Referer':`https://www.pocket.tw/etf/tw/${code}`},1),6500,null);
-   if(!html){lastErr.push('timeout '+u);continue}
-   const p=parsePocketHoldings(code,html);if(p.items.length>best.items.length)best=p;
-   if(p.items.length>=expected)return{code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),complete:true,expected,officialOnly:false,thirdParty:true,source:'口袋證券完整持股明細',sourceUrl:u,historicalAvailable:false,note:`持股/權重由口袋證券取得；個股漲跌由儀表板既有市場行情來源自行計算。已解析 ${p.items.length}/${expected} 檔。`};
-   lastErr.push(`parsed ${p.items.length}/${expected} ${u}`);
-  }catch(e){lastErr.push(e.message)}
- }
- return{code,asOf:best.date,effectiveDate:best.date,items:best.items,complete:false,expected,officialOnly:false,thirdParty:true,source:'口袋證券持股來源未完整',sourceUrl:url,historicalAvailable:false,note:`只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,errors:lastErr.slice(-4)};
-}
-async function yuantaConstituents(code){
- const ratioUrl=META[code].url,pcfUrl=`https://www.yuantaetfs.com/tradeInfo/pcf/${code}`,errors=[],attempts=[];
- let ratio={date:ymdTaipei(),items:[]};
-
- // Always secure the official top-5 fallback first. Never regress to 0 just because the full source is slow.
- try{
-  const ratioHtml=await deadline(getText(ratioUrl,{},1),6500,null);
-  if(ratioHtml){
-   ratio=parseYuantaRatio(code,ratioHtml);
-   attempts.push({source:'ratio',ok:true,count:ratio.items.length,url:ratioUrl});
-   if(ratio.items.length>=META[code].expected)return{code,asOf:ratio.date,effectiveDate:ratio.date,items:ratio.items.slice(0,META[code].expected),complete:true,expected:META[code].expected,officialOnly:true,source:'元大官方持股比重頁完整50檔',sourceUrl:ratioUrl,historicalAvailable:false,note:'直接使用元大官方每日持股比重完整清單與官方權重。',attempts};
-  }else{attempts.push({source:'ratio',ok:false,count:0,error:'timeout',url:ratioUrl});errors.push('ratio:timeout')}
- }catch(e){attempts.push({source:'ratio',ok:false,count:0,error:e.message,url:ratioUrl});errors.push('ratio:'+e.message)}
-
- // Try PCF full list. Current public HTML exposes only a preview, but keep this official route for Render verification.
- try{
-  const pcfHtml=await deadline(getText(pcfUrl,{'Referer':ratioUrl,'Accept':'text/html,application/xhtml+xml'},1),6500,null);
-  if(pcfHtml){
-   let pcf=parseYuantaPCFFullHTML(pcfHtml);
-   attempts.push({source:'pcf',ok:true,count:pcf.length,url:pcfUrl});
-   if(pcf.length>=META[code].expected){
-    pcf=await deriveWeightsFromShares(pcf);
-    const weightN=pcf.filter(x=>Number.isFinite(x.weight)).length;
-    const text=stripTags(pcfHtml),date=(text.match(/(?:交易日期|公告日期|Trade Date)\s*:?\s*(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})/)||[])[1];
-    if(weightN>=META[code].expected*.90)return{code,asOf:parseISODate(date)||ratio.date,effectiveDate:parseISODate(date)||ratio.date,items:pcf.slice(0,META[code].expected),complete:true,expected:META[code].expected,officialOnly:true,source:'元大官方完整PCF＋TWSE現價估算權重',sourceUrl:pcfUrl,historicalAvailable:false,note:`官方PCF已解析 ${pcf.length}/${META[code].expected} 檔。`,attempts};
-    attempts.push({source:'pcf-weight',ok:false,count:weightN,error:'weight derivation incomplete'});
-   }
-  }else{attempts.push({source:'pcf',ok:false,count:0,error:'timeout',url:pcfUrl});errors.push('pcf:timeout')}
- }catch(e){attempts.push({source:'pcf',ok:false,count:0,error:e.message,url:pcfUrl});errors.push('pcf:'+e.message)}
-
- // Legacy official API as a bounded backup. It may now return the website HTML rather than JSON.
- try{
-  const api=await deadline(yuantaApiConstituents(code),5000,null);
-  if(api){
-   attempts.push({source:'StkWeights',ok:true,count:api.items.length,url:api.sourceUrl});
-   const asOf=api.asOf||ratio.date;
-   return{code,asOf,effectiveDate:asOf,items:api.items,complete:true,expected:META[code].expected,officialOnly:true,source:'元大官方完整 StkWeights API',sourceUrl:api.sourceUrl,historicalAvailable:false,note:'官方完整權重API備援。',attempts};
-  }
-  attempts.push({source:'StkWeights',ok:false,count:0,error:'timeout'});
- }catch(e){attempts.push({source:'StkWeights',ok:false,count:0,error:e.message});errors.push('api:'+e.message)}
-
- return{code,asOf:ratio.date,effectiveDate:ratio.date,items:ratio.items,complete:false,expected:META[code].expected,officialOnly:true,source:'元大官方來源（完整來源尚未取得）',sourceUrl:ratioUrl,historicalAvailable:false,note:`目前保留官方持股比重頁 ${ratio.items.length}/${META[code].expected} 檔作參考，不計健康度；完整來源失敗不再退化成0檔。`,errors:errors.slice(-8),attempts};
-}
-
-function parseCapital(html){
- const text=stripTags(html),start=text.indexOf('股票'),end=text.indexOf('期貨',start),seg=start>=0?text.slice(start,end>start?end:undefined):text,items=[];
- const re=/(?:^|\s)(\d{4,6})\s+(.{1,50}?)\s+(\d+(?:\.\d+)?)%\s+([\d,]{3,})(?=\s|$)/g;let m;while((m=re.exec(seg)))items.push({code:m[1],name:m[2].trim(),weight:n(m[3]),shares:n(m[4]),weightSource:'群益官方申購買回清單'});
- const date=(text.match(/(?:查詢日期|交易日期|資料日期|匯率)\s*[:：]?\s*[^0-9]{0,40}(20\d{2}[\/.]\d{1,2}[\/.]\d{1,2})/)||[])[1];return{date:parseISODate(date)||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
-}
-async function capitalConstituents(){
- const code='00919',expected=META[code].expected,today=ymdTaipei(),errors=[];
- const urls=[META[code].portfolioUrl,META[code].url];
- const rs=await Promise.allSettled(urls.map(url=>deadline(getText(url,{'Referer':'https://www.capitalfund.com.tw/etf/product/detail/195','Accept':'text/html,application/xhtml+xml'},1),4500,null)));
- let best={date:today,items:[],html:'',url:META[code].portfolioUrl};
- for(let i=0;i<rs.length;i++){
-  const url=urls[i],r=rs[i];
-  if(r.status!=='fulfilled'||!r.value){errors.push(url+':timeout/error');continue}
-  const html=r.value,p=parseCapital(html);
-  if(p.items.length>best.items.length)best={...p,html,url};
-  if(p.items.length>=expected)return{code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),complete:true,expected,officialOnly:true,source:'群益官方完整投資組合/申購買回清單',sourceUrl:url,historicalAvailable:false,note:'完整持股直接由群益官方頁取得。'};
- }
- // Try only the official download/API candidates visible in the two official pages, in parallel and under a hard deadline.
- const candidates=[...new Set(urls.flatMap((u,i)=>discoverOfficialCandidates(code,u,rs[i]?.status==='fulfilled'?(rs[i].value||''):'')))].slice(0,12);
- const docs=await Promise.allSettled(candidates.map(u=>deadline(fetchAndParseOfficialDocument(code,u),3500,null)));
- for(let i=0;i<docs.length;i++){
-  const z=docs[i].status==='fulfilled'?docs[i].value:null;if(!z)continue;
-  if(z.items?.length>=expected)return{code,asOf:best.date,effectiveDate:best.date,items:z.items.slice(0,expected),complete:true,expected,officialOnly:true,source:`群益官方${z.kind==='excel'?'下載Excel':z.kind==='csv'?'下載CSV':z.kind==='json'?'完整JSON':'完整PCF'}`,sourceUrl:candidates[i],historicalAvailable:false,note:'由群益官方下載資料/API取得完整清單。'};
- }
- return{code,asOf:best.date,effectiveDate:best.date,items:best.items,complete:false,expected,officialOnly:true,source:'群益官方頁（目前僅取得前十大）',sourceUrl:best.url,historicalAvailable:false,note:`R3.25已停止長時間輪詢，避免 /api/constituent-dashboard 逾時。目前群益官方HTML只直接提供 ${best.items.length}/${expected} 筆；未使用第三方補齊。`,errors:errors.slice(-8)};
-}
 async function constituents(code,date=null){
- const key='const:r329:'+code+':'+(date||'latest');
+ const key='const:r330:'+code+':'+(date||'latest');
  return cached(key,date?6*60*60*1000:30*60*1000,async()=>{
   if(code==='00878')return cathayConstituents(date);
   if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
@@ -1451,7 +1233,7 @@ async function constituents(code,date=null){
  });
 }
 async function constituentHealth(code){
- return cached('health:r329:'+code,8000,async()=>{
+ return cached('health:r330:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
@@ -1537,7 +1319,7 @@ async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
  const healthTimeout=c=>({ok:true,code:c,usable:false,score:null,divergence:'官方成分來源逾時，暫不計分',sourceCoverage:0,quoteCoverage:0,items:[],reason:'constituent deadline exceeded',source:'timeout'});
  const [ld,etfLd,ctx,ovs,nf,harr,hhealth]=await Promise.all([
-  deadline(live().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),8000,{ok:false,quotes:{},market:null,tsmc:null,error:'market deadline exceeded',fetchedAt:null}),
+  deadline(liveStable().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),8000,{ok:false,quotes:{},market:null,tsmc:null,error:'market deadline exceeded',fetchedAt:null}),
   deadline(liveEtf4().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),9000,{ok:false,quotes:{},error:'ETF live deadline exceeded',fetchedAt:null}),
   deadline(cached('ctx',30000,context).catch(()=>null),6000,null),
   deadline(cached('ovs',45000,overseas).catch(()=>null),6000,null),
@@ -1548,13 +1330,14 @@ async function buyModel(){
  const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),models={};
  const marketAt=ld.fetchedAt?Date.parse(ld.fetchedAt):0,etfAt=etfLd?.fetchedAt?Date.parse(etfLd.fetchedAt):0,openRequired=twMarketOpenNow();
  const marketFresh=!!marketAt&&Date.now()-marketAt<90000&&(!openRequired||ld.realtime!==false);
- const quoteStatus=Object.fromEntries(ETF.map(c=>{const q=etfLd?.quotes?.[c]||{};const ok=Number(q.last)>0&&Number(q.prevClose)>0&&(!openRequired||Number(q.open)>0);
-  return[c,{ok,last:Number(q.last)||null,prevClose:Number(q.prevClose)||null,open:Number(q.open)||null,source:q.source||null}]}));
+ const quoteStatus=Object.fromEntries(ETF.map(c=>{const q=etfLd?.quotes?.[c]||{},qat=Date.parse(q.serverFetchedAt||etfLd?.fetchedAt||0),ageMs=qat?Date.now()-qat:Infinity;
+  const fieldsOk=Number(q.last)>0&&Number(q.prevClose)>0&&(!openRequired||Number(q.open)>0),ok=fieldsOk&&ageMs<90000;
+  return[c,{ok,fieldsOk,ageMs:Number.isFinite(ageMs)?ageMs:null,last:Number(q.last)||null,prevClose:Number(q.prevClose)||null,open:Number(q.open)||null,source:q.source||null,lastGoodFallback:!!q.lastGoodFallback}]}));
  const etfQuotesOk=ETF.every(c=>quoteStatus[c].ok);
- const etfFresh=!!etfAt&&Date.now()-etfAt<90000&&etfQuotesOk;
+ const etfFresh=etfQuotesOk;
  const fresh=marketFresh&&etfFresh;
  for(const c of ETF){try{const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;models[c]=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],fresh)}catch(e){models[c]={code:c,error:e.message}}}
- return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,etfFresh,etfQuotesOk,quoteStatus,etfQuoteErrors:etfLd?.errors||[],degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}]))};
+ return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,quoteStatus,etfQuoteErrors:etfLd?.errors||[],degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}]))};
 }
 
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
@@ -1636,7 +1419,7 @@ async function validationReport(deep=false){
  out[5]=V('WAIT','需真實08:57–08:59:30由瀏覽器端鎖定');out[6]=V('PASS','首頁具08:57–09:00盤前優先邏輯');out[7]=V(bm&&Object.values(bm.models||{}).some(x=>x&&'noBuyToday' in x)?'PASS':'PARTIAL','支援「今日暫無合理買點」');out[8]=V(new Set(ETF.map(c=>JSON.stringify(META[c].cfg))).size===4?'PASS':'FAIL','四檔使用獨立參數');out[9]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.first?.low)?'PASS':'PARTIAL','第一層為動態區間');out[10]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.third?.low)?'PASS':'PARTIAL','三層價格輸出');out[11]=V(bm&&ETF.some(c=>Number.isFinite(bm.models?.[c]?.score))?'PASS':'PARTIAL','綜合評分輸出');out[12]=V('PASS','前端分層狀態機支援分批');out[13]=V(bm&&ETF.some(c=>'hardVeto' in (bm.models?.[c]||{}))?'PASS':'PARTIAL','硬Gate含資料失效/急殺');out[14]=V(bm&&ETF.some(c=>bm.models?.[c]?.history?.sma250)?'PASS':'PARTIAL','5/20/60/120/250納入');out[15]=V('PASS','買點上修有速度上限');out[16]=V(bm&&ETF.some(c=>'bullStructure' in (bm.models?.[c]?.history||{}))?'PASS':'PARTIAL','中樞慢速重新定錨');
  out[17]=V('WAIT','瀏覽器歷史紀錄由前端補驗');out[18]=V('WAIT','實際價格同步由前端補驗');out[19]=V('WAIT','重複區間折疊由前端補驗');out[20]=V('WAIT','需累積7日買點歷史');
  const hs=bm?.health||{},usable=ETF.filter(c=>hs[c]?.usable).length,connected=ETF.filter(c=>hs[c]&&hs[c].sourceCoverage>0).length;out[21]=V(usable===4?'PASS':connected?'PARTIAL':'FAIL',`成分來源已連線 ${connected}/4；完整健康可計分 ${usable}/4`);out[22]=V(connected?'PASS':'PARTIAL',`成分資料畫面可顯示 ${connected}/4；不足者明示不計分`);out[23]=V(usable===4?'PASS':usable?'PARTIAL':'WAIT',`健康度可正式計分 ${usable}/4`);out[24]=V(usable?'PASS':'WAIT','健康度可用時採權重式分歧/背離');out[25]=V('PASS','健康度位於各ETF detail頁');out[26]=V('PARTIAL','新有效日期會保存版本；待實際換股事件驗證');out[27]=V('PARTIAL','沒有當時版本就禁止今日成分倒灌歷史');
- out[28]=V(ctx?.breadth?.total&&ctx.breadth?.sourceDate===ymdTaipei()?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平｜${ctx.breadth.mode}｜${ctx.breadth.sourceDate||'—'}${Number.isFinite(ctx.breadth.coverage)?`｜覆蓋${Math.round(ctx.breadth.coverage*100)}%`:''}`:`廣度來源暫不可用${BREADTH_RUNTIME.error?'｜'+BREADTH_RUNTIME.error:''}／盤前不沿用舊資料`);out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');out[33]=V(bm?.etfQuotesOk?'PASS':'PARTIAL',bm?.etfQuotesOk?'四檔ETF模型與畫面共用專屬即時quote（Anue主來源）':'四檔ETF模型quote不完整');out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?`marketFresh=${bm.marketFresh?'OK':'FAIL'}｜etfFresh=${bm.etfFresh?'OK':'FAIL'}｜${ETF.map(c=>{const q=bm.quoteStatus?.[c];return`${c}:${q?.ok?'OK':`缺${q?.last?'':'現價/'}${q?.prevClose?'':'昨收/'}${twMarketOpenNow()&&!q?.open?'開盤':''}`}`}).join('｜')}`:'等待模型資料');out[35]=V('PASS','回前景立即刷新');out[36]=V('PASS','行情10秒/模型30秒');
+ out[28]=V(ctx?.breadth?.total&&ctx.breadth?.sourceDate===ymdTaipei()?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平｜${ctx.breadth.mode}｜${ctx.breadth.sourceDate||'—'}${Number.isFinite(ctx.breadth.coverage)?`｜覆蓋${Math.round(ctx.breadth.coverage*100)}%`:''}`:`廣度來源暫不可用${BREADTH_RUNTIME.error?'｜'+BREADTH_RUNTIME.error:''}／盤前不沿用舊資料`);out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');out[33]=V(bm?.etfQuotesOk?'PASS':'PARTIAL',bm?.etfQuotesOk?'四檔ETF模型與畫面共用專屬即時quote（Anue主來源）':'四檔ETF模型quote不完整');out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?`marketFresh=${bm.marketFresh?'OK':'FAIL'}${bm.marketLastGoodFallback?'(90s緩衝)':''}｜etfFresh=${bm.etfFresh?'OK':'FAIL'}｜${ETF.map(c=>{const q=bm.quoteStatus?.[c],age=q?.ageMs!=null?Math.round(q.ageMs/1000)+'s':'—';return`${c}:${q?.ok?'OK':`缺${q?.last?'':'現價/'}${q?.prevClose?'':'昨收/'}${twMarketOpenNow()&&!q?.open?'開盤':''}`}(${age}${q?.lastGoodFallback?',緩衝':''})`}).join('｜')}`:'等待模型資料');
  if(deep)ETF.forEach(c=>enqueueHistory(c,false));const hp=ETF.map(c=>historyProgress(c)),ready=hp.filter(x=>x.backtestReadyPass===true).length;out[37]=V(ready===4?'PASS':ready?'PARTIAL':'WAIT',`四檔可回測完整樣本 ${ready}/4`,hp.map(x=>`${x.code}:${x.status}${x.backtestReadyPass?'✓':'✗'} ${x.first||'—'}→${x.last||'—'} ${x.rows||0}日`).join('｜'));out[38]=V('PASS','主結果全歷史；10/5/2/1年只做切片');
  let corpPass=0,btReady=0,wfPass=0,abPass=0,kpiPass=0,cred=[];for(const c of ETF){const h=diskRead(readyFile(c));if(h?.validation?.dividendCoveragePass&&h?.validation?.adjustmentPass)corpPass++;if(h?.rows?.length){try{const b=await backtest(c);if(b.ready){btReady++;const w=b.walkForward?.metrics,on=b.ab?.antiChaseOn,off=b.ab?.antiChaseOff,m=b.slices?.full,mins={'0050':20,'0056':20,'00878':10,'00919':5};if((w?.signals||0)>=mins[c])wfPass++;if(Number.isFinite(on?.highEntryRate)&&Number.isFinite(off?.highEntryRate)&&on.highEntryRate<=off.highEntryRate)abPass++;if([m?.avg5,m?.avg20,m?.avg60,m?.worstMAE60].every(Number.isFinite))kpiPass++;cred.push(`${c}:歷史${b.historyDays}日/WF${w?.signals||0}`)}}catch(e){cred.push(`${c}:回測錯誤 ${e.message}`)}}}
  out[39]=V(wfPass===4?'PASS':btReady?'PARTIAL':'WAIT',`Walk-forward樣本門檻 ${wfPass}/4`,cred.join('｜'));out[40]=V(corpPass===4?'PASS':corpPass?'PARTIAL':ready?'FAIL':'WAIT',`除息/分割/還原驗證 ${corpPass}/4`);out[41]=V(abPass===4?'PASS':btReady?'PARTIAL':'WAIT',`防追高A/B可驗證 ${abPass}/4`);out[42]=V(kpiPass===4?'PASS':btReady?'PARTIAL':'WAIT',`5/20/60、MAE、參與率等KPI ${kpiPass}/4`);out[43]=V(btReady===4?'PASS':btReady?'PARTIAL':'WAIT',`可信度輸出 ${btReady}/4`,cred.join('｜'));out[44]=V('PASS','全站紅漲綠跌');out[45]=V('PASS',`全站版本 ${VERSION} / build ${BUILD}`);
