@@ -1,0 +1,42 @@
+V16.8.48-TARGETED-BUGFIXES
+================================
+ONLY these requested fixes were made:
+
+1. Home/ETF status consistency
+- Priority: confirmed > touched > noBuyToday > waiting.
+- If price already touched a layer but Gate/noBuyToday blocks confirmation, both Home and ETF page say
+  "第N層已觸價／未確認" instead of contradictory "今日暫無合理買點".
+- Buy-price formulas and Gate thresholds are unchanged.
+
+2. 00878 29/30 constituent parser
+- Cathay official Excel is parsed by detected headers first.
+- Irregular code cells/shifted columns are handled by a generic fallback parser.
+- No stock code is hard-coded.
+- Constituent/health cache version bumped so the corrected list is picked up immediately.
+
+3. Real-time market breadth
+- Intraday primary source: TWSE MIS listed-stock quotes.
+- Missing symbols are filled from Anue in small batches.
+- Same environment weight and knife-Gate thresholds; only source reliability changed.
+- Official same-day MI_INDEX close logic remains unchanged.
+
+4. #34 dataFresh
+- Anue ETF quotes are completed field-by-field with TWSE MIS for prevClose/open/HLV.
+- During cash market hours, last + prevClose + open are required.
+- Validation #34 now explicitly shows marketFresh, etfFresh and which ETF field is missing.
+- Score/Gate/chase parameters are unchanged.
+
+5. #37 backtest validation
+- Counts historyProgress.backtestReadyPass instead of checking status text === READY.
+- Historical data and backtest calculations are unchanged.
+
+UNCHANGED:
+- Layer 1/2/3 price formulas
+- Three-layer re-anchor
+- 09:00 cash-open anti-chase cap
+- Score threshold / hardGate / chaseRisk
+- 08:45 TXF preopen lead
+- Manual/model trade tracking
+- Holdings / Supabase
+- Night futures / overseas / portfolio logic
+- #4 / #26 / #27 behavior
