@@ -1,0 +1,9 @@
+V16.8.54-878-CATHAY-EXCEL-FIXED
+00878 only:
+- Use Cathay official DownloadETFWeightExcel API.
+- Remove the client-rendered official HTML scraper that returned 0/30 on Render.
+- Remove the old broken Excel parser that referenced an undefined helper.
+- Parse all workbook sheets/rows directly.
+- Exclude non-stock rows.
+- Require 30/30 before model health is enabled.
+0050/0056/00919 and all model logic unchanged.

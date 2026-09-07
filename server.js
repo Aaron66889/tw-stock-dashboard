@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.53-878-CATHAY-OFFICIAL-PAGE';
+const BUILD='16.8.54-878-CATHAY-EXCEL-FIXED';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1240,178 +1240,159 @@ async function pocketConstituents(code){
 }
 
 
-function decodeHtmlBasic(s){
- return String(s||'')
-  .replace(/&nbsp;|&#160;/gi,' ')
-  .replace(/&amp;/gi,'&')
-  .replace(/&quot;/gi,'"')
-  .replace(/&#x27;|&#39;/gi,"'")
-  .replace(/&lt;/gi,'<')
-  .replace(/&gt;/gi,'>');
+
+function cathayExcelCode(v){
+ const s=String(v??'').trim(),m=s.match(/(?:^|\D)(\d{4,6})(?=$|\D)/);
+ if(!m)return null;
+ const code=m[1];
+ if(/^20\d{2}$/.test(code)||code==='00878')return null;
+ return code;
 }
-function parseCathayOfficialHoldingsPage(html){
- const expected=META['00878'].expected,items=[],seen=new Set();
- const push=(code,name,weight)=>{
-  code=String(code||'').trim();name=String(name||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
-  weight=n(weight);
-  if(!/^\d{4,6}$/.test(code)||!name||!Number.isFinite(weight)||weight<0||weight>30||seen.has(code))return;
-  // exclude obvious non-security noise / the ETF's own code
-  if(code==='00878'||/基金|ETF|期貨|現金|指數/i.test(name))return;
-  seen.add(code);items.push({code,name,weight,weightSource:'國泰投信官方持股權重頁'});
- };
-
- const raw=decodeHtmlBasic(html);
- // 1) Normal rendered HTML table rows.
- for(const m of raw.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)){
-  const row=m[1],cells=[...row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(x=>decodeHtmlBasic(x[1]).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim());
-  if(cells.length<2)continue;
-  const joined=cells.join(' | ');
-  const cm=joined.match(/(?:^|\D)(\d{4,6})(?:\D|$)/);
-  if(!cm)continue;
-  let wt=null;
-  for(const c of cells){
-   const wm=c.match(/(-?\d+(?:\.\d+)?)\s*%/);
-   if(wm){wt=n(wm[1]);break}
-  }
-  if(wt==null){
-   for(let i=cells.length-1;i>=0;i--){const x=n(cells[i]);if(x!=null&&x>=0&&x<=30){wt=x;break}}
-  }
-  let name='';
-  for(const c of cells){
-   const cleaned=c.replace(/\(?\d{4,6}(?:\.(?:TW|TWO))?\)?/ig,'').replace(/-?\d+(?:\.\d+)?\s*%?/g,'').trim();
-   if(cleaned&&/[^\d\s.,:%]/.test(cleaned)&&!/(持股|權重|代碼|名稱|日期)/.test(cleaned)){name=cleaned;break}
-  }
-  push(cm[1],name,wt);
- }
-
- // 2) JSON-ish objects embedded in the page / hydration payload.
- const objects=raw.match(/\{[^{}]{0,1600}\}/g)||[];
- for(const obj of objects){
-  const code=(obj.match(/["']?(?:stockCode|securityCode|code|ticker|證券代號|股票代號)["']?\s*[:=]\s*["']?(\d{4,6})/i)||
-              obj.match(/(?:^|\D)(\d{4,6})(?:\D|$)/))?.[1];
-  if(!code)continue;
-  const name=(obj.match(/["']?(?:stockName|securityName|name|股票名稱|證券名稱)["']?\s*[:=]\s*["']([^"']{1,80})["']/i)||[])[1];
-  let weight=(obj.match(/["']?(?:weight|ratio|percentage|percent|investRatio|權重|比重|投資比例)["']?\s*[:=]\s*["']?(-?\d+(?:\.\d+)?)/i)||[])[1];
-  if(weight==null)continue;
-  push(code,name,weight);
- }
-
- // 3) Text fallback for rows like "中信金(2891.TW) 9.77".
- const text=raw.replace(/<script\b[^>]*>/gi,' ').replace(/<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
- for(const m of text.matchAll(/([^\s()<>]{1,40})\s*\(\s*(\d{4,6})(?:\.(?:TW|TWO))?\s*\)\s+(\d+(?:\.\d+)?)\s*%?/gi))
-  push(m[2],m[1],m[3]);
-
- return items.sort((a,b)=>(b.weight||0)-(a.weight||0)).slice(0,expected);
+function cathayExcelName(v){
+ const s=String(v??'').replace(/\s+/g,' ').trim();
+ if(!s||/^[-+]?\d+(?:\.\d+)?%?$/.test(s))return '';
+ if(/^(上市|上櫃|OTC|TWSE|TWO|股票代號|證券代號|股票名稱|證券名稱|投資比例|持股權重|持有股數|日期)$/i.test(s))return '';
+ return s;
 }
-async function cathayOfficialPageConstituents(){
- const expected=META['00878'].expected,errors=[];
- // Query today and recent calendar days; Cathay automatically displays the latest available business-day holdings.
- const days=Array.from({length:7},(_,i)=>dateMinus(i));
- let best={items:[],asOf:null,url:null};
- for(const iso of days){
-  const [y,m,d]=iso.split('-').map(Number);
-  const url=`https://www.cathaysite.com.tw/ETF/detail/ECN?tab=etf3&date=${y}-${m}-${d}`;
-  try{
-   const html=await deadline(getText(url,{
-    'Referer':'https://www.cathaysite.com.tw/ETF/detail/ECN',
-    'Cache-Control':'no-cache','Pragma':'no-cache'
-   },1),7000,null);
-   if(!html){errors.push('timeout '+iso);continue}
-   const items=parseCathayOfficialHoldingsPage(html);
-   const dateMatch=(decodeHtmlBasic(html).match(/(?:資料日期|data[- ]?date)[^0-9]{0,20}(20\d{2}[\/-]\d{1,2}[\/-]\d{1,2})/i)||[])[1];
-   const asOf=parseISODate(dateMatch)||iso;
-   if(items.length>best.items.length)best={items,asOf,url};
-   if(items.length>=expected)return{
-    code:'00878',asOf,effectiveDate:asOf,items:items.slice(0,expected),
-    complete:true,expected,officialOnly:true,thirdParty:false,
-    source:'國泰投信官方持股權重頁',sourceUrl:url,historicalAvailable:false,
-    note:`00878 直接由國泰投信官方持股權重頁取得 ${items.length}/${expected} 檔股票與權重。`,
-    attempts:[{source:'Cathay official page',ok:true,count:items.length,url}]
-   };
-   errors.push(`parsed ${items.length}/${expected} ${iso}`);
-  }catch(e){errors.push(e.message||String(e))}
- }
- return{
-  code:'00878',asOf:best.asOf,effectiveDate:best.asOf,items:best.items,complete:false,expected,
-  officialOnly:true,thirdParty:false,source:'國泰投信官方持股權重頁未完整',
-  sourceUrl:best.url||'https://www.cathaysite.com.tw/ETF/detail/ECN?tab=etf3',
-  historicalAvailable:false,
-  note:`官方頁目前只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,
-  errors:errors.slice(-8),attempts:[{source:'Cathay official page',ok:false,count:best.items.length,error:errors.at(-1)||null}]
- };
+function cathayExcelWeight(v){
+ const raw=String(v??'').replace(/,/g,'').trim(),m=raw.match(/-?\d+(?:\.\d+)?/);
+ if(!m)return null;
+ let x=Number(m[0]);if(!Number.isFinite(x)||x<0)return null;
+ if(raw.includes('%'))return x<=100?x:null;
+ if(x>0&&x<0.2)x*=100;
+ return x<=30?x:null;
 }
+function parseCathayOfficialExcelWorkbook(wb){
+ const items=[],seen=new Set();
+ for(const sheetName of wb.SheetNames||[]){
+  const ws=wb.Sheets[sheetName];
+  if(!ws)continue;
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});
 
-async function cathayConstituents(date){
- if(!XLSX)throw Error('xlsx module unavailable');
- let lastErr=null;
- const dates=date?[date]:Array.from({length:7},(_,i)=>dateMinus(i));
- for(const iso of dates){
-  try{
-   const sd=iso.replaceAll('-','/'),buf=await getBuffer('https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel?FundCode=CN&SearchDate='+encodeURIComponent(sd));
-   const wb=XLSX.read(buf,{type:'buffer'}),all=[];
-   // Cathay workbooks may separate listed / OTC holdings or move the table between sheets.
-   // Parse EVERY sheet and merge by stock code; never hard-code a constituent.
-   for(const sheetName of wb.SheetNames||[]){
-    const ws=wb.Sheets[sheetName];
-    if(!ws)continue;
-    const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});
-    let items=normalizeConstituentTableRows(rows,'國泰官方ETF權重Excel');
-    const extra=[];
-    for(const r of rows){
-     let code=null,codeIdx=-1;
-     // Search the first several columns because OTC / workbook-format variants may shift the code column.
-     for(let j=0;j<Math.min(r.length,8);j++){
-      const s=String(r[j]??'').trim(),m=s.match(/(?:^|\D)(\d{4,6})(?:\D|$)/);
-      if(m){code=m[1];codeIdx=j;break}
-     }
-     if(!code)continue;
-     let name='';
-     for(let j=codeIdx+1;j<Math.min(r.length,codeIdx+5);j++){
-      const s=String(r[j]??'').trim();
-      if(s&&!/^[-+]?\d+(?:\.\d+)?%?$/.test(s)&&!/^(上市|上櫃|OTC|TWSE)$/i.test(s)){name=s;break}
-     }
-     let weight=null;
-     // Prefer an explicitly formatted percentage.
-     for(let j=0;j<r.length;j++){
-      const s=String(r[j]??'').trim();
-      if(s.includes('%')){const x=n(s);if(x!=null&&x>=0&&x<=30){weight=x;break}}
-     }
-     // Otherwise inspect numeric tail columns. Tiny decimal ratios are converted to percent.
-     if(weight==null){
-      for(let j=r.length-1;j>=0;j--){
-       let x=n(r[j]);if(x==null||x<0)continue;
-       if(x>0&&x<.2)x*=100;
-       if(x<=30){weight=x;break}
-      }
-     }
-     if(name&&weight!=null)extra.push({code,name,weight,weightSource:'國泰官方ETF權重Excel'});
+  let codeCol=-1,nameCol=-1,weightCol=-1;
+  for(let i=0;i<Math.min(rows.length,20);i++){
+   const r=rows[i]||[];
+   for(let j=0;j<r.length;j++){
+    const s=String(r[j]??'').replace(/\s+/g,'').trim();
+    if(codeCol<0&&/(股票|證券).*(代號|代碼)|^(代號|代碼)$/.test(s))codeCol=j;
+    if(nameCol<0&&/(股票|證券).*(名稱)|^名稱$/.test(s))nameCol=j;
+    if(weightCol<0&&/(投資比例|持股權重|權重|比重)/.test(s))weightCol=j;
+   }
+   if(codeCol>=0&&nameCol>=0&&weightCol>=0)break;
+  }
+
+  for(const r of rows){
+   if(!Array.isArray(r)||!r.length)continue;
+
+   let code=codeCol>=0?cathayExcelCode(r[codeCol]):null;
+   let name=nameCol>=0?cathayExcelName(r[nameCol]):'';
+   let weight=weightCol>=0?cathayExcelWeight(r[weightCol]):null;
+
+   if(!code){
+    for(let j=0;j<Math.min(r.length,8);j++){
+     const c=cathayExcelCode(r[j]);
+     if(c){code=c;break}
     }
-    items=[...new Map([...items,...extra].map(x=>[x.code,x])).values()];
-    all.push(...items.map(x=>({...x,_sheet:sheetName})));
    }
-   const uniq=[...new Map(all.map(x=>[x.code,x])).values()].sort((a,b)=>(b.weight||0)-(a.weight||0));
-   if(uniq.length>=20){
-    const expected=META['00878'].expected,complete=uniq.length>=expected;
-    return{code:'00878',asOf:iso,effectiveDate:iso,items:uniq.map(({_sheet,...x})=>x),complete,expected,officialOnly:true,
-     source:'國泰官方ETF權重Excel（全工作表）',sourceUrl:'https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel',historicalAvailable:true,
-     note:complete?`國泰官方完整Excel，共 ${uniq.length} 檔。`:`只取得 ${uniq.length}/${expected}，不計健康度。`};
+
+   if(!name&&code){
+    const idx=r.findIndex(v=>cathayExcelCode(v)===code);
+    for(let j=Math.max(0,idx+1);j<Math.min(r.length,idx+6);j++){
+     const nm=cathayExcelName(r[j]);
+     if(nm&&!/(基金|ETF|期貨|現金|指數|保證金|應收|應付)/i.test(nm)){name=nm;break}
+    }
    }
-  }catch(e){lastErr=e}
+
+   if(weight==null&&code){
+    const idx=r.findIndex(v=>cathayExcelCode(v)===code);
+    for(let j=Math.max(0,idx+1);j<r.length;j++){
+     const x=cathayExcelWeight(r[j]);
+     if(x!=null){weight=x;break}
+    }
+   }
+
+   if(!code||!name||weight==null||seen.has(code))continue;
+   if(/基金|ETF|期貨|現金|指數|保證金|應收|應付/i.test(name))continue;
+
+   seen.add(code);
+   items.push({code,name,weight,weightSource:'國泰投信官方ETF權重Excel'});
+  }
  }
- throw lastErr||Error('Cathay holdings unavailable');
+ return items.sort((a,b)=>(b.weight||0)-(a.weight||0));
 }
+async function cathayOfficialExcelConstituents(date=null){
+ if(!XLSX)throw Error('xlsx module unavailable');
+
+ const expected=META['00878'].expected,errs=[];
+ const dates=date?[date]:Array.from({length:7},(_,i)=>dateMinus(i));
+ let best={items:[],asOf:null,url:null};
+
+ for(const iso of dates){
+  const sd=iso.replaceAll('-','/');
+  const url='https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel?FundCode=CN&SearchDate='+encodeURIComponent(sd);
+
+  try{
+   const buf=await deadline(getBuffer(url),7000,null);
+   if(!buf){errs.push('timeout '+iso);continue}
+
+   const wb=XLSX.read(buf,{type:'buffer'});
+   const items=parseCathayOfficialExcelWorkbook(wb);
+
+   if(items.length>best.items.length)best={items,asOf:iso,url};
+
+   if(items.length>=expected){
+    return{
+     code:'00878',
+     asOf:iso,
+     effectiveDate:iso,
+     items:items.slice(0,expected),
+     complete:true,
+     expected,
+     officialOnly:true,
+     thirdParty:false,
+     source:'國泰投信官方ETF權重Excel',
+     sourceUrl:url,
+     historicalAvailable:!!date,
+     note:`國泰官方Excel已解析 ${items.length}/${expected} 檔股票與權重。`,
+     attempts:[{source:'Cathay official Excel',ok:true,count:items.length,url}]
+    };
+   }
+
+   errs.push(`parsed ${items.length}/${expected} ${iso}`);
+  }catch(e){
+   errs.push(e.message||String(e));
+  }
+ }
+
+ return{
+  code:'00878',
+  asOf:best.asOf,
+  effectiveDate:best.asOf,
+  items:best.items,
+  complete:false,
+  expected,
+  officialOnly:true,
+  thirdParty:false,
+  source:'國泰投信官方ETF權重Excel未完整',
+  sourceUrl:best.url||'https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel',
+  historicalAvailable:!!date,
+  note:`官方Excel本輪最佳 ${best.items.length}/${expected}；不完整時不納入模型。`,
+  errors:errs.slice(-8),
+  attempts:[{source:'Cathay official Excel',ok:false,count:best.items.length,error:errs.at(-1)||null}]
+ };
+}
+
 async function constituents(code,date=null){
- const key='const:r334:'+code+':'+(date||'latest');
+ const key='const:r335:'+code+':'+(date||'latest');
  return cached(key,date?6*60*60*1000:30*60*1000,async()=>{
+  if(code==='00878')return cathayOfficialExcelConstituents(date);
   if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
-  if(code==='00878')return cathayOfficialPageConstituents();
-  // 0050 / 0056 / 00919 stay on the original MoneyDJ path.
   if(code==='0050'||code==='0056'||code==='00919')return moneyDJConstituents(code);
   throw Error('unsupported constituents');
  });
 }
 async function constituentHealth(code){
- return cached('health:r334:'+code,8000,async()=>{
+ return cached('health:r335:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
