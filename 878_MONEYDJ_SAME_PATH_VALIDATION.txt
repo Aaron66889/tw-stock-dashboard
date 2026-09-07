@@ -1,0 +1,30 @@
+V16.8.52-878-MONEYDJ-SAME-PATH
+==================================
+Scope: ONLY change 00878 current constituent loading to the exact same path used by 0050/0056/00919.
+
+Current constituent route:
+- 0050 -> moneyDJConstituents('0050')
+- 0056 -> moneyDJConstituents('0056')
+- 00878 -> moneyDJConstituents('00878')
+- 00919 -> moneyDJConstituents('00919')
+
+Removed from active 00878 routing:
+- Cathay official parser
+- Pocket fallback
+- Multi-source branching
+
+No constituent is hard-coded.
+Historical-date requests remain conservative: current list is returned with historicalAvailable=false rather than backfilling history.
+
+Unchanged:
+- All buy-point formulas
+- Three-layer re-anchor
+- Cash-open anti-chase
+- Score / Gate / chaseRisk
+- 08:45 TXF preopen
+- Market breadth
+- #34 90-second quote stability
+- Homepage touched-state fix
+- #37 backtest validator
+- Manual/model trade records
+- Holdings / Supabase

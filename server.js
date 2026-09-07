@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.51-878-ONLY-CONSTITUENT-FIX';
+const BUILD='16.8.52-878-MONEYDJ-SAME-PATH';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1299,32 +1299,17 @@ async function cathayConstituents(date){
  throw lastErr||Error('Cathay holdings unavailable');
 }
 async function constituents(code,date=null){
- const key='const:r332:'+code+':'+(date||'latest');
+ const key='const:r333:'+code+':'+(date||'latest');
  return cached(key,date?6*60*60*1000:30*60*1000,async()=>{
-  if(code==='00878'){
-   // Historical date stays Cathay-only. Current holdings: Cathay first, Pocket only if Cathay is incomplete/unavailable.
-   if(date)return cathayConstituents(date);
-   let cathay=null,cathayErr=null;
-   try{cathay=await cathayConstituents(null)}catch(e){cathayErr=e}
-   if(cathay?.complete&&cathay.items?.length>=META['00878'].expected)return cathay;
-   let pocket=null,pocketErr=null;
-   try{pocket=await pocketConstituents('00878')}catch(e){pocketErr=e}
-   if(pocket?.complete&&pocket.items?.length>=META['00878'].expected){
-    return{...pocket,source:'口袋證券完整持股明細（00878國泰官方不完整時備援）',
-     note:`國泰官方本輪 ${cathay?.items?.length||0}/${META['00878'].expected}；目前使用口袋證券完整 ${pocket.items.length}/${META['00878'].expected} 成分與權重。`};
-   }
-   if(cathay)return{...cathay,note:(cathay.note||'')+`｜00878備援亦未完整（Pocket ${pocket?.items?.length||0}/${META['00878'].expected}）。`};
-   if(pocket)return{...pocket,note:(pocket.note||'')+`｜國泰官方來源失敗：${cathayErr?.message||'unknown'}`};
-   throw cathayErr||pocketErr||Error('00878 constituents unavailable');
-  }
   if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
-  // EXACT original route: 0050/0056/00919 stay on MoneyDJ.
-  if(code==='0050'||code==='0056'||code==='00919')return moneyDJConstituents(code);
+  // V16.8.52: all four ETFs use the SAME proven MoneyDJ full-holdings path.
+  // 00878 no longer has a special Cathay/Pocket route.
+  if(code==='0050'||code==='0056'||code==='00878'||code==='00919')return moneyDJConstituents(code);
   throw Error('unsupported constituents');
  });
 }
 async function constituentHealth(code){
- return cached('health:r332:'+code,8000,async()=>{
+ return cached('health:r333:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
