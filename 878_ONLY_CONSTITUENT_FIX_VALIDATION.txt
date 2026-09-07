@@ -1,0 +1,31 @@
+V16.8.51-878-ONLY-CONSTITUENT-FIX
+====================================
+Scope is deliberately narrow.
+
+Root cause fixed:
+- V16.8.49/16.8.50 constituent edits accidentally removed the original
+  moneyDJConstituents()/pocketConstituents() function definitions.
+- That is why 0050/0056/00919 (and eventually all four cards) collapsed to 0/expected.
+
+Restored exactly from V16.8.47:
+- parseMoneyDJHoldings()
+- moneyDJConstituents()
+- parsePocketHoldings()
+- pocketConstituents()
+
+Routing:
+- 0050: MoneyDJ (original behavior)
+- 0056: MoneyDJ (original behavior)
+- 00919: MoneyDJ (original behavior)
+- 00878: Cathay official first; only if current Cathay result is incomplete/unavailable,
+         use Pocket complete holdings as current fallback.
+- No stock code is hard-coded.
+- Historical 00878 remains Cathay-only.
+
+Unchanged from V16.8.49:
+- market breadth fix
+- #34 90s data stability
+- homepage touched-state fix
+- #37 validator fix
+- all 3-layer formulas/reanchor/open anti-chase/score/gates/chaseRisk/08:45 TXF
+- manual/model trades, holdings, Supabase

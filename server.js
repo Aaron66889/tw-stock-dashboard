@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.50-CONSTITUENT-RESILIENCE';
+const BUILD='16.8.51-878-ONLY-CONSTITUENT-FIX';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1164,6 +1164,81 @@ function pricePercentile(rows,px){const a=rows.slice(-252).map(x=>x.close).filte
 function movePct(q){return q&&q.last>0&&q.prevClose>0?(q.last-q.prevClose)/q.prevClose*100:null}
 function normPct(v,scale){return Number.isFinite(v)?clamp(v/scale,-1,1):null}
 
+function parseMoneyDJHoldings(code,html){
+ const text=stripTags(html).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(),items=[];
+ // Example: 台積電(2330.TW) 57.40 568,615,359.00
+ const re=/([^\s()]{1,40})\((\d{4,6})\.TW\)\s+(\d+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)/g;let m;
+ while((m=re.exec(text))){
+  const name=m[1].trim(),c=m[2],weight=n(m[3]),shares=n(m[4]);
+  if(/^\d{4,6}$/.test(c)&&Number.isFinite(weight)&&weight>=0&&weight<=100)
+   items.push({code:c,name,weight,shares,weightSource:'MoneyDJ全部持股'});
+ }
+ const date=(text.match(/持股明細\s*資料日期[:：]?\s*(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})/)||
+             text.match(/資料日期[:：]?\s*(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})/)||[])[1];
+ return{date:parseISODate(date)||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
+}
+
+async function moneyDJConstituents(code){
+ const expected=META[code].expected;
+ const urls=[
+  `https://www.moneydj.com/etf/x/basic/basic0007b.xdjhtm?etfid=${code}.tw`,
+  `https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=${code}.tw&topc=`
+ ];
+ let best={date:ymdTaipei(),items:[]},errors=[];
+ for(const url of urls){
+  try{
+   const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.moneydj.com/'},1),6500,null);
+   if(!html){errors.push('timeout '+url);continue}
+   const p=parseMoneyDJHoldings(code,html);
+   if(p.items.length>best.items.length)best=p;
+   if(p.items.length>=expected)return{
+    code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),
+    complete:true,expected,officialOnly:false,thirdParty:true,
+    source:'MoneyDJ 完整持股明細',sourceUrl:url,historicalAvailable:false,
+    note:`完整成分與權重由 MoneyDJ 全部持股頁取得；個股即時漲跌由 dashboard 行情模組自行取得。已解析 ${p.items.length}/${expected} 檔。`,
+    attempts:[{source:'MoneyDJ',ok:true,count:p.items.length,url}]
+   };
+   errors.push(`parsed ${p.items.length}/${expected} ${url}`);
+  }catch(e){errors.push(e.message)}
+ }
+ return{
+  code,asOf:best.date,effectiveDate:best.date,items:best.items,complete:false,expected,
+  officialOnly:false,thirdParty:true,source:'MoneyDJ 持股來源未完整',
+  sourceUrl:urls[0],historicalAvailable:false,
+  note:`只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,
+  errors:errors.slice(-4),attempts:[{source:'MoneyDJ',ok:best.items.length>=expected,count:best.items.length,error:errors.at(-1)||null,url:urls[0]}]
+ };
+}
+
+function parsePocketHoldings(code,html){
+ const text=stripTags(html).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(),items=[];
+ // Pocket holding rows: stock code, name, weight%, holding quantity, 股.
+ // Restrict to ordinary Taiwan stock codes; ignore cash, receivables and futures.
+ const re=/(?:^|\s)(\d{4,6})\s+(.{1,45}?)\s+(\d+(?:\.\d+)?)%\s+([\d,]+)\s+股(?=\s|$)/g;let m;
+ while((m=re.exec(text))){
+  const c=m[1],name=m[2].trim(),weight=n(m[3]),shares=n(m[4]);
+  if(/^\d{4,6}$/.test(c)&&Number.isFinite(weight)&&weight>=0&&weight<=100)items.push({code:c,name,weight,shares,weightSource:'口袋證券持股明細'});
+ }
+ const dates=[...text.matchAll(/資料日期\s*[:：]?\s*(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})/g)].map(x=>parseISODate(x[1])).filter(Boolean);
+ return{date:dates.at(-1)||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
+}
+
+async function pocketConstituents(code){
+ const expected=META[code].expected,url=`https://www.pocket.tw/etf/tw/${code}/fundholding?page=&parent=&source=`;
+ const variants=[url,`https://www.pocket.tw/etf/tw/${code}/fundholding`],lastErr=[];
+ let best={date:ymdTaipei(),items:[]};
+ for(const u of variants){
+  try{
+   const html=await deadline(getText(u,{'Accept':'text/html,application/xhtml+xml','Referer':`https://www.pocket.tw/etf/tw/${code}`},1),6500,null);
+   if(!html){lastErr.push('timeout '+u);continue}
+   const p=parsePocketHoldings(code,html);if(p.items.length>best.items.length)best=p;
+   if(p.items.length>=expected)return{code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),complete:true,expected,officialOnly:false,thirdParty:true,source:'口袋證券完整持股明細',sourceUrl:u,historicalAvailable:false,note:`持股/權重由口袋證券取得；個股漲跌由儀表板既有市場行情來源自行計算。已解析 ${p.items.length}/${expected} 檔。`};
+   lastErr.push(`parsed ${p.items.length}/${expected} ${u}`);
+  }catch(e){lastErr.push(e.message)}
+ }
+ return{code,asOf:best.date,effectiveDate:best.date,items:best.items,complete:false,expected,officialOnly:false,thirdParty:true,source:'口袋證券持股來源未完整',sourceUrl:url,historicalAvailable:false,note:`只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,errors:lastErr.slice(-4)};
+}
+
 async function cathayConstituents(date){
  if(!XLSX)throw Error('xlsx module unavailable');
  let lastErr=null;
@@ -1223,101 +1298,33 @@ async function cathayConstituents(date){
  }
  throw lastErr||Error('Cathay holdings unavailable');
 }
-const CONSTITUENT_LAST_GOOD={};
-function constituentQuality(x,expected){
- if(!x||!Array.isArray(x.items))return -1;
- const n=x.items.length,w=x.items.filter(i=>Number.isFinite(i.weight)).length;
- // Prefer complete lists, then official sources, then weight completeness, then count.
- return (x.complete?100000:0)+(x.officialOnly?10000:0)+(x.thirdParty?2000:0)+Math.min(100,w)*20+n;
-}
-function normalizeConstituentResult(x,code){
- if(!x)return null;
- const expected=META[code].expected,items=[...new Map((x.items||[]).filter(i=>i&&/^\d{4,6}$/.test(String(i.code||''))).map(i=>[String(i.code),i])).values()]
-  .sort((a,b)=>(b.weight||0)-(a.weight||0));
- return{...x,code,expected,items,complete:items.length>=expected};
-}
-async function constituentCandidates(code){
- const jobs=[];
- if(code==='0050'||code==='0056'){
-  jobs.push(['MoneyDJ',()=>moneyDJConstituents(code)]);
-  jobs.push(['Pocket',()=>pocketConstituents(code)]);
-  jobs.push(['Yuanta',()=>yuantaConstituents(code)]);
- }else if(code==='00919'){
-  jobs.push(['MoneyDJ',()=>moneyDJConstituents(code)]);
-  jobs.push(['Pocket',()=>pocketConstituents(code)]);
-  jobs.push(['Capital',()=>capitalConstituents()]);
- }else if(code==='00878'){
-  jobs.push(['Cathay',()=>cathayConstituents(null)]);
-  jobs.push(['Pocket',()=>pocketConstituents(code)]);
-  jobs.push(['MoneyDJ',()=>moneyDJConstituents(code)]);
- }else throw Error('unsupported constituents');
- const settled=await Promise.all(jobs.map(async([name,fn])=>{
-  try{
-   const x=await deadline(fn(),5200,null);
-   return{name,ok:!!x,result:normalizeConstituentResult(x,code),error:x?null:'timeout'};
-  }catch(e){return{name,ok:false,result:null,error:e.message||String(e)}}
- }));
- return settled;
-}
 async function constituents(code,date=null){
- const key='const:r331:'+code+':'+(date||'latest');
- return cached(key,date?6*60*60*1000:10*60*1000,async()=>{
-  const expected=META[code].expected;
-  // Historical requests keep the existing conservative behavior.
-  if(date){
-   if(code==='00878'){
-    try{
-     const x=normalizeConstituentResult(await cathayConstituents(date),code);
-     if(x)return x;
-    }catch(_){}
+ const key='const:r332:'+code+':'+(date||'latest');
+ return cached(key,date?6*60*60*1000:30*60*1000,async()=>{
+  if(code==='00878'){
+   // Historical date stays Cathay-only. Current holdings: Cathay first, Pocket only if Cathay is incomplete/unavailable.
+   if(date)return cathayConstituents(date);
+   let cathay=null,cathayErr=null;
+   try{cathay=await cathayConstituents(null)}catch(e){cathayErr=e}
+   if(cathay?.complete&&cathay.items?.length>=META['00878'].expected)return cathay;
+   let pocket=null,pocketErr=null;
+   try{pocket=await pocketConstituents('00878')}catch(e){pocketErr=e}
+   if(pocket?.complete&&pocket.items?.length>=META['00878'].expected){
+    return{...pocket,source:'口袋證券完整持股明細（00878國泰官方不完整時備援）',
+     note:`國泰官方本輪 ${cathay?.items?.length||0}/${META['00878'].expected}；目前使用口袋證券完整 ${pocket.items.length}/${META['00878'].expected} 成分與權重。`};
    }
-   const latest=await constituents(code,null);
-   return{...latest,requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
+   if(cathay)return{...cathay,note:(cathay.note||'')+`｜00878備援亦未完整（Pocket ${pocket?.items?.length||0}/${META['00878'].expected}）。`};
+   if(pocket)return{...pocket,note:(pocket.note||'')+`｜國泰官方來源失敗：${cathayErr?.message||'unknown'}`};
+   throw cathayErr||pocketErr||Error('00878 constituents unavailable');
   }
-
-  const attempts=await constituentCandidates(code);
-  const valid=attempts.map(x=>x.result).filter(Boolean);
-  valid.sort((a,b)=>constituentQuality(b,expected)-constituentQuality(a,expected));
-  let best=valid[0]||null;
-
-  // If official source is incomplete but a complete third-party list exists, use the complete list
-  // for current health calculation and clearly label the source. No constituent is hard-coded.
-  const complete=valid.filter(x=>x.complete);
-  if(complete.length){
-   complete.sort((a,b)=>constituentQuality(b,expected)-constituentQuality(a,expected));
-   best=complete[0];
-  }
-
-  if(best?.complete){
-   const out={...best,attempts:attempts.map(x=>({source:x.name,ok:x.ok,count:x.result?.items?.length||0,error:x.error||null}))};
-   CONSTITUENT_LAST_GOOD[code]={at:Date.now(),day:ymdTaipei(),value:out};
-   return out;
-  }
-
-  // Same-process last-good shield: never collapse a previously complete dashboard to 0/expected
-  // because every external source had a transient error. Keep it clearly labelled as buffered.
-  const lg=CONSTITUENT_LAST_GOOD[code];
-  if(lg&&Date.now()-lg.at<=12*60*60*1000){
-   return{...lg.value,source:(lg.value.source||'完整持股')+'｜last-good緩衝',buffered:true,
-    note:`最新來源暫時異常，沿用最近完整 ${expected}/${expected} 成分；來源恢復後自動更新。`,
-    attempts:attempts.map(x=>({source:x.name,ok:x.ok,count:x.result?.items?.length||0,error:x.error||null}))};
-  }
-
-  // Return the best partial list instead of throwing; model will refuse to score incomplete coverage.
-  if(best){
-   return{...best,complete:false,attempts:attempts.map(x=>({source:x.name,ok:x.ok,count:x.result?.items?.length||0,error:x.error||null})),
-    note:`目前最佳來源取得 ${best.items.length}/${expected} 檔；不完整時不納入模型。`};
-  }
-
-  return{code,asOf:null,effectiveDate:null,items:[],complete:false,expected,officialOnly:false,thirdParty:false,
-   source:'多來源暫時不可用',sourceUrl:null,historicalAvailable:false,
-   note:'官方／MoneyDJ／Pocket 等來源本輪皆未成功，模型不納入成分健康。',
-   attempts:attempts.map(x=>({source:x.name,ok:x.ok,count:0,error:x.error||null}))};
+  if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
+  // EXACT original route: 0050/0056/00919 stay on MoneyDJ.
+  if(code==='0050'||code==='0056'||code==='00919')return moneyDJConstituents(code);
+  throw Error('unsupported constituents');
  });
 }
-
 async function constituentHealth(code){
- return cached('health:r331:'+code,8000,async()=>{
+ return cached('health:r332:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
