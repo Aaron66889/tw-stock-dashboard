@@ -1,0 +1,27 @@
+V16.8.50-CONSTITUENT-RESILIENCE
+================================
+This version fixes the regression where all four constituent dashboards could collapse to 0/expected.
+
+Changes:
+- Current constituent loading is now multi-source and parallel:
+  0050/0056: MoneyDJ + Pocket + Yuanta
+  00878: Cathay + Pocket + MoneyDJ
+  00919: MoneyDJ + Pocket + Capital
+- Each source is bounded by a 5.2s deadline.
+- The best complete list is selected automatically; official complete data is preferred when available.
+- 00878 can use a complete third-party list as a current fallback if Cathay is temporarily incomplete.
+- No constituent code is hard-coded.
+- A same-process 12h last-good complete list prevents a temporary source outage from dropping a previously complete dashboard to 0.
+- If only a partial list exists, it is displayed but remains excluded from model health scoring.
+- Cache keys bumped to r331.
+
+Unchanged:
+- Layer 1/2/3 prices
+- Three-layer re-anchor
+- Cash-open anti-chase
+- Score/Gate/chaseRisk
+- 08:45 TXF preopen
+- Market breadth logic from V16.8.49
+- #34 quote stability from V16.8.49
+- Manual/model trades
+- Holdings / Supabase
