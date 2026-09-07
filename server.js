@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.52-878-MONEYDJ-SAME-PATH';
+const BUILD='16.8.53-878-CATHAY-OFFICIAL-PAGE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1239,6 +1239,108 @@ async function pocketConstituents(code){
  return{code,asOf:best.date,effectiveDate:best.date,items:best.items,complete:false,expected,officialOnly:false,thirdParty:true,source:'口袋證券持股來源未完整',sourceUrl:url,historicalAvailable:false,note:`只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,errors:lastErr.slice(-4)};
 }
 
+
+function decodeHtmlBasic(s){
+ return String(s||'')
+  .replace(/&nbsp;|&#160;/gi,' ')
+  .replace(/&amp;/gi,'&')
+  .replace(/&quot;/gi,'"')
+  .replace(/&#x27;|&#39;/gi,"'")
+  .replace(/&lt;/gi,'<')
+  .replace(/&gt;/gi,'>');
+}
+function parseCathayOfficialHoldingsPage(html){
+ const expected=META['00878'].expected,items=[],seen=new Set();
+ const push=(code,name,weight)=>{
+  code=String(code||'').trim();name=String(name||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+  weight=n(weight);
+  if(!/^\d{4,6}$/.test(code)||!name||!Number.isFinite(weight)||weight<0||weight>30||seen.has(code))return;
+  // exclude obvious non-security noise / the ETF's own code
+  if(code==='00878'||/基金|ETF|期貨|現金|指數/i.test(name))return;
+  seen.add(code);items.push({code,name,weight,weightSource:'國泰投信官方持股權重頁'});
+ };
+
+ const raw=decodeHtmlBasic(html);
+ // 1) Normal rendered HTML table rows.
+ for(const m of raw.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)){
+  const row=m[1],cells=[...row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(x=>decodeHtmlBasic(x[1]).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim());
+  if(cells.length<2)continue;
+  const joined=cells.join(' | ');
+  const cm=joined.match(/(?:^|\D)(\d{4,6})(?:\D|$)/);
+  if(!cm)continue;
+  let wt=null;
+  for(const c of cells){
+   const wm=c.match(/(-?\d+(?:\.\d+)?)\s*%/);
+   if(wm){wt=n(wm[1]);break}
+  }
+  if(wt==null){
+   for(let i=cells.length-1;i>=0;i--){const x=n(cells[i]);if(x!=null&&x>=0&&x<=30){wt=x;break}}
+  }
+  let name='';
+  for(const c of cells){
+   const cleaned=c.replace(/\(?\d{4,6}(?:\.(?:TW|TWO))?\)?/ig,'').replace(/-?\d+(?:\.\d+)?\s*%?/g,'').trim();
+   if(cleaned&&/[^\d\s.,:%]/.test(cleaned)&&!/(持股|權重|代碼|名稱|日期)/.test(cleaned)){name=cleaned;break}
+  }
+  push(cm[1],name,wt);
+ }
+
+ // 2) JSON-ish objects embedded in the page / hydration payload.
+ const objects=raw.match(/\{[^{}]{0,1600}\}/g)||[];
+ for(const obj of objects){
+  const code=(obj.match(/["']?(?:stockCode|securityCode|code|ticker|證券代號|股票代號)["']?\s*[:=]\s*["']?(\d{4,6})/i)||
+              obj.match(/(?:^|\D)(\d{4,6})(?:\D|$)/))?.[1];
+  if(!code)continue;
+  const name=(obj.match(/["']?(?:stockName|securityName|name|股票名稱|證券名稱)["']?\s*[:=]\s*["']([^"']{1,80})["']/i)||[])[1];
+  let weight=(obj.match(/["']?(?:weight|ratio|percentage|percent|investRatio|權重|比重|投資比例)["']?\s*[:=]\s*["']?(-?\d+(?:\.\d+)?)/i)||[])[1];
+  if(weight==null)continue;
+  push(code,name,weight);
+ }
+
+ // 3) Text fallback for rows like "中信金(2891.TW) 9.77".
+ const text=raw.replace(/<script\b[^>]*>/gi,' ').replace(/<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+ for(const m of text.matchAll(/([^\s()<>]{1,40})\s*\(\s*(\d{4,6})(?:\.(?:TW|TWO))?\s*\)\s+(\d+(?:\.\d+)?)\s*%?/gi))
+  push(m[2],m[1],m[3]);
+
+ return items.sort((a,b)=>(b.weight||0)-(a.weight||0)).slice(0,expected);
+}
+async function cathayOfficialPageConstituents(){
+ const expected=META['00878'].expected,errors=[];
+ // Query today and recent calendar days; Cathay automatically displays the latest available business-day holdings.
+ const days=Array.from({length:7},(_,i)=>dateMinus(i));
+ let best={items:[],asOf:null,url:null};
+ for(const iso of days){
+  const [y,m,d]=iso.split('-').map(Number);
+  const url=`https://www.cathaysite.com.tw/ETF/detail/ECN?tab=etf3&date=${y}-${m}-${d}`;
+  try{
+   const html=await deadline(getText(url,{
+    'Referer':'https://www.cathaysite.com.tw/ETF/detail/ECN',
+    'Cache-Control':'no-cache','Pragma':'no-cache'
+   },1),7000,null);
+   if(!html){errors.push('timeout '+iso);continue}
+   const items=parseCathayOfficialHoldingsPage(html);
+   const dateMatch=(decodeHtmlBasic(html).match(/(?:資料日期|data[- ]?date)[^0-9]{0,20}(20\d{2}[\/-]\d{1,2}[\/-]\d{1,2})/i)||[])[1];
+   const asOf=parseISODate(dateMatch)||iso;
+   if(items.length>best.items.length)best={items,asOf,url};
+   if(items.length>=expected)return{
+    code:'00878',asOf,effectiveDate:asOf,items:items.slice(0,expected),
+    complete:true,expected,officialOnly:true,thirdParty:false,
+    source:'國泰投信官方持股權重頁',sourceUrl:url,historicalAvailable:false,
+    note:`00878 直接由國泰投信官方持股權重頁取得 ${items.length}/${expected} 檔股票與權重。`,
+    attempts:[{source:'Cathay official page',ok:true,count:items.length,url}]
+   };
+   errors.push(`parsed ${items.length}/${expected} ${iso}`);
+  }catch(e){errors.push(e.message||String(e))}
+ }
+ return{
+  code:'00878',asOf:best.asOf,effectiveDate:best.asOf,items:best.items,complete:false,expected,
+  officialOnly:true,thirdParty:false,source:'國泰投信官方持股權重頁未完整',
+  sourceUrl:best.url||'https://www.cathaysite.com.tw/ETF/detail/ECN?tab=etf3',
+  historicalAvailable:false,
+  note:`官方頁目前只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,
+  errors:errors.slice(-8),attempts:[{source:'Cathay official page',ok:false,count:best.items.length,error:errors.at(-1)||null}]
+ };
+}
+
 async function cathayConstituents(date){
  if(!XLSX)throw Error('xlsx module unavailable');
  let lastErr=null;
@@ -1299,17 +1401,17 @@ async function cathayConstituents(date){
  throw lastErr||Error('Cathay holdings unavailable');
 }
 async function constituents(code,date=null){
- const key='const:r333:'+code+':'+(date||'latest');
+ const key='const:r334:'+code+':'+(date||'latest');
  return cached(key,date?6*60*60*1000:30*60*1000,async()=>{
   if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
-  // V16.8.52: all four ETFs use the SAME proven MoneyDJ full-holdings path.
-  // 00878 no longer has a special Cathay/Pocket route.
-  if(code==='0050'||code==='0056'||code==='00878'||code==='00919')return moneyDJConstituents(code);
+  if(code==='00878')return cathayOfficialPageConstituents();
+  // 0050 / 0056 / 00919 stay on the original MoneyDJ path.
+  if(code==='0050'||code==='0056'||code==='00919')return moneyDJConstituents(code);
   throw Error('unsupported constituents');
  });
 }
 async function constituentHealth(code){
- return cached('health:r333:'+code,8000,async()=>{
+ return cached('health:r334:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;

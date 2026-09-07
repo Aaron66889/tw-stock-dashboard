@@ -1,0 +1,28 @@
+V16.8.53-878-CATHAY-OFFICIAL-PAGE
+===================================
+Only 00878 constituent source changed.
+
+0050 -> original MoneyDJ
+0056 -> original MoneyDJ
+00919 -> original MoneyDJ
+00878 -> Cathay Investment Trust official holding-weight page:
+https://www.cathaysite.com.tw/ETF/detail/ECN?tab=etf3&date=<current/recent date>
+
+The 00878 parser:
+- reads rendered HTML table rows
+- reads JSON/hydration objects embedded in the page
+- has a text-row fallback
+- accepts only 4-6 digit stock codes
+- excludes ETF/futures/cash/index rows
+- never hard-codes a constituent name/code
+- requires 30/30 before constituent health may enter the model
+
+Unchanged:
+- all buy-point formulas
+- layer reanchor / open anti-chase
+- Score / Gate / chaseRisk
+- 08:45 TXF
+- market breadth
+- #34 stability
+- manual/model trades
+- holdings / Supabase
