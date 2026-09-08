@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.58-878-PARSER-DIAGNOSTIC-FIX';
+const BUILD='16.8.59-878-PORTFOLIO-COMPLETE-FIX';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1268,18 +1268,18 @@ async function pocketConstituents(code){
 
 
 function cathayExcelCode(v){
- const s=String(v??'').trim(),m=s.match(/(?:^|\D)(\d{4,6})(?=$|\D)/);
+ const s=String(v??'').trim();
+ // 00878 stock holdings are ordinary Taiwan listed stocks. Require an isolated 4-digit code.
+ // Date noise is rejected structurally by the detected code column / holding-row checks below.
+ const m=s.match(/(?:^|[^0-9])(\d{4})(?=$|[^0-9])/);
  if(!m)return null;
  const code=m[1];
- // 20xx can be a valid Taiwan stock code. Do not guess "year" from the digits alone.
- // Date/year noise is filtered structurally by using the official code column.
- if(code==='00878')return null;
  return code;
 }
 function cathayExcelName(v){
  const s=String(v??'').replace(/\s+/g,' ').trim();
  if(!s||/^[-+]?\d+(?:\.\d+)?%?$/.test(s))return '';
- if(/^(上市|上櫃|OTC|TWSE|TWO|股票代號|證券代號|股票名稱|證券名稱|投資比例|持股權重|持有股數|日期)$/i.test(s))return '';
+ if(/^(上市|上櫃|OTC|TWSE|TWO|股票代號|股票代碼|證券代號|證券代碼|股票名稱|證券名稱|投資比例|持股權重|持股比重|權重|比重|持有股數|日期|資料日期)$/i.test(s))return '';
  return s;
 }
 function cathayExcelWeight(v){
@@ -1287,94 +1287,144 @@ function cathayExcelWeight(v){
  if(!m)return null;
  let x=Number(m[0]);if(!Number.isFinite(x)||x<0)return null;
  if(raw.includes('%'))return x<=100?x:null;
+ // Excel percentage cells can arrive either as 0.035 or 3.5 depending on formatting.
  if(x>0&&x<0.2)x*=100;
  return x<=30?x:null;
 }
+const CATHAY_NON_STOCK_RE=/基金|ETF|期貨|現金|指數|保證金|應收|應付|淨資產|受益權|流通單位|配息來源|收益平準金|資產價值|每單位|基金規模/i;
+function cathayHeaderCell(v){return String(v??'').replace(/[\s　]+/g,'').trim()}
+function cathayFindHeader(rows){
+ let best=null;
+ for(let i=0;i<Math.min(rows.length,50);i++){
+  const r=Array.isArray(rows[i])?rows[i]:[];
+  let codeCol=-1,nameCol=-1,weightCol=-1;
+  for(let j=0;j<r.length;j++){
+   const t=cathayHeaderCell(r[j]);
+   if(codeCol<0&&/(股票|證券)?(代號|代碼)$/.test(t))codeCol=j;
+   if(nameCol<0&&/(股票|證券)?名稱$/.test(t))nameCol=j;
+   if(weightCol<0&&/(投資比例|持股權重|持股比重|權重|比重|持股比例)/.test(t))weightCol=j;
+  }
+  const score=(codeCol>=0?1:0)+(nameCol>=0?1:0)+(weightCol>=0?1:0);
+  if(!best||score>best.score)best={headerRow:i,codeCol,nameCol,weightCol,score};
+  if(score===3)return best;
+ }
+ return best?.score>=2?best:{headerRow:-1,codeCol:-1,nameCol:-1,weightCol:-1,score:0};
+}
+function cathayRowFallback(r){
+ // Fallback for a future Cathay header rename: accept only a row that structurally looks
+ // like one stock holding (4-digit code + company name + plausible percentage).
+ let code=null,codeIdx=-1;
+ for(let j=0;j<Math.min(r.length,10);j++){
+  const c=cathayExcelCode(r[j]);
+  if(c){code=c;codeIdx=j;break}
+ }
+ if(!code)return null;
+ let name='';
+ for(let j=Math.max(0,codeIdx+1);j<Math.min(r.length,codeIdx+7);j++){
+  const nm=cathayExcelName(r[j]);
+  if(nm&&!CATHAY_NON_STOCK_RE.test(nm)){name=nm;break}
+ }
+ if(!name)return null;
+ let weight=null;
+ for(const v of r){
+  if(String(v??'').includes('%')){
+   const x=cathayExcelWeight(v);if(x!=null){weight=x;break}
+  }
+ }
+ if(weight==null){
+  for(let j=Math.max(0,codeIdx+1);j<r.length;j++){
+   const x=cathayExcelWeight(r[j]);if(x!=null){weight=x;break}
+  }
+ }
+ if(weight==null)return null;
+ return{code,name,weight};
+}
 function parseCathayOfficialExcelWorkbook(wb){
- const items=[],seen=new Set(),rejected=[],sheets=[];
+ const items=[],seen=new Set(),hedgeSeen=new Set(),rejected=[],nonStockPositions=[],sheets=[];
  for(const sheetName of wb.SheetNames||[]){
   const ws=wb.Sheets[sheetName];
   if(!ws)continue;
   const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});
+  const hdr=cathayFindHeader(rows);
+  const {headerRow,codeCol,nameCol,weightCol}=hdr;
+  sheets.push({sheetName,rows:rows.length,headerRow,codeCol,nameCol,weightCol,headerScore:hdr.score});
 
-  let codeCol=-1,nameCol=-1,weightCol=-1,headerRow=-1;
-  for(let i=0;i<Math.min(rows.length,30);i++){
-   const r=rows[i]||[];
-   let found=false;
-   for(let j=0;j<r.length;j++){
-    const s=String(r[j]??'').replace(/\s+/g,'').trim();
-    if(codeCol<0&&/(股票|證券).*(代號|代碼)|^(代號|代碼)$/.test(s)){codeCol=j;found=true}
-    if(nameCol<0&&/(股票|證券).*(名稱)|^名稱$/.test(s)){nameCol=j;found=true}
-    if(weightCol<0&&/(投資比例|持股權重|權重|比重)/.test(s)){weightCol=j;found=true}
-   }
-   if(found)headerRow=i;
-   if(codeCol>=0&&nameCol>=0&&weightCol>=0)break;
-  }
-  sheets.push({sheetName,rows:rows.length,headerRow,codeCol,nameCol,weightCol});
-
-  for(let ri=0;ri<rows.length;ri++){
+  // Critical fix: once a real header is found, only rows BELOW that header are candidates.
+  // Metadata/title/NAV rows above the holdings table must never enter constituent parsing.
+  const startRow=headerRow>=0?headerRow+1:0;
+  for(let ri=startRow;ri<rows.length;ri++){
    const r=rows[ri];
-   if(!Array.isArray(r)||!r.length||ri===headerRow)continue;
+   if(!Array.isArray(r)||!r.length)continue;
 
-   // If an official code column exists, it is authoritative.
-   // Do not scan a date column and accidentally interpret 2026 as a stock code.
-   let code=codeCol>=0?cathayExcelCode(r[codeCol]):null;
-   let name=nameCol>=0?cathayExcelName(r[nameCol]):'';
-   let weight=weightCol>=0?cathayExcelWeight(r[weightCol]):null;
+   let code=null,name='',weight=null;
+   if(headerRow>=0&&codeCol>=0){
+    code=cathayExcelCode(r[codeCol]);
+    name=nameCol>=0?cathayExcelName(r[nameCol]):'';
+    weight=weightCol>=0?cathayExcelWeight(r[weightCol]):null;
 
-   if(codeCol<0&&!code){
-    for(let j=0;j<Math.min(r.length,8);j++){
-     const c=cathayExcelCode(r[j]);
-     if(c){code=c;break}
+    // A genuine table row with a code may still have a blank/moved name or weight cell.
+    // Recover only within the same row; never scan another row/metadata area.
+    if(code&&!name){
+     for(let j=Math.max(0,codeCol+1);j<Math.min(r.length,codeCol+7);j++){
+      const nm=cathayExcelName(r[j]);
+      if(nm&&!CATHAY_NON_STOCK_RE.test(nm)){name=nm;break}
+     }
     }
-   }
-
-   if(!name&&code){
-    const idx=codeCol>=0?codeCol:r.findIndex(v=>cathayExcelCode(v)===code);
-    for(let j=Math.max(0,idx+1);j<Math.min(r.length,idx+6);j++){
-     const nm=cathayExcelName(r[j]);
-     if(nm&&!/(基金|ETF|期貨|現金|指數|保證金|應收|應付)/i.test(nm)){name=nm;break}
-    }
-   }
-
-   if(weight==null&&code){
-    if(weightCol<0){
+    if(code&&weight==null){
      for(const v of r){
       if(String(v??'').includes('%')){
-       const x=cathayExcelWeight(v);
-       if(x!=null){weight=x;break}
+       const x=cathayExcelWeight(v);if(x!=null){weight=x;break}
+      }
+     }
+     if(weight==null){
+      for(let j=Math.max(0,codeCol+1);j<r.length;j++){
+       const x=cathayExcelWeight(r[j]);if(x!=null){weight=x;break}
       }
      }
     }
-    if(weight==null){
-     const from=weightCol>=0?weightCol:Math.max(0,(codeCol>=0?codeCol:r.findIndex(v=>cathayExcelCode(v)===code))+1);
-     for(let j=from;j<r.length;j++){
-      const x=cathayExcelWeight(r[j]);
-      if(x!=null){weight=x;break}
-     }
-    }
+   }else{
+    const fb=cathayRowFallback(r);
+    if(fb)({code,name,weight}=fb);
    }
 
+   // Ignore ordinary footer/blank metadata silently. Diagnostics should focus on rows that
+   // actually resemble a holding, otherwise the UI is polluted with NAV/title false alarms.
    const rawCode=codeCol>=0?String(r[codeCol]??'').trim():'';
    const rawName=nameCol>=0?String(r[nameCol]??'').trim():'';
    const rawWeight=weightCol>=0?String(r[weightCol]??'').trim():'';
 
+   // 00878 can legitimately replace part of its stock exposure with Taiwan index futures.
+   // These positions are not quoted as constituent stocks and must not enter stock-health math,
+   // but they DO prove the official portfolio itself is complete.
+   const rowText=r.map(v=>String(v??'')).join(' ');
+   const hedgeName=name||rawName||rowText;
+   let hedgeWeight=weight!=null?weight:(weightCol>=0?cathayExcelWeight(r[weightCol]):null);
+   if(hedgeWeight==null&&/期貨|FUTURE|FITXN|TXF/i.test(rowText)){
+    for(const v of r){if(String(v??'').includes('%')){const x=cathayExcelWeight(v);if(x!=null){hedgeWeight=x;break}}}
+   }
+   if(/期貨|FUTURE|FITXN|TXF/i.test(rowText)&&Number.isFinite(hedgeWeight)){
+    const hk=[rawCode||'',hedgeName||'',hedgeWeight].join('|');
+    if(!hedgeSeen.has(hk)){hedgeSeen.add(hk);nonStockPositions.push({type:'futures',code:rawCode||null,name:hedgeName||'期貨部位',weight:hedgeWeight})}
+    continue;
+   }
+
+   const resemblesHolding=!!code || /^\s*\d{4}\s*$/.test(rawCode);
+   if(!resemblesHolding)continue;
+
    let reason=null;
    if(!code)reason='code解析失敗';
    else if(!name)reason='name解析失敗';
+   else if(CATHAY_NON_STOCK_RE.test(name))reason='非股票列';
    else if(weight==null)reason='weight解析失敗';
    else if(seen.has(code))reason='duplicate';
-   else if(/基金|ETF|期貨|現金|指數|保證金|應收|應付/i.test(name))reason='非股票列';
 
    if(reason){
-    if(code||rawCode||rawName||rawWeight){
-     rejected.push({
-      sheet:sheetName,row:ri+1,reason,
-      code:code||rawCode||null,
-      name:name||rawName||null,
-      weight:weight??(rawWeight||null)
-     });
-    }
+    rejected.push({
+     sheet:sheetName,row:ri+1,reason,
+     code:code||rawCode||null,
+     name:name||rawName||null,
+     weight:weight??(rawWeight||null)
+    });
     continue;
    }
 
@@ -1384,7 +1434,8 @@ function parseCathayOfficialExcelWorkbook(wb){
  }
  return{
   items:items.sort((a,b)=>(b.weight||0)-(a.weight||0)),
-  diagnostics:{accepted:items.length,rejected:rejected.slice(0,40),sheets}
+  nonStockPositions,
+  diagnostics:{accepted:items.length,rejected:rejected.slice(0,40),nonStockPositions,sheets}
  };
 }
 async function cathayOfficialExcelConstituents(date=null){
@@ -1403,31 +1454,45 @@ async function cathayOfficialExcelConstituents(date=null){
    if(!buf){errs.push('timeout '+iso);continue}
 
    const wb=XLSX.read(buf,{type:'buffer'});
-   const parsed=parseCathayOfficialExcelWorkbook(wb),items=parsed.items||[],diagnostics=parsed.diagnostics||null;
+   const parsed=parseCathayOfficialExcelWorkbook(wb),items=parsed.items||[],nonStockPositions=parsed.nonStockPositions||[],diagnostics=parsed.diagnostics||null;
+   const stockWeight=items.reduce((z,x)=>z+(Number.isFinite(x.weight)?x.weight:0),0);
+   const hedgeWeight=nonStockPositions.reduce((z,x)=>z+(Number.isFinite(x.weight)?x.weight:0),0);
+   const totalWeight=stockWeight+hedgeWeight;
+   const portfolioPositions=items.length+nonStockPositions.length;
+   // 00878 tracks a 30-name index, but the ETF itself may temporarily hold 29 stocks + index futures.
+   // Treat that as a complete OFFICIAL portfolio when the recognized positions cover roughly 100%.
+   const hedgeComplete=items.length<expected&&items.length>=expected-2&&nonStockPositions.length>0&&portfolioPositions>=expected&&totalWeight>=95&&totalWeight<=105;
+   const complete=items.length>=expected||hedgeComplete;
+   const stockExpected=items.length>=expected?expected:(complete?items.length:expected);
 
-   if(items.length>best.items.length)best={items,asOf:iso,url,diagnostics};
+   if(!best.items.length||portfolioPositions>((best.items?.length||0)+(best.nonStockPositions?.length||0))||(portfolioPositions===((best.items?.length||0)+(best.nonStockPositions?.length||0))&&Math.abs(100-totalWeight)<Math.abs(100-(best.totalWeight||0))))best={items,nonStockPositions,stockExpected,totalWeight,asOf:iso,url,diagnostics};
 
-   if(items.length>=expected){
+   if(complete){
     return{
      code:'00878',
      asOf:iso,
      effectiveDate:iso,
-     items:items.slice(0,expected),
+     items:items.slice(0,items.length>=expected?expected:items.length),
+     nonStockPositions,
+     stockExpected,
+     portfolioExpected:expected,
+     portfolioPositions,
+     portfolioWeight:totalWeight,
      complete:true,
-     expected,
+     expected:stockExpected,
      officialOnly:true,
      thirdParty:false,
      source:'國泰投信官方ETF權重Excel',
      sourceUrl:url,
      historicalAvailable:!!date,
-     note:`國泰官方Excel已解析 ${items.length}/${expected} 檔股票與權重。`,
+     note:hedgeComplete?`國泰官方投資組合完整：${items.length}檔股票＋${nonStockPositions.length}檔期貨/避險部位，合計權重 ${totalWeight.toFixed(2)}%。股票健康度只計 ${items.length} 檔股票。`:`國泰官方Excel已解析 ${items.length}/${expected} 檔股票與權重。`,
      diagnostics,
      attempts:[{source:'Cathay official Excel',ok:true,count:items.length,url,
-       detail:diagnostics?.rejected?.length?`排除 ${diagnostics.rejected.length} 列非有效持股資料`:'30檔全部正常解析'}]
+       detail:hedgeComplete?`${items.length}檔股票＋${nonStockPositions.length}檔期貨/避險，官方組合權重 ${totalWeight.toFixed(2)}%`:(diagnostics?.rejected?.length?`排除 ${diagnostics.rejected.length} 列非有效持股資料`:'30檔全部正常解析')}]
     };
    }
 
-   errs.push(`parsed ${items.length}/${expected} ${iso}`);
+   errs.push(`parsed stocks ${items.length}/${expected}; non-stock ${nonStockPositions.length}; weight ${totalWeight.toFixed(2)}% ${iso}`);
   }catch(e){
    errs.push(e.message||String(e));
   }
@@ -1438,6 +1503,11 @@ async function cathayOfficialExcelConstituents(date=null){
   asOf:best.asOf,
   effectiveDate:best.asOf,
   items:best.items,
+  nonStockPositions:best.nonStockPositions||[],
+  stockExpected:expected,
+  portfolioExpected:expected,
+  portfolioPositions:(best.items?.length||0)+(best.nonStockPositions?.length||0),
+  portfolioWeight:best.totalWeight||null,
   complete:false,
   expected,
   officialOnly:true,
@@ -1445,7 +1515,7 @@ async function cathayOfficialExcelConstituents(date=null){
   source:'國泰投信官方ETF權重Excel未完整',
   sourceUrl:best.url||'https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel',
   historicalAvailable:!!date,
-  note:`官方Excel本輪最佳 ${best.items.length}/${expected}；不完整時不納入模型。`+
+  note:`官方Excel本輪最佳 ${best.items.length}檔股票＋${(best.nonStockPositions||[]).length}檔非股票部位；不完整時不納入模型。`+
        (best.diagnostics?.rejected?.length?`｜被排除：${best.diagnostics.rejected.slice(0,6).map(x=>`${x.code||'?'} ${x.name||''}[${x.reason}]`).join('；')}`:''),
   diagnostics:best.diagnostics||null,
   errors:errs.slice(-8),
@@ -1455,7 +1525,7 @@ async function cathayOfficialExcelConstituents(date=null){
 }
 
 async function constituents(code,date=null){
- const key='const:r336:'+code+':'+(date||'latest');
+ const key='const:r337:'+code+':'+(date||'latest');
  return cached(key,date?6*60*60*1000:30*60*1000,async()=>{
   if(code==='00878')return cathayOfficialExcelConstituents(date);
   if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
@@ -1464,9 +1534,9 @@ async function constituents(code,date=null){
  });
 }
 async function constituentHealth(code){
- return cached('health:r336:'+code,8000,async()=>{
+ return cached('health:r337:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
-  const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
+  const expected=c.stockExpected||c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
   for(const it of c.items){const z=q[it.code],ch=movePct(z),w=Number.isFinite(it.weight)?it.weight:null;if(w!=null)totalW+=w;if(Number.isFinite(ch)&&w!=null){quotedW+=w;weighted+=clamp(ch/2.5,-1,1)*w;weightedCount++;if(ch>.30)bullW+=w;else if(ch<-.30)weakW+=w;else neutralW+=w}rows.push({...it,changePct:Number.isFinite(ch)?ch:null,last:z?.last??null,quoted:Number.isFinite(ch)})}
   const sourceCoverage=expected?Math.min(1,c.items.length/expected):0,weightCoverage=expected?Math.min(1,c.items.filter(x=>Number.isFinite(x.weight)).length/expected):0,quoteCoverage=totalW?quotedW/totalW:0;
@@ -1474,7 +1544,7 @@ async function constituentHealth(code){
   const trustedHoldingSource=c.officialOnly===true||c.thirdParty===true;
   const usable=!!c.complete&&trustedHoldingSource&&sourceCoverage>=1&&weightCoverage>=1&&quoteCoverage>=.75;
   const score=usable?clamp(Math.round(50+(weighted/quotedW)*38),0,100):null;let divergence='資料不足';if(usable){if(score>=65&&bullW>=weakW*1.5)divergence='健康擴散';else if(score>=52&&weakW<45)divergence='輕度分歧';else if(score<42||weakW>55)divergence='明顯分歧';else divergence='結構背離'}
-  return{ok:true,code,score,usable,divergence,bullWeight:bullW,weakWeight:weakW,neutralWeight:neutralW,sourceCoverage:sourceCoverage*100,weightCoverage:weightCoverage*100,quoteCoverage:quoteCoverage*100,asOf:c.asOf,effectiveDate:c.effectiveDate,complete:c.complete,expected,items:rows.sort((a,b)=>(b.weight||0)-(a.weight||0)),source:c.source,sourceUrl:c.sourceUrl,historicalAvailable:c.historicalAvailable,note:c.note||null,diagnostics:c.diagnostics||null,attempts:c.attempts||null,errors:c.errors||null};
+  return{ok:true,code,score,usable,divergence,bullWeight:bullW,weakWeight:weakW,neutralWeight:neutralW,sourceCoverage:sourceCoverage*100,weightCoverage:weightCoverage*100,quoteCoverage:quoteCoverage*100,asOf:c.asOf,effectiveDate:c.effectiveDate,complete:c.complete,expected,portfolioExpected:c.portfolioExpected||null,portfolioPositions:c.portfolioPositions||null,portfolioWeight:c.portfolioWeight??null,nonStockPositions:c.nonStockPositions||[],items:rows.sort((a,b)=>(b.weight||0)-(a.weight||0)),source:c.source,sourceUrl:c.sourceUrl,historicalAvailable:c.historicalAvailable,note:c.note||null,diagnostics:c.diagnostics||null,attempts:c.attempts||null,errors:c.errors||null};
  });
 }
 
@@ -1487,7 +1557,7 @@ async function constituentDashboard(code='0050'){
  const weightedMove=quoted.length?quoted.reduce((z,x)=>z+x.changePct*(x.weight||0),0)/Math.max(0.0001,sum(quoted)):null;
  const equalBreadth=quoted.length?(up.length-down.length)/quoted.length*100:null;
  const weightedBreadth=quoted.length?(sum(up)-sum(down))/Math.max(0.0001,sum(quoted))*100:null;
- return{ok:true,build:BUILD,code,name:META[code]?.name,asOf:h.asOf,source:h.source,sourceUrl:h.sourceUrl,complete:h.complete,usable:h.usable,expected:h.expected||META[code]?.expected,actual:items.length,quoted:quoted.length,sourceCoverage:h.sourceCoverage,quoteCoverage:h.quoteCoverage,healthScore:h.score,divergence:h.divergence,bullWeight:h.bullWeight,weakWeight:h.weakWeight,neutralWeight:h.neutralWeight,note:h.note||null,diagnostics:h.diagnostics||null,attempts:h.attempts||null,errors:h.errors||null,summary:{upCount:up.length,downCount:down.length,flatCount:flat.length,upWeight:sum(up),downWeight:sum(down),flatWeight:sum(flat),equalBreadth,weightedBreadth,weightedMove,top10Weight:sum(top10),tsmcWeight:items.find(x=>x.code==='2330')?.weight??null},items};
+ return{ok:true,build:BUILD,code,name:META[code]?.name,asOf:h.asOf,source:h.source,sourceUrl:h.sourceUrl,complete:h.complete,usable:h.usable,expected:h.expected||META[code]?.expected,portfolioExpected:h.portfolioExpected||null,portfolioPositions:h.portfolioPositions||null,portfolioWeight:h.portfolioWeight??null,nonStockPositions:h.nonStockPositions||[],actual:items.length,quoted:quoted.length,sourceCoverage:h.sourceCoverage,quoteCoverage:h.quoteCoverage,healthScore:h.score,divergence:h.divergence,bullWeight:h.bullWeight,weakWeight:h.weakWeight,neutralWeight:h.neutralWeight,note:h.note||null,diagnostics:h.diagnostics||null,attempts:h.attempts||null,errors:h.errors||null,summary:{upCount:up.length,downCount:down.length,flatCount:flat.length,upWeight:sum(up),downWeight:sum(down),flatWeight:sum(flat),equalBreadth,weightedBreadth,weightedMove,top10Weight:sum(top10),tsmcWeight:items.find(x=>x.code==='2330')?.weight??null},items};
 }
 function buildEnvironment(code,ld,ctx,ovs,nf,health){
  const parts=[];function add(name,v,w){if(Number.isFinite(v))parts.push({name,v:clamp(v,-1,1),w})}

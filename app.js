@@ -327,7 +327,7 @@ function renderHealth(h){$('healthSummary').innerHTML=`<div class="grid4"><div c
 
 let constituentSelected='0050',constituentCache={},constituentRequestSeq=0;
 function renderConstituentTabs(){
- const meta={0050:'50檔',0056:'50檔',00878:'30檔',00919:'40檔'};
+ const meta={0050:'50檔',0056:'50檔',00878:'官方持股',00919:'40檔'};
  $('constTabs').innerHTML=ETF.map(c=>{const label=meta[c]||'成分股';return `<button class="btn etftab ${c===constituentSelected?'on':''}" onclick="selectConstituent('${c}')">${c} <small>${label}</small></button>`}).join('');
 }
 function selectConstituent(c){
@@ -357,12 +357,15 @@ function renderConstituents(d){
  const names={0050:'元大台灣50',0056:'元大高股息',00878:'國泰永續高股息',00919:'群益台灣精選高息'};
  const displayName=names[c]||d.name||'ETF';
  const items=Array.isArray(d.items)?d.items:[];
+ const nonStock=Array.isArray(d.nonStockPositions)?d.nonStockPositions:[];
+ const futures=nonStock.filter(x=>x.type==='futures');
  const top=items.slice(0,10), rest=items.slice(10);
- $('constTitle').textContent=`${c} ${displayName}｜完整${expected||'—'}檔成分股雷達`;
+ $('constTitle').textContent=c==='00878'&&nonStock.length?`${c} ${displayName}｜官方持股雷達`:`${c} ${displayName}｜完整${expected||'—'}檔成分股雷達`;
  $('constHeatTitle').textContent=`前十大權值股熱力圖`;
- const diag=(d.attempts||[]).map(a=>`${a.source}:${a.ok?'OK':'FAIL'} ${a.count??0}${a.error?' ('+a.error+')':''}`).join('｜');
+ const diag=(d.attempts||[]).map(a=>`${a.source}:${a.ok?'OK':'FAIL'} ${a.count??0}${a.detail?' ('+a.detail+')':a.error?' ('+a.error+')':''}`).join('｜');
  const sourceLabel=((d.source||'').includes('口袋證券')||(d.source||'').includes('MoneyDJ'))?'● 完整持股':'● 官方完整持股';
- $('c0050Status').innerHTML=`<b class="${full?'upc':'amber'}">${full?sourceLabel:'● 持股資料未完整'}</b>｜${d.actual||0}/${expected||'—'}檔｜行情 ${d.quoted||0}/${d.actual||0}檔｜資料日 ${d.asOf||'—'}<br><span class="note">來源：${d.source||'—'}。${model?'持股權重＋自行取得個股行情，已允許納入 '+c+' 三層價格的成分健康修正。':'目前僅供參考，尚未納入三層價格。'}</span>${diag?`<br><span class="note">來源診斷：${diag}</span>`:''}`;
+ const positionText=c==='00878'&&nonStock.length?`股票 ${d.actual||0}/${expected||'—'}檔＋${futures.length?`期貨 ${futures.length}檔`:`非股票 ${nonStock.length}檔`}`:`${d.actual||0}/${expected||'—'}檔`;
+ $('c0050Status').innerHTML=`<b class="${full?'upc':'amber'}">${full?sourceLabel:'● 持股資料未完整'}</b>｜${positionText}｜行情 ${d.quoted||0}/${d.actual||0}檔｜資料日 ${d.asOf||'—'}<br><span class="note">來源：${d.source||'—'}。${model?'持股權重＋自行取得個股行情，已允許納入 '+c+' 三層價格的成分健康修正。':'目前僅供參考，尚未納入三層價格。'}${c==='00878'&&nonStock.length?` 期貨/避險部位只用來確認官方投資組合完整，不混入個股健康分數。`:''}</span>${diag?`<br><span class="note">來源診斷：${diag}</span>`:''}`;
  $('c0050Summary').innerHTML=`<div class="box"><span class="k">成分健康</span><b>${Number.isFinite(d.healthScore)?d.healthScore+'/100':'不計分'}</b></div><div class="box"><span class="k">上漲 / 下跌</span><b>${s.upCount||0} / ${s.downCount||0}</b><small>平盤 ${s.flatCount||0}</small></div><div class="box"><span class="k">偏多 / 偏弱權重</span><b>${fmt(s.upWeight)}% / ${fmt(s.downWeight)}%</b></div><div class="box"><span class="k">前十大權重</span><b>${fmt(s.top10Weight)}%</b></div>`;
  const eb=Number.isFinite(s.equalBreadth)?s.equalBreadth:null,wb=Number.isFinite(s.weightedBreadth)?s.weightedBreadth:null,wm=Number.isFinite(s.weightedMove)?s.weightedMove:null;
  $('c0050Breadth').innerHTML=`<b>等權廣度：</b>${eb==null?'—':pct(eb)}　<b>權重廣度：</b>${wb==null?'—':pct(wb)}　<b>權重加權漲跌：</b>${wm==null?'—':pct(wm)}　<b>前十大權重：</b>${fmt(s.top10Weight)}%<br><span class="note">健康度仍使用全部 ${items.length||expected} 檔計算；畫面只把前十大做成大型熱力卡片，其餘改用緊湊表格，避免小權重股把頁面拉得過長。</span>`;

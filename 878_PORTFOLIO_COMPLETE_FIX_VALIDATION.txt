@@ -1,0 +1,50 @@
+V16.8.59-878-PORTFOLIO-COMPLETE-FIX
+====================================
+
+Scope: 00878 constituent/holding completeness only.
+
+ROOT CAUSE
+- 00878 tracks a 30-name index, but the ETF's actual portfolio can temporarily be
+  29 stock holdings + a Taiwan index futures position.
+- The prior code hard-required 30 stock rows and deliberately rejected futures,
+  so a valid official portfolio was permanently shown as 29/30 and could not
+  enter constituent-health scoring.
+- Current public 2026-09-07 holdings are consistent with this structure:
+  29 stock holdings (~97.37%) + 1 Taiwan index futures position (~2.75%).
+
+FIX
+- Keep stock parser strict: only ordinary Taiwan stock rows enter stock health.
+- Detect official futures/hedge rows separately; they never enter stock quote or
+  health calculations.
+- Treat the official portfolio as complete when:
+  * stock rows are near the nominal 30-name target,
+  * recognized futures/hedge rows bring official positions to >= 30, and
+  * combined official portfolio weight is within 95%~105%.
+- In that valid 29-stock + futures case, stock-health source coverage denominator
+  becomes the actual 29 stock rows, so 29/29 is complete rather than false 29/30.
+- UI explicitly shows: official holdings complete / 29 stocks + 1 futures;
+  futures are excluded from stock-health score.
+- Parser now starts below the real holdings header, so fund-title/NAV/date rows no
+  longer pollute rejected-row diagnostics.
+- Constituent/health caches bumped to r337.
+
+VALIDATION
+- node --check server.js: PASS
+- node --check public/app.js: PASS
+- synthetic 00878 portfolio test: PASS
+  * stocks: 29
+  * futures: 1
+  * stock weight: 97.37%
+  * futures weight: 2.75%
+  * combined: 100.12%
+  * portfolio positions: 30
+  * complete: true
+  * rejected metadata rows: 0
+
+UNCHANGED
+- 0050 / 0056 / 00919 constituent source logic
+- #33 / #34 / #35 / #36 / #37
+- buy-point formulas / first-second-third layer prices
+- re-anchor / open anti-chase / Score / Gate / chaseRisk
+- 08:45 TXF lead / market breadth / history / backtest
+- manual/model trades / holdings / Supabase
