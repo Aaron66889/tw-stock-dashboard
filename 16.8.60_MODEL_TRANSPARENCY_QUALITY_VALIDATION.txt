@@ -1,0 +1,47 @@
+16.8.60 MODEL TRANSPARENCY / QUALITY — TARGETED VALIDATION
+
+Base:
+- tw-stock-dashboard-16.8.59-878-portfolio-complete-fix
+
+Changed only:
+1) Four-ETF decision transparency (0050 / 0056 / 00878 / 00919)
+   - Exposes existing score components: base, price fit, chase penalty, environment, constituent health.
+   - Shows existing hard/soft Gate result and reason.
+   - DOES NOT change score formula, thresholds, buy zones, or Gate rules.
+
+2) First-layer reachability
+   - Uses each ETF's own ATR and current first-layer upper edge.
+   - Shows drop-needed %, ATR units, and whether today's low has touched the CURRENT first-layer level.
+   - Observability only; DOES NOT move any layer or relax any Gate.
+
+3) Backtest quality metrics
+   - Adds 5/20/60-day positive-return rates.
+   - Adds average 60-day MAE and MFE.
+   - Adds missed-bull-window rate/count using the existing bull participation definition.
+   - Existing signal generation and entry rules are unchanged; MFE only reads future highs for reporting.
+
+4) UI
+   - ETF buy cards and ETF detail page show decision breakdown + reachability.
+   - Backtest result shows the additional objective quality/missed-opportunity KPIs.
+   - Logic page documents these observability fields.
+
+Explicitly NOT changed:
+- ETF constituent parsers / holdings completeness logic
+- 00878 Cathay parser / portfolio-complete fix
+- 0050 / 0056 / 00878 / 00919 calibration parameters
+- first-layer formula / second-layer formula / third-layer formula
+- three-layer re-anchor behavior
+- cash-open cap
+- anti-chase thresholds / chase-risk formula
+- hard Gate / no-buy thresholds
+- market breadth / overseas / TXF source logic
+- Supabase model-trade sync / holdings sync / MODEL_SYNC_KEY handling
+- portfolio holdings logic
+- 45 validation checklist definitions
+
+Checks performed:
+- node --check server.js: PASS
+- node --check public/app.js: PASS
+- local server startup: PASS
+- GET / : HTTP 200
+- GET /api/diagnostics: PASS, build=16.8.60-MODEL-TRANSPARENCY-QUALITY

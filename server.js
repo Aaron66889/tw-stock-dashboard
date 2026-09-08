@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.59-878-PORTFOLIO-COMPLETE-FIX';
+const BUILD='16.8.60-MODEL-TRANSPARENCY-QUALITY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1614,7 +1614,12 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const noBuyToday=!hardVeto&&(chaseNoBuy||(score<40&&px>z1.high));
  const noBuyReason=noBuyToday?(chaseNoBuy&&sessionOpen>0?`現價仍高於今日開盤 ${sessionOpen.toFixed(2)}，追高風險過高；不往上追買。`:'現價偏離合理區過遠／追高風險過高，今日不硬生買點'):null;
  const calibrationVersion=sessionOpen>0?'first-touch-open-cap-v3-three-layer-live':'first-touch-open-cap-v3-three-layer-preopen';
- return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor'};
+ // 16.8.60 observability only: expose distance/reachability without changing any buy-point or Gate rule.
+ const sessionLow=n(quote?.low),sessionHigh=n(quote?.high),dropNeeded=Math.max(0,px-z1.high),dropNeededPct=px>0?dropNeeded/px*100:null,atrPct=px>0?atr/px*100:null,atrUnits=atr>0?dropNeeded/atr:null;
+ const touchedToday=sessionLow>0?sessionLow<=z1.high:px<=z1.high;
+ const reachabilityLabel=touchedToday||dropNeeded<=0?'已觸及':(atrUnits<=.60?'高':atrUnits<=1.20?'中':'低');
+ const decisionGate=hardVeto?{status:'FAIL',type:'HARD',reason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':'硬Gate')}:(noBuyToday?{status:'WAIT',type:'SOFT',reason:noBuyReason}:{status:'PASS',type:'NONE',reason:null});
+ return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
@@ -1663,20 +1668,20 @@ function signalSeries(code,rows,chaseScale=1){
   let p1=firstCal.p1,p2=clamp(qcache.q25??-.012,-.038,-.006)-pen*.7,p3=clamp(qcache.q10??-.022,-.065,-.013)-pen*.4;
   const l1=prev*(1+p1),l2=Math.min(prev*(1+p2),l1-Math.max(atr*.35,prev*.004)),l3=Math.min(prev*(1+p3),l2-Math.max(atr*.45,prev*.006));
   const day=a[i],dayLow=day.aLow??day.aClose,dayHigh=day.aHigh??day.aClose,rapid=(day.aOpen??day.aClose)<l3,hit=!rapid&&dayLow<=l1&&dayHigh>=l1;
-  if(hit&&i-lastSig>=7){const entry=l1,fut={},lows=[];for(const k of [5,20,60])fut[k]=a[i+k].aClose/entry-1;for(let j=i;j<=Math.min(i+60,a.length-1);j++)lows.push({r:((a[j].aLow??a[j].aClose)/entry-1),date:a[j].date,price:(a[j].aLow??a[j].aClose),precision:a[j].aLow!=null?'ohlc':'close'});const wl=lows.reduce((w,x)=>!w||x.r<w.r?x:w,null);
-   sig.push({i,date:day.date,entry,pctile,chase,ret5:fut[5],ret20:fut[20],ret60:fut[60],mae60:wl.r,lowDate:wl.date,lowPrice:wl.price,precision:wl.precision});lastSig=i}
+  if(hit&&i-lastSig>=7){const entry=l1,fut={},lows=[],highs=[];for(const k of [5,20,60])fut[k]=a[i+k].aClose/entry-1;for(let j=i;j<=Math.min(i+60,a.length-1);j++){lows.push({r:((a[j].aLow??a[j].aClose)/entry-1),date:a[j].date,price:(a[j].aLow??a[j].aClose),precision:a[j].aLow!=null?'ohlc':'close'});highs.push({r:((a[j].aHigh??a[j].aClose)/entry-1),date:a[j].date,price:(a[j].aHigh??a[j].aClose),precision:a[j].aHigh!=null?'ohlc':'close'})}const wl=lows.reduce((w,x)=>!w||x.r<w.r?x:w,null),wh=highs.reduce((w,x)=>!w||x.r>w.r?x:w,null);
+   sig.push({i,date:day.date,entry,pctile,chase,ret5:fut[5],ret20:fut[20],ret60:fut[60],mae60:wl.r,mfe60:wh.r,lowDate:wl.date,lowPrice:wl.price,highDate:wh.date,highPrice:wh.price,precision:wl.precision});lastSig=i}
  }
  return{rows:a,signals:sig};
 }
 function metrics(series,startDate=null){
  const s=series.signals.filter(x=>!startDate||x.date>=startDate),a=series.rows;if(!s.length)return{signals:0};
- const r5=s.map(x=>x.ret5*100),r20=s.map(x=>x.ret20*100),r60=s.map(x=>x.ret60*100),mae=s.map(x=>x.mae60*100),high=s.filter(x=>x.pctile>=80).length/s.length*100;
+ const r5=s.map(x=>x.ret5*100),r20=s.map(x=>x.ret20*100),r60=s.map(x=>x.ret60*100),mae=s.map(x=>x.mae60*100),mfe=s.map(x=>x.mfe60*100),high=s.filter(x=>x.pctile>=80).length/s.length*100;
  let maxGap=0,prev=null;for(const x of s){if(prev!=null)maxGap=Math.max(maxGap,x.i-prev);prev=x.i}
  // True participation KPI: identify 60-trading-day bull regimes (>10% gain). A regime is participated only if a signal occurs in its first half and entry isn't >8% above regime start.
  let bullWindows=0,participated=0,late=0,missedUpside=0;
  for(let i=260;i<a.length-61;i+=10){if(startDate&&a[i].date<startDate)continue;const gain=a[i+60].aClose/a[i].aClose-1;if(gain>.10){bullWindows++;const sig=s.find(x=>x.i>=i&&x.i<=i+30);if(sig&&sig.entry<=a[i].aClose*1.08)participated++;else{if(sig)late++;missedUpside++}}}
  const worst=s.reduce((w,x)=>!w||x.mae60<w.mae60?x:w,null);
- return{signals:s.length,avg5:mean(r5),median5:median(r5),avg20:mean(r20),median20:median(r20),avg60:mean(r60),median60:median(r60),win20:r20.filter(x=>x>0).length/r20.length*100,worstMAE60:Math.min(...mae),worstCase:worst?{signalDate:worst.date,entry:worst.entry,mae60:worst.mae60*100,lowDate:worst.lowDate,lowPrice:worst.lowPrice,precision:worst.precision}:null,highEntryRate:high,maxNoSignalDays:maxGap,participationRate:bullWindows?participated/bullWindows*100:null,bullWindows,participatedBullWindows:participated,lateBullWindows:late,missedUpsideWindows:missedUpside};
+ return{signals:s.length,avg5:mean(r5),median5:median(r5),avg20:mean(r20),median20:median(r20),avg60:mean(r60),median60:median(r60),win5:r5.filter(x=>x>0).length/r5.length*100,win20:r20.filter(x=>x>0).length/r20.length*100,win60:r60.filter(x=>x>0).length/r60.length*100,avgMAE60:mean(mae),avgMFE60:mean(mfe),worstMAE60:Math.min(...mae),bestMFE60:Math.max(...mfe),worstCase:worst?{signalDate:worst.date,entry:worst.entry,mae60:worst.mae60*100,lowDate:worst.lowDate,lowPrice:worst.lowPrice,precision:worst.precision}:null,highEntryRate:high,maxNoSignalDays:maxGap,participationRate:bullWindows?participated/bullWindows*100:null,missedBullRate:bullWindows?missedUpside/bullWindows*100:null,bullWindows,participatedBullWindows:participated,lateBullWindows:late,missedUpsideWindows:missedUpside};
 }
 function yearsAgo(n){const d=new Date();d.setFullYear(d.getFullYear()-n);return d.toISOString().slice(0,10)}
 function objective(m){if(!m.signals)return-999;return (m.median20||0)-(.04*(m.highEntryRate||0))+(.025*(m.participationRate||0))}
