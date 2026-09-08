@@ -29,7 +29,7 @@
 </head><body><main>
 <div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.33</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
 <nav class="topnav">
-<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="buy">ETF買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
+<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
 </nav>
 
 <div id="home" class="page on">
@@ -45,6 +45,16 @@
 <div id="holdingsPage" class="page">
 <section class="card private"><div class="row"><div><div class="sectiontitle">我的持股｜私人頁</div><div class="note">不和公開買點混在一起；新訪客預設空白。</div></div><button class="btn primary" onclick="openHolding()">＋新增持股</button></div>
 <div id="holdingTotals" class="grid4"></div><div id="holdingManager"></div><div id="holdings"></div></section>
+</div>
+
+
+<div id="commentaryPage" class="page">
+<section class="card commentaryHero"><div class="row"><div><div class="sectiontitle">今日投資組合點評</div><div class="note" id="commentaryMeta">依目前持股、行情、市場廣度與既有買點模型自動整理。</div></div><button class="btn primary" onclick="loadCommentary(true)">重新整理</button></div><div id="commentaryHeadline" class="commentaryHeadline">點評載入中…</div><div id="commentarySummary" class="reading">正在整理今日資料。</div></section>
+<section class="card"><div class="sectiontitle">投資風格與配置</div><div id="commentaryStyle" class="reading">—</div><div id="commentaryPortfolio" class="grid4"></div></section>
+<section class="card"><div class="sectiontitle">今日焦點持股</div><div id="commentaryFocus"></div></section>
+<section class="card"><div class="sectiontitle">市場對組合的影響</div><div id="commentaryMarket" class="reading">—</div></section>
+<section class="card"><div class="sectiontitle">今日操作節奏</div><div id="commentaryAction" class="reading">—</div></section>
+<section class="card"><div class="sectiontitle">今日總結</div><div id="commentaryConclusion" class="commentaryConclusion">—</div><div id="commentaryDisclaimer" class="note" style="margin-top:10px"></div></section>
 </div>
 
 <div id="buy" class="page">

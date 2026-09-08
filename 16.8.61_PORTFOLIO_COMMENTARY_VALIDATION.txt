@@ -1,0 +1,6 @@
+16.8.61 Portfolio Commentary
+
+Scope: add one independent 今日投資組合點評 page and one POST /api/portfolio-commentary endpoint.
+Existing buy-point formulas, gates, constituent parsers, quote sources, synchronization, holdings storage, backtests and validation logic are unchanged.
+The commentary endpoint is read-only: it receives current browser holdings, combines them with existing market/model data, returns structured commentary, and stores nothing.
+Refresh: page entry + 30 seconds while the page is visible. After cash close, cash-market inputs are stable and the page labels the result 今日收盤版.

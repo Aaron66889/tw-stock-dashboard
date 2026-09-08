@@ -22,7 +22,7 @@ const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
-let marketTimer,slowTimer,buyTimer,nightTimer,selectedETF='0050',selectedBacktest='0050';
+let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,selectedETF='0050',selectedBacktest='0050';
 let etfLiveTimer=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
@@ -55,7 +55,7 @@ function saveHoldings(){saveJSON('twStockHoldingsV12',H);if(MODEL_SYNC?.ready&&H
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
 function dayKey(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date())}
 function fresh(ts,ms=90000){return ts&&Date.now()-Date.parse(ts)<ms}
-function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false)}
+function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false)}
 document.querySelectorAll('.navb').forEach(b=>b.onclick=()=>setPage(b.dataset.page));
 function setMode(){const d=taipeiNow(),m=d.getHours()*60+d.getMinutes(),day=d.getDay();let a,b,c;if(day===0||day===6){a='週末模式';b='市場休市，整理全歷史與下一交易日環境';c='現貨維持最近交易日，夜盤／海外依交易時段更新'}else if(m>=537&&m<540){a='08:57盤前';b='盤前三層正在收斂';c='08:59:30鎖定盤前基準'}else if(m>=540&&m<=810){a='● 盤中模式';b='今天有沒有合理買點？';c='價格10秒｜模型30秒'}else if(m>810&&m<900){a='收盤模式';b='今天收盤結構與下一交易日環境';c='檢查今日買點歷史與市場廣度'}else if(m>=900||m<300){a='🌙 夜間模式';b='夜盤與海外正在怎麼影響下一交易日？';c='夜盤10秒更新；正負號自行重算'}else{a='盤前模式';b='開盤前先看海外與台指期日盤';c=m>=525?'08:45台指期先行訊號累積中｜08:57開始三層收斂':'等待08:45台指期日盤'}$('mode').textContent=a;$('modeTitle').textContent=b;$('modeNote').textContent=c}
 function addEvent(text,kind='info'){const last=EVENTS.at(-1);if(last&&last.text===text&&Date.now()-Date.parse(last.at)<60000)return;EVENTS.push({at:new Date().toISOString(),text,kind});EVENTS=EVENTS.slice(-160);saveJSON('v124_events',EVENTS);renderEvents()}
@@ -169,6 +169,9 @@ async function browserTwseEtfLive(){
   return{ok:true,source:'TWSE MIS browser direct',fetchedAt:new Date().toISOString(),quotes};
  }finally{clearTimeout(timer)}
 }
+
+async function postJSON(url,body,timeoutMs=12000){const c=new AbortController(),timer=setTimeout(()=>c.abort(),timeoutMs);try{const r=await fetch(url,{method:'POST',cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:c.signal}),text=await r.text(),t=text.trim();if(!r.ok)throw Error('HTTP '+r.status+'｜'+url);if(!(t.startsWith('{')||t.startsWith('[')))throw Error('來源回傳HTML而非JSON｜'+url);const d=JSON.parse(t);return d}catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(timer)}}
+
 async function loadEtfLive(){
  clearTimeout(etfLiveTimer);
  try{
@@ -308,6 +311,21 @@ function clearModelEvents(){
  const h=$('homeModelEvent');if(h)h.innerHTML='<b>戰情：</b>尚無重大模型事件。';
 }
 
+
+
+function commentaryMoney(v){return Number.isFinite(Number(v))?`${Number(v)>=0?'+':''}${Math.round(Number(v)).toLocaleString()} 元`:'—'}
+function renderCommentary(d){
+ if(!d?.ok){$('commentaryHeadline').textContent='點評暫時無法產生';$('commentarySummary').innerHTML='<b class="amber">資料暫時不可用：</b>'+(d?.error||'未知錯誤');return}
+ $('commentaryMeta').innerHTML=`${d.day||'—'}｜${d.session?.label||'即時版'}｜${d.session?.live?'<span class="commentaryLiveDot"></span>盤中30秒更新':'收盤後維持當日內容'}｜更新 ${new Date(d.generatedAt).toLocaleTimeString('zh-TW',{hour12:false})}`;
+ $('commentaryHeadline').textContent=d.headline||'今日投資組合點評';
+ if(d.empty){$('commentarySummary').innerHTML=(d.summary||[]).map(x=>`<div class="commentarySummaryLine">${x}</div>`).join('');$('commentaryStyle').textContent='尚無持股可分析';$('commentaryPortfolio').innerHTML='';$('commentaryFocus').innerHTML='';$('commentaryMarket').textContent='—';$('commentaryAction').textContent='—';$('commentaryConclusion').textContent='—';$('commentaryDisclaimer').textContent=d.disclaimer||'';return}
+ $('commentarySummary').innerHTML=(d.summary||[]).map(x=>`<div class="commentarySummaryLine">${x}</div>`).join('');
+ $('commentaryStyle').textContent=d.styleComment||'—';
+ const p=d.portfolio||{};$('commentaryPortfolio').innerHTML=`<div class="box"><span class="k">總市值</span><b>${Number.isFinite(p.totalValue)?Math.round(p.totalValue).toLocaleString():'—'}</b></div><div class="box"><span class="k">今日損益</span><b class="${cls(p.dayPnl)}">${commentaryMoney(p.dayPnl)}</b><small>${pct(p.dayReturnPct)}</small></div><div class="box"><span class="k">累積損益</span><b class="${cls(p.totalPnl)}">${commentaryMoney(p.totalPnl)}</b><small>${pct(p.totalReturnPct)}</small></div><div class="box"><span class="k">配置風格</span><b>${p.style||'—'}</b><small>${p.concentration||''}</small></div>`;
+ $('commentaryFocus').innerHTML=(d.focus||[]).map(x=>`<div class="commentaryFocusCard"><div class="focusTitle"><div><b>${x.code} ${x.name||''}</b><div class="note">組合權重 ${Number.isFinite(x.weight)?x.weight.toFixed(1)+'%':'—'}｜累積 ${pct(x.totalReturnPct)}</div></div><b class="${cls(x.dayPct)}">${pct(x.dayPct)}</b></div><div class="focusText">今日貢獻 ${commentaryMoney(x.dayPnl)}｜${x.comment||''}</div></div>`).join('')||'<div class="notice">目前沒有可計算的持股行情。</div>';
+ $('commentaryMarket').textContent=d.marketImpact||'—';$('commentaryAction').textContent=d.action||'—';$('commentaryConclusion').textContent=d.conclusion||'—';$('commentaryDisclaimer').textContent=d.disclaimer||'';
+}
+async function loadCommentary(force=false){clearTimeout(commentaryTimer);const page=$('commentaryPage');if(!force&&!page?.classList.contains('on'))return;try{const miniModels=Object.fromEntries(ETF.map(c=>{const m=lastBuy?.models?.[c];return[c,m&&!m.error?{price:m.price,prevClose:m.prevClose,score:m.score,chaseRisk:m.chaseRisk,hardVeto:m.hardVeto,noBuyToday:m.noBuyToday,reachability:m.reachability,raw:m.raw}:null]}));const snapshot={quotes:{...(lastLive?.quotes||{}),...(lastBuy?.quotes||{})},market:lastLive?.market||lastBuy?.market||null,breadth:lastCtx?.breadth||lastBuy?.context?.breadth||null,models:miniModels};const d=await postJSON('/api/portfolio-commentary',{holdings:H,snapshot},15000);renderCommentary(d)}catch(e){renderCommentary({ok:false,error:e.message})}finally{if(page?.classList.contains('on'))commentaryTimer=setTimeout(()=>loadCommentary(false),30000)}}
 
 function renderHoldings(){
  let val=0,cost=0;$('holdingManager').innerHTML=H.length?H.map(h=>`<div class="historyrow row"><span><b>${h.t}</b> ${Number(h.s).toLocaleString()}股｜均價 ${fmt(h.c)}</span><span><button class="btn" onclick="editHolding('${h.t}')">編輯</button> <button class="btn danger" onclick="deleteHolding('${h.t}')">刪除</button></span></div>`).join(''):'<div class="notice">目前沒有持股。這是刻意的：公開程式不預載任何人的股數與成本。</div>';

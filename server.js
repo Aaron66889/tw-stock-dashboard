@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.60-MODEL-TRANSPARENCY-QUALITY';
+const BUILD='16.8.61-PORTFOLIO-COMMENTARY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1892,6 +1892,75 @@ async function cloudUpsertHoldings(holdings){
  return{ok:true,holdings:clean,updatedAt:now};
 }
 
+
+
+function commentarySession(){
+ const t=taipeiClock(),mins=t.h*60+t.m,wd=['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday);
+ if(!wd)return{key:'WEEKEND',label:'休市版',live:false};
+ if(mins<525)return{key:'PRE',label:'盤前版',live:false};
+ if(mins<540)return{key:'PREOPEN',label:'08:45盤前版',live:true};
+ if(mins<=810)return{key:'LIVE',label:'盤中即時版',live:true};
+ return{key:'CLOSE',label:'今日收盤版',live:false};
+}
+function cleanCommentaryHoldings(input){
+ if(!Array.isArray(input))return[];
+ return input.slice(0,100).map(h=>({t:String(h?.t||'').trim().toUpperCase(),n:String(h?.n||h?.t||'').trim(),s:Number(h?.s)||0,c:Number(h?.c)||0})).filter(h=>h.t&&h.s>0&&h.c>=0);
+}
+function commentaryPct(v){return Number.isFinite(v)?`${v>=0?'+':''}${v.toFixed(2)}%`:'—'}
+function commentaryMoney(v){return Number.isFinite(v)?`${v>=0?'+':''}${Math.round(v).toLocaleString('zh-TW')} 元`:'—'}
+function dayPhrase(day,arr){const k=Number(String(day||'').replace(/\D/g,''))||0;return arr[k%arr.length]}
+async function portfolioCommentary(inputHoldings,clientSnapshot={}){
+ const holdings=cleanCommentaryHoldings(inputHoldings),session=commentarySession(),day=ymdTaipei();
+ if(!holdings.length)return{ok:true,build:BUILD,day,session,generatedAt:new Date().toISOString(),empty:true,headline:'目前沒有持股資料',summary:['請先在「我的持股」建立持股，點評頁才會依實際股數與成本分析。'],focus:[],disclaimer:'即時點評依網站資料與規則產生，僅供紀錄與決策輔助，不代表投資建議。'};
+ const serverBm=await deadline(cached('buymodel',8000,buyModel),10000,null);
+ const bm=serverBm?.ok?serverBm:{ok:true,quotes:{},models:{},market:null,context:null};
+ const snap=(clientSnapshot&&typeof clientSnapshot==='object')?clientSnapshot:{};
+ const extras=holdings.map(h=>h.t).filter(c=>!ETF.includes(c));
+ let extraLive={quotes:{}};
+ if(extras.length){try{extraLive=await deadline(live(extras),7000,{quotes:{}})||{quotes:{}}}catch(_){extraLive={quotes:{}}}}
+ const quotes={...(snap.quotes&&typeof snap.quotes==='object'?snap.quotes:{}),...(extraLive.quotes||{})};for(const [c,q] of Object.entries(bm.quotes||{}))if(n(q?.last)>0)quotes[c]=q;
+ const models={...(snap.models&&typeof snap.models==='object'?snap.models:{})};for(const [c,m] of Object.entries(bm.models||{}))if(m&&!m.error)models[c]=m;
+ const rows=holdings.map(h=>{
+  const q=quotes[h.t]||{},model=models?.[h.t]||null,last=n(q.last)??n(model?.price),prev=n(q.prevClose)??n(model?.prevClose),value=last>0?last*h.s:null,cost=h.c*h.s,pnl=Number.isFinite(value)?value-cost:null,dayPnl=(last>0&&prev>0)?(last-prev)*h.s:null,dayPct=(last>0&&prev>0)?(last/prev-1)*100:null,ret=cost>0&&Number.isFinite(pnl)?pnl/cost*100:null;
+  return{...h,name:META[h.t]?.name||h.n||h.t,last,prev,value,cost,pnl,dayPnl,dayPct,ret,model};
+ });
+ const valued=rows.filter(r=>Number.isFinite(r.value)),totalValue=valued.length?valued.reduce((s,r)=>s+r.value,0):null,totalCost=rows.reduce((s,r)=>s+r.cost,0),totalPnl=Number.isFinite(totalValue)?totalValue-totalCost:null;
+ const prevValue=rows.reduce((s,r)=>s+(r.prev>0?r.prev*r.s:(r.value||0)),0),dayPnls=rows.map(r=>r.dayPnl).filter(Number.isFinite),dayPnl=dayPnls.length?dayPnls.reduce((s,v)=>s+v,0):null,dayRet=prevValue>0&&Number.isFinite(dayPnl)?dayPnl/prevValue*100:null,totalRet=totalCost>0&&Number.isFinite(totalPnl)?totalPnl/totalCost*100:null;
+ const allocationBase=Number.isFinite(totalValue)&&totalValue>0?totalValue:totalCost;
+ for(const r of rows){const basis=Number.isFinite(r.value)?r.value:r.cost;r.weight=allocationBase>0&&Number.isFinite(basis)?basis/allocationBase*100:null}
+ const largest=rows.filter(r=>Number.isFinite(r.weight)).sort((a,b)=>b.weight-a.weight)[0]||null;
+ const coreWeight=rows.filter(r=>r.t==='0050').reduce((s,r)=>s+(r.weight||0),0),highDivWeight=rows.filter(r=>['0056','00878','00919'].includes(r.t)).reduce((s,r)=>s+(r.weight||0),0);
+ const marketQuote=bm.market||snap.market||null,marketPct=movePct(marketQuote),breadth=bm.context?.breadth||snap.breadth||null,breadthWeak=!!(breadth&&breadth.down>breadth.up*1.45),breadthStrong=!!(breadth&&breadth.up>breadth.down*1.45);
+ const relative=Number.isFinite(dayRet)&&Number.isFinite(marketPct)?dayRet-marketPct:null;
+ const style=coreWeight>=60?'大盤核心偏重':highDivWeight>=60?'高股息收益偏重':'大盤核心＋高股息衛星';
+ const concentration=largest?.weight>=65?'集中度偏高':largest?.weight>=45?'集中度中等':'配置相對分散';
+ const introTone=!Number.isFinite(dayRet)?'目前行情資料仍在更新':dayRet>0.35?'今日組合明顯走強':dayRet<-0.35?'今日組合隨市場回檔':'今日組合波動不大';
+ const relText=Number.isFinite(relative)?(relative>.35?'整體表現優於大盤':relative<-.35?'整體表現弱於大盤':'整體表現大致貼近大盤'):'目前缺少完整的大盤比較資料';
+ const summary=[Number.isFinite(dayRet)?`${introTone}，今日估計損益 ${commentaryMoney(dayPnl)}（${commentaryPct(dayRet)}），${relText}。`:`${introTone}，暫不硬算今日損益；待即時行情補齊後會自動更新。`,`${style}；${largest?`${largest.t} 約占組合 ${largest.weight.toFixed(1)}%`:'目前無法計算最大持股'}，${concentration}。`];
+ if(breadth)summary.push(`市場廣度 ${breadth.up}↑ / ${breadth.down}↓ / ${breadth.flat}平，${breadthWeak?'內部結構偏弱':breadthStrong?'內部結構偏強':'多空分布接近中性'}。`);
+ const styleComment=coreWeight>=60?`0050 是目前主要核心，組合報酬對大型權值股與大盤方向較敏感；高股息部位則提供收益與風格分散。`:highDivWeight>=60?`高股息 ETF 比重較高，組合較偏收益與防守風格；遇到權值成長行情時，報酬可能與大盤產生落差。`:`0050 與高股息 ETF 並存，屬於核心成長搭配收益型衛星的配置。`;
+ const focus=rows.filter(r=>Number.isFinite(r.weight)).sort((a,b)=>{const ad=Number.isFinite(a.dayPnl)?Math.abs(a.dayPnl):-1,bd=Number.isFinite(b.dayPnl)?Math.abs(b.dayPnl):-1;return bd-ad||((b.weight||0)-(a.weight||0))}).slice(0,4).map(r=>{
+  let relativeText='';if(Number.isFinite(r.dayPct)&&Number.isFinite(marketPct)){const d=r.dayPct-marketPct;relativeText=d>.45?'相對大盤偏強':d<-.45?'相對大盤偏弱':'大致跟隨大盤'}
+  const model=r.model;let modelText='';
+  if(model&&!model.error){if(session.key==='CLOSE'){modelText=model.reachability?.touchedToday?'今日第一層曾觸及':'今日第一層未觸及'}else if(model.hardVeto)modelText='目前硬 Gate 未通過';else if(model.noBuyToday)modelText='目前模型不建議追價';else if(model.reachability?.touchedToday)modelText='今日第一層曾觸及';else modelText=`第一層可觸及性${model.reachability?.label||'—'}`}
+  if(!Number.isFinite(r.dayPct)&&!relativeText)relativeText='即時行情待更新';
+  const comment=[relativeText,modelText].filter(Boolean).join('；');
+  return{code:r.t,name:r.name,weight:r.weight,last:r.last,dayPct:r.dayPct,dayPnl:r.dayPnl,totalReturnPct:r.ret,comment:comment||'目前以持有部位變化為主。'};
+ });
+ const heldEtf=rows.filter(r=>ETF.includes(r.t)&&r.model&&!r.model.error),pass=heldEtf.filter(r=>!r.model.hardVeto&&!r.model.noBuyToday),touched=pass.filter(r=>r.model.reachability?.touchedToday),near=pass.filter(r=>!r.model.reachability?.touchedToday&&['高','中'].includes(r.model.reachability?.label));
+ let action='目前以持有與等待既有三層買點為主，不因單日波動額外放寬條件。';
+ if(session.key==='CLOSE'){
+  const closeTouched=heldEtf.filter(r=>r.model.reachability?.touchedToday);
+  action=closeTouched.length?`${closeTouched.map(r=>r.t).join('、')} 今日第一層曾觸及；收盤後不再重寫今日盤中判斷，明日另看「明日環境」。`:'今日持有 ETF 的第一層沒有新的收盤後判斷；收盤版只整理今天已發生的行情，不把夜盤倒灌回今日點評。';
+ }else if(touched.length)action=`${touched.map(r=>r.t).join('、')} 今日第一層曾觸及；是否加碼仍以原本分批規則與 Gate 為準。`;
+ else if(near.length)action=`${near.map(r=>r.t).join('、')} 距第一層仍在一般波動可觸及範圍；先等價格進區，不追價。`;
+ const marketImpact=!breadth?`市場廣度仍在更新；目前不拿舊資料替今天下結論。`:breadthWeak?`大盤內部下跌家數明顯較多，今天的壓力帶有市場性，不宜只用指數跌幅判斷風險。`:breadthStrong?`市場廣度偏強，今天的上漲不是只靠少數權值股，結構相對健康。`:`市場廣度沒有極端失衡，仍以各 ETF 自身買點與成分健康度判斷。`;
+ const closeBase=dayRet>0.4?'今日組合收在相對有利的位置':dayRet<-0.4?'今日屬正常風險檢查日':'今日屬於整理型走勢';
+ const conclusion=`${closeBase}。${action}`;
+ const headline=dayPhrase(day,[`${day} 投資組合即時掃描`,`${day} 今日持股點評`,`${day} 組合狀態摘要`]);
+ return{ok:true,build:BUILD,day,session,generatedAt:new Date().toISOString(),empty:false,headline,portfolio:{totalValue,totalCost,totalPnl,totalReturnPct:totalRet,dayPnl,dayReturnPct:dayRet,coreWeight,highDivWeight,largest:largest?{code:largest.t,weight:largest.weight}:null,style,concentration},market:{taiexChangePct:marketPct,breadth:breadth?{up:breadth.up,down:breadth.down,flat:breadth.flat,sourceDate:breadth.sourceDate,official:breadth.official}:null},summary,styleComment,focus,marketImpact,action,conclusion,disclaimer:'即時點評依網站持股、行情、市場廣度與既有買點模型規則自動產生；不修改原模型，也不代表投資建議。'};
+}
+
 async function safeApi(res,label,fn){try{const data=await fn();const key={'market':'live','context':'ctx','night-future':'nf','overseas':'ovs','buy-model':'bm'}[label];if(key&&data){RUNTIME[key]=data;RUNTIME.lastRefresh=new Date().toISOString()}return send(res,200,data)}catch(e){console.error(label,e);RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith(label+':')),label+':'+(e.message||String(e))].slice(-20);return send(res,200,{ok:false,status:'ERROR',source:label,error:e.message||String(e),fetchedAt:new Date().toISOString()})}}
 const server=http.createServer(async(req,res)=>{
  const u=new URL(req.url,'http://'+req.headers.host);
@@ -1941,6 +2010,10 @@ const server=http.createServer(async(req,res)=>{
   try{return send(res,200,await cloudDeleteTrade(decodeURIComponent(u.pathname.slice('/api/model-trades/'.length))))}catch(e){return send(res,400,{ok:false,error:e.message})}
  }
 
+
+ if(u.pathname==='/api/portfolio-commentary'&&req.method==='POST'){
+  try{const body=await readJSONBody(req,128*1024);return send(res,200,await portfolioCommentary(body.holdings,body.snapshot))}catch(e){return send(res,200,{ok:false,status:'ERROR',source:'portfolio-commentary',error:e.message||String(e),fetchedAt:new Date().toISOString()})}
+ }
  if(u.pathname==='/api/constituent-proof')return safeApi(res,'constituent-proof',async()=>{const rs=await Promise.all(ETF.map(async code=>{try{const c=await deadline(constituents(code),15000,null);if(!c)throw Error('official constituent source timed out');const expected=c.expected||META[code].expected,actual=c.items?.length||0,weights=c.items?.filter(x=>Number.isFinite(x.weight)).length||0,official=!!c.officialOnly&&isOfficialHostFor(code,c.sourceUrl||META[code].url);return{code,pass:!!(c.complete&&official&&actual>=expected&&weights>=expected),official,source:c.source,sourceUrl:c.sourceUrl||META[code].url,expected,actual,weightRows:weights,coveragePct:expected?Math.min(100,actual/expected*100):0,weightCoveragePct:expected?Math.min(100,weights/expected*100):0,asOf:c.asOf,note:c.note||null,errors:c.errors||[]}}catch(e){return{code,pass:false,official:true,source:META[code].source,sourceUrl:META[code].url,expected:META[code].expected,actual:0,weightRows:0,coveragePct:0,weightCoveragePct:0,note:e.message}}}));return{ok:true,build:BUILD,allPass:rs.every(x=>x.pass),constituents:rs,generatedAt:new Date().toISOString()}});
  if(u.pathname==='/api/core3-proof')return safeApi(res,'core3-proof',async()=>{
   const hist=ETF.map(historyProgress),modelTrade=modelTradeStaticProof();
