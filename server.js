@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.57-OPEN-AND-VALIDATION-FIX';
+const BUILD='16.8.58-878-PARSER-DIAGNOSTIC-FIX';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1271,7 +1271,9 @@ function cathayExcelCode(v){
  const s=String(v??'').trim(),m=s.match(/(?:^|\D)(\d{4,6})(?=$|\D)/);
  if(!m)return null;
  const code=m[1];
- if(/^20\d{2}$/.test(code)||code==='00878')return null;
+ // 20xx can be a valid Taiwan stock code. Do not guess "year" from the digits alone.
+ // Date/year noise is filtered structurally by using the official code column.
+ if(code==='00878')return null;
  return code;
 }
 function cathayExcelName(v){
@@ -1289,32 +1291,38 @@ function cathayExcelWeight(v){
  return x<=30?x:null;
 }
 function parseCathayOfficialExcelWorkbook(wb){
- const items=[],seen=new Set();
+ const items=[],seen=new Set(),rejected=[],sheets=[];
  for(const sheetName of wb.SheetNames||[]){
   const ws=wb.Sheets[sheetName];
   if(!ws)continue;
   const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});
 
-  let codeCol=-1,nameCol=-1,weightCol=-1;
-  for(let i=0;i<Math.min(rows.length,20);i++){
+  let codeCol=-1,nameCol=-1,weightCol=-1,headerRow=-1;
+  for(let i=0;i<Math.min(rows.length,30);i++){
    const r=rows[i]||[];
+   let found=false;
    for(let j=0;j<r.length;j++){
     const s=String(r[j]??'').replace(/\s+/g,'').trim();
-    if(codeCol<0&&/(股票|證券).*(代號|代碼)|^(代號|代碼)$/.test(s))codeCol=j;
-    if(nameCol<0&&/(股票|證券).*(名稱)|^名稱$/.test(s))nameCol=j;
-    if(weightCol<0&&/(投資比例|持股權重|權重|比重)/.test(s))weightCol=j;
+    if(codeCol<0&&/(股票|證券).*(代號|代碼)|^(代號|代碼)$/.test(s)){codeCol=j;found=true}
+    if(nameCol<0&&/(股票|證券).*(名稱)|^名稱$/.test(s)){nameCol=j;found=true}
+    if(weightCol<0&&/(投資比例|持股權重|權重|比重)/.test(s)){weightCol=j;found=true}
    }
+   if(found)headerRow=i;
    if(codeCol>=0&&nameCol>=0&&weightCol>=0)break;
   }
+  sheets.push({sheetName,rows:rows.length,headerRow,codeCol,nameCol,weightCol});
 
-  for(const r of rows){
-   if(!Array.isArray(r)||!r.length)continue;
+  for(let ri=0;ri<rows.length;ri++){
+   const r=rows[ri];
+   if(!Array.isArray(r)||!r.length||ri===headerRow)continue;
 
+   // If an official code column exists, it is authoritative.
+   // Do not scan a date column and accidentally interpret 2026 as a stock code.
    let code=codeCol>=0?cathayExcelCode(r[codeCol]):null;
    let name=nameCol>=0?cathayExcelName(r[nameCol]):'';
    let weight=weightCol>=0?cathayExcelWeight(r[weightCol]):null;
 
-   if(!code){
+   if(codeCol<0&&!code){
     for(let j=0;j<Math.min(r.length,8);j++){
      const c=cathayExcelCode(r[j]);
      if(c){code=c;break}
@@ -1322,7 +1330,7 @@ function parseCathayOfficialExcelWorkbook(wb){
    }
 
    if(!name&&code){
-    const idx=r.findIndex(v=>cathayExcelCode(v)===code);
+    const idx=codeCol>=0?codeCol:r.findIndex(v=>cathayExcelCode(v)===code);
     for(let j=Math.max(0,idx+1);j<Math.min(r.length,idx+6);j++){
      const nm=cathayExcelName(r[j]);
      if(nm&&!/(基金|ETF|期貨|現金|指數|保證金|應收|應付)/i.test(nm)){name=nm;break}
@@ -1330,28 +1338,61 @@ function parseCathayOfficialExcelWorkbook(wb){
    }
 
    if(weight==null&&code){
-    const idx=r.findIndex(v=>cathayExcelCode(v)===code);
-    for(let j=Math.max(0,idx+1);j<r.length;j++){
-     const x=cathayExcelWeight(r[j]);
-     if(x!=null){weight=x;break}
+    if(weightCol<0){
+     for(const v of r){
+      if(String(v??'').includes('%')){
+       const x=cathayExcelWeight(v);
+       if(x!=null){weight=x;break}
+      }
+     }
+    }
+    if(weight==null){
+     const from=weightCol>=0?weightCol:Math.max(0,(codeCol>=0?codeCol:r.findIndex(v=>cathayExcelCode(v)===code))+1);
+     for(let j=from;j<r.length;j++){
+      const x=cathayExcelWeight(r[j]);
+      if(x!=null){weight=x;break}
+     }
     }
    }
 
-   if(!code||!name||weight==null||seen.has(code))continue;
-   if(/基金|ETF|期貨|現金|指數|保證金|應收|應付/i.test(name))continue;
+   const rawCode=codeCol>=0?String(r[codeCol]??'').trim():'';
+   const rawName=nameCol>=0?String(r[nameCol]??'').trim():'';
+   const rawWeight=weightCol>=0?String(r[weightCol]??'').trim():'';
+
+   let reason=null;
+   if(!code)reason='code解析失敗';
+   else if(!name)reason='name解析失敗';
+   else if(weight==null)reason='weight解析失敗';
+   else if(seen.has(code))reason='duplicate';
+   else if(/基金|ETF|期貨|現金|指數|保證金|應收|應付/i.test(name))reason='非股票列';
+
+   if(reason){
+    if(code||rawCode||rawName||rawWeight){
+     rejected.push({
+      sheet:sheetName,row:ri+1,reason,
+      code:code||rawCode||null,
+      name:name||rawName||null,
+      weight:weight??(rawWeight||null)
+     });
+    }
+    continue;
+   }
 
    seen.add(code);
    items.push({code,name,weight,weightSource:'國泰投信官方ETF權重Excel'});
   }
  }
- return items.sort((a,b)=>(b.weight||0)-(a.weight||0));
+ return{
+  items:items.sort((a,b)=>(b.weight||0)-(a.weight||0)),
+  diagnostics:{accepted:items.length,rejected:rejected.slice(0,40),sheets}
+ };
 }
 async function cathayOfficialExcelConstituents(date=null){
  if(!XLSX)throw Error('xlsx module unavailable');
 
  const expected=META['00878'].expected,errs=[];
  const dates=date?[date]:Array.from({length:7},(_,i)=>dateMinus(i));
- let best={items:[],asOf:null,url:null};
+ let best={items:[],asOf:null,url:null,diagnostics:null};
 
  for(const iso of dates){
   const sd=iso.replaceAll('-','/');
@@ -1362,9 +1403,9 @@ async function cathayOfficialExcelConstituents(date=null){
    if(!buf){errs.push('timeout '+iso);continue}
 
    const wb=XLSX.read(buf,{type:'buffer'});
-   const items=parseCathayOfficialExcelWorkbook(wb);
+   const parsed=parseCathayOfficialExcelWorkbook(wb),items=parsed.items||[],diagnostics=parsed.diagnostics||null;
 
-   if(items.length>best.items.length)best={items,asOf:iso,url};
+   if(items.length>best.items.length)best={items,asOf:iso,url,diagnostics};
 
    if(items.length>=expected){
     return{
@@ -1380,7 +1421,9 @@ async function cathayOfficialExcelConstituents(date=null){
      sourceUrl:url,
      historicalAvailable:!!date,
      note:`國泰官方Excel已解析 ${items.length}/${expected} 檔股票與權重。`,
-     attempts:[{source:'Cathay official Excel',ok:true,count:items.length,url}]
+     diagnostics,
+     attempts:[{source:'Cathay official Excel',ok:true,count:items.length,url,
+       detail:diagnostics?.rejected?.length?`排除 ${diagnostics.rejected.length} 列非有效持股資料`:'30檔全部正常解析'}]
     };
    }
 
@@ -1402,14 +1445,17 @@ async function cathayOfficialExcelConstituents(date=null){
   source:'國泰投信官方ETF權重Excel未完整',
   sourceUrl:best.url||'https://cwapi.cathaysite.com.tw/api/ETF/DownloadETFWeightExcel',
   historicalAvailable:!!date,
-  note:`官方Excel本輪最佳 ${best.items.length}/${expected}；不完整時不納入模型。`,
+  note:`官方Excel本輪最佳 ${best.items.length}/${expected}；不完整時不納入模型。`+
+       (best.diagnostics?.rejected?.length?`｜被排除：${best.diagnostics.rejected.slice(0,6).map(x=>`${x.code||'?'} ${x.name||''}[${x.reason}]`).join('；')}`:''),
+  diagnostics:best.diagnostics||null,
   errors:errs.slice(-8),
-  attempts:[{source:'Cathay official Excel',ok:false,count:best.items.length,error:errs.at(-1)||null}]
+  attempts:[{source:'Cathay official Excel',ok:false,count:best.items.length,
+    error:(errs.at(-1)||'')+(best.diagnostics?.rejected?.length?`｜rejected ${best.diagnostics.rejected.slice(0,6).map(x=>`${x.code||'?'}:${x.reason}`).join(', ')}`:'')}]
  };
 }
 
 async function constituents(code,date=null){
- const key='const:r335:'+code+':'+(date||'latest');
+ const key='const:r336:'+code+':'+(date||'latest');
  return cached(key,date?6*60*60*1000:30*60*1000,async()=>{
   if(code==='00878')return cathayOfficialExcelConstituents(date);
   if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
@@ -1418,7 +1464,7 @@ async function constituents(code,date=null){
  });
 }
 async function constituentHealth(code){
- return cached('health:r335:'+code,8000,async()=>{
+ return cached('health:r336:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
@@ -1428,7 +1474,7 @@ async function constituentHealth(code){
   const trustedHoldingSource=c.officialOnly===true||c.thirdParty===true;
   const usable=!!c.complete&&trustedHoldingSource&&sourceCoverage>=1&&weightCoverage>=1&&quoteCoverage>=.75;
   const score=usable?clamp(Math.round(50+(weighted/quotedW)*38),0,100):null;let divergence='資料不足';if(usable){if(score>=65&&bullW>=weakW*1.5)divergence='健康擴散';else if(score>=52&&weakW<45)divergence='輕度分歧';else if(score<42||weakW>55)divergence='明顯分歧';else divergence='結構背離'}
-  return{ok:true,code,score,usable,divergence,bullWeight:bullW,weakWeight:weakW,neutralWeight:neutralW,sourceCoverage:sourceCoverage*100,weightCoverage:weightCoverage*100,quoteCoverage:quoteCoverage*100,asOf:c.asOf,effectiveDate:c.effectiveDate,complete:c.complete,expected,items:rows.sort((a,b)=>(b.weight||0)-(a.weight||0)),source:c.source,sourceUrl:c.sourceUrl,historicalAvailable:c.historicalAvailable,note:c.note||null,attempts:c.attempts||null,errors:c.errors||null};
+  return{ok:true,code,score,usable,divergence,bullWeight:bullW,weakWeight:weakW,neutralWeight:neutralW,sourceCoverage:sourceCoverage*100,weightCoverage:weightCoverage*100,quoteCoverage:quoteCoverage*100,asOf:c.asOf,effectiveDate:c.effectiveDate,complete:c.complete,expected,items:rows.sort((a,b)=>(b.weight||0)-(a.weight||0)),source:c.source,sourceUrl:c.sourceUrl,historicalAvailable:c.historicalAvailable,note:c.note||null,diagnostics:c.diagnostics||null,attempts:c.attempts||null,errors:c.errors||null};
  });
 }
 
@@ -1441,7 +1487,7 @@ async function constituentDashboard(code='0050'){
  const weightedMove=quoted.length?quoted.reduce((z,x)=>z+x.changePct*(x.weight||0),0)/Math.max(0.0001,sum(quoted)):null;
  const equalBreadth=quoted.length?(up.length-down.length)/quoted.length*100:null;
  const weightedBreadth=quoted.length?(sum(up)-sum(down))/Math.max(0.0001,sum(quoted))*100:null;
- return{ok:true,build:BUILD,code,name:META[code]?.name,asOf:h.asOf,source:h.source,sourceUrl:h.sourceUrl,complete:h.complete,usable:h.usable,expected:h.expected||META[code]?.expected,actual:items.length,quoted:quoted.length,sourceCoverage:h.sourceCoverage,quoteCoverage:h.quoteCoverage,healthScore:h.score,divergence:h.divergence,bullWeight:h.bullWeight,weakWeight:h.weakWeight,neutralWeight:h.neutralWeight,attempts:h.attempts||null,errors:h.errors||null,summary:{upCount:up.length,downCount:down.length,flatCount:flat.length,upWeight:sum(up),downWeight:sum(down),flatWeight:sum(flat),equalBreadth,weightedBreadth,weightedMove,top10Weight:sum(top10),tsmcWeight:items.find(x=>x.code==='2330')?.weight??null},items};
+ return{ok:true,build:BUILD,code,name:META[code]?.name,asOf:h.asOf,source:h.source,sourceUrl:h.sourceUrl,complete:h.complete,usable:h.usable,expected:h.expected||META[code]?.expected,actual:items.length,quoted:quoted.length,sourceCoverage:h.sourceCoverage,quoteCoverage:h.quoteCoverage,healthScore:h.score,divergence:h.divergence,bullWeight:h.bullWeight,weakWeight:h.weakWeight,neutralWeight:h.neutralWeight,note:h.note||null,diagnostics:h.diagnostics||null,attempts:h.attempts||null,errors:h.errors||null,summary:{upCount:up.length,downCount:down.length,flatCount:flat.length,upWeight:sum(up),downWeight:sum(down),flatWeight:sum(flat),equalBreadth,weightedBreadth,weightedMove,top10Weight:sum(top10),tsmcWeight:items.find(x=>x.code==='2330')?.weight??null},items};
 }
 function buildEnvironment(code,ld,ctx,ovs,nf,health){
  const parts=[];function add(name,v,w){if(Number.isFinite(v))parts.push({name,v:clamp(v,-1,1),w})}

@@ -1,0 +1,15 @@
+V16.8.58-878-PARSER-DIAGNOSTIC-FIX
+
+Only 00878 Cathay Excel parsing changed:
+- Removed the incorrect blanket rejection of all 20xx codes.
+- Valid Taiwan stock codes in 2000-2099 are retained.
+- When Cathay's official code column is detected, only that column defines stock codes.
+- Rejected rows now carry exact reasons: code/name/weight/duplicate/non-stock.
+- If 00878 is still incomplete, source diagnostics will expose the rejected candidate row.
+- Constituent/health cache bumped to r336.
+
+UNCHANGED:
+- 0050 / 0056 / 00919 constituent paths
+- #33 / #34 / #35 / #36
+- buy-point formulas / three-layer reanchor / open anti-chase / Score / Gate / chaseRisk
+- 08:45 TXF / breadth / history / backtest / trades / holdings / Supabase
