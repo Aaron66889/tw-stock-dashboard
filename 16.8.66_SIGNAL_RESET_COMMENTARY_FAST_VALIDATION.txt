@@ -1,0 +1,11 @@
+16.8.66 / R3.38 VALIDATION
+
+1. Any formal layer confirmation immediately sets that ETF no-signal streak to 0; it no longer waits for the next trading-day rollover.
+2. effectiveNoSignalDays() reconciles stale local state using today's triggeredAt, confirmed buy-point history, and recorded model trades. Manual trades do not alter model participation logic.
+3. The actual-buy card now shows only actual-buy recency/source/price. It no longer appends a model no-signal count beside an actual purchase.
+4. Model participation card separately shows: 今日已正式確認 or 連續未正式確認 N日.
+5. /api/portfolio-commentary no longer synchronously rebuilds buyModel. It uses browser snapshot first and server runtime cache second.
+6. Missing non-ETF quotes may use a short 2.5s fallback only; four ETF portfolios return immediately from the supplied snapshot.
+7. If the commentary API still fails/times out, the browser renders a local fallback commentary from existing holdings, quotes, breadth, and model state instead of an empty page.
+8. Local endpoint test returned ok=true in ~0.02s with a four-ETF snapshot.
+9. Frontend is still embedded in server.js. /__build must show revision R3.38 and build 16.8.66-SIGNAL-RESET-COMMENTARY-FAST.

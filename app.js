@@ -25,7 +25,7 @@ let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,l
 let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,selectedETF='0050',selectedBacktest='0050';
 let etfLiveTimer=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
-const CLIENT_REV='R3.37',CLIENT_BUILD='16.8.65-FRONTEND-EMBEDDED';
+const CLIENT_REV='R3.38',CLIENT_BUILD='16.8.66-SIGNAL-RESET-COMMENTARY-FAST';
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null};
 let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,message:'持股雲端同步檢查中'};
@@ -243,7 +243,7 @@ function initModel(code,r){
 function updateOne(code,r){
  if(r.error)return;const calibrationVersion=r.firstLayerCalibration?.version||'legacy';let m=STATE.models[code];if(!m||m.calibrationVersion!==calibrationVersion)m=initModel(code,r);let atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
  // Participation protection after long no-signal streak in a confirmed bull structure.
- let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);
+ let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=effectiveNoSignalDays(code);
  if(days>=15&&r.history.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}
  // The participation/re-anchor layer is not allowed to undo the server's post-open anti-chase ceiling.
  targets=enforceCashOpenCeiling(code,targets,atr);
@@ -261,8 +261,10 @@ function updateOne(code,r){
   // Layers are downward buy thresholds, not narrow price-only boxes. Falling below a layer still counts as having reached it.
   // chaseRisk is already embedded in the price and score; the client only respects the server's final noBuyToday/hardVeto decision.
   if(priceReached&&stable&&r.score>=50&&!r.noBuyToday){L.confirmCount++;L.forming=true}else if((priceReached||Math.abs(px-center(z))<=atr*.28)&&stable){L.forming=true;L.confirmCount=Math.max(0,L.confirmCount-1)}else{L.forming=false;L.confirmCount=Math.max(0,L.confirmCount-1)}
-  if(L.confirmCount>=2){L.confirmed=true;L.triggeredAt=L.triggeredAt||new Date().toISOString();addEvent(`${code} 第${i+1}層正式確認：${ztxt(z)}，現價${px.toFixed(2)}。`,'buy')}
+  if(L.confirmCount>=2){const wasConfirmed=L.confirmed;L.confirmed=true;L.triggeredAt=L.triggeredAt||new Date().toISOString();STATE.noSignalDays[code]=0;if(!wasConfirmed)addEvent(`${code} 第${i+1}層正式確認：${ztxt(z)}，現價${px.toFixed(2)}。`,'buy')}
  });
+ // A formal signal breaks the no-signal streak immediately. Do not wait until the next trading day rollover.
+ if(m.layers.some(L=>signalIsToday(L?.triggeredAt)))STATE.noSignalDays[code]=0;
  if(r.hardVeto&&m.layers.some(L=>L.confirmed)){m.layers.forEach(L=>{L.badCount=(L.badCount||0)+1;if(L.badCount>=3){L.confirmed=false;L.invalid=true}})}
  m.prevEnv=r.environmentScore;m.prevHealth=healthNow;m.lastPrice=px;m.lastAt=new Date().toISOString();STATE.models[code]=m;appendHistory(code,r,m,px)
 }
@@ -297,23 +299,45 @@ function etfDailyChangeText(code,px){
  const p=(last-prev)/prev*100;
  return `${p>0?'+':''}${p.toFixed(2)}%`;
 }
+function signalDay(iso){try{return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date(iso))}catch(_){return null}}
+function signalIsToday(iso){return !!iso&&signalDay(iso)===dayKey()}
+function lastFormalSignalDay(code){
+ const today=dayKey(),m=STATE.models?.[code];
+ if(m?.layers?.some(L=>signalIsToday(L?.triggeredAt)))return today;
+ const hist=(HIST?.[code]||[]).filter(x=>String(x?.status||'').startsWith('CONFIRMED')&&x?.to).map(x=>signalDay(x.to)).filter(Boolean);
+ const trades=(MODEL_TRADES||[]).filter(t=>t&&t.code===code&&t.tradeType!=='manual'&&t.entryAt).map(t=>t.entryDate||signalDay(t.entryAt)).filter(Boolean);
+ return [...hist,...trades].sort().at(-1)||null;
+}
+function tradingDaysAfter(signalDate,untilDate=dayKey()){
+ if(!signalDate||signalDate>=untilDate)return 0;let d=new Date(signalDate+'T12:00:00+08:00'),end=new Date(untilDate+'T12:00:00+08:00'),n=0;
+ while(true){d=new Date(d.getTime()+86400000);if(d>=end)break;const wd=Number(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',weekday:'short'}).formatToParts(d).find(x=>x.type==='weekday')?.value?d.getUTCDay():d.getUTCDay());if(wd!==0&&wd!==6)n++}
+ return n;
+}
+function effectiveNoSignalDays(code){
+ if(STATE.models?.[code]?.layers?.some(L=>signalIsToday(L?.triggeredAt)))return 0;
+ const stored=Math.max(0,Number(STATE.noSignalDays?.[code]||0)),last=lastFormalSignalDay(code);
+ if(!last)return stored;
+ return Math.min(stored,tradingDaysAfter(last));
+}
+function modelSignalText(code){const d=effectiveNoSignalDays(code),last=lastFormalSignalDay(code);return d===0&&last===dayKey()?'今日已正式確認':`連續未正式確認 ${d}日`}
+
 function lastRecordedBuy(code){
  const rows=(MODEL_TRADES||[]).filter(t=>t&&t.code===code&&t.entryAt&&Number(t.shares)>0&&Number(t.entryPrice)>0);
  if(!rows.length)return null;
  return rows.sort((a,b)=>Date.parse(b.entryAt)-Date.parse(a.entryAt))[0]||null;
 }
 function actualBuyRecency(code){
- const t=lastRecordedBuy(code);if(!t)return{label:'無紀錄',days:null,small:`模型無正式買點 ${Number(STATE.noSignalDays?.[code]||0)}日`};
+ const t=lastRecordedBuy(code);if(!t)return{label:'無紀錄',days:null,small:'尚未記錄實際買進'};
  const today=dayKey(),entryDay=t.entryDate||new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date(t.entryAt));
  const a=new Date(today+'T00:00:00+08:00'),b=new Date(entryDay+'T00:00:00+08:00');
  const days=Math.max(0,Math.round((a-b)/86400000));
- return{label:days===0?'今日已買':`${days}日`,days,small:`最近 ${Number(t.shares).toLocaleString()}股 @ ${Number(t.entryPrice).toFixed(2)}｜模型無正式買點 ${Number(STATE.noSignalDays?.[code]||0)}日`};
+ const src=t.tradeType==='manual'?'自主買入':'模型買入';return{label:days===0?'今日已買':`${days}日`,days,small:`最近${src} ${Number(t.shares).toLocaleString()}股 @ ${Number(t.entryPrice).toFixed(2)}`};
 }
 function renderBuyCards(){
  $('buyCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return`<section class="card">${c}載入中</section>`;const h=x.r.health||{};return`<section class="card buycard ${x.activeStatus==='CONFIRMED_IN'?'buyok':x.r.hardVeto?'invalid':''}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div>${scoreBadge(x)}</div><div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)}</b><small>${etfFetchStamp()}${etfExchangeStamp(selectedETF)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div><div class="healthgrid"><div class="box"><span class="k">防追高風險</span><b>${x.r.chaseRisk}/100</b></div><div class="box"><span class="k">環境</span><b>${x.r.environmentScore.toFixed(0)}</b></div><div class="box"><span class="k">成分健康</span><b>${h.usable?h.score+'/100':'資料不足'}</b></div><div class="box"><span class="k">距上次實際買進</span><b>${actualBuyRecency(c).label}</b><small>${actualBuyRecency(c).small}</small></div></div><div class="reading"><b>白話：</b>${explain(c,x)}<br><b>決策拆解：</b>${decisionTransparency(x)}<br><b>第一層可觸及性：</b>${reachabilityText(x)}</div><div class="row" style="margin-top:8px"><span class="note">${h.usable?h.divergence:'完整成分覆蓋不足時不納入分數'}</span><button class="btn" onclick="openDetail('${c}')">查看成分／歷史</button> <button class="btn primary" onclick="openModelTrade('${c}',1)">記錄模型買入</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('')
 }
 function renderModelCards(){
- $('modelCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return'';const r=x.r;return`<div class="card"><div class="row"><b>${c} ${NAME[c]}</b><span>${stageText(x.activeStatus,x.activeLayer+1)}</span></div><div class="grid4"><div class="box"><span class="k">${r.historyOfficial?'完整回測歷史':'暫用歷史樣本'}</span><b>${r.history.historyDays}日</b><small>${r.historyOfficial?'PASS':`${r.historyProgress?.doneMonths||0}/${r.historyProgress?.totalMonths||0}月｜${r.historyProgress?.percent||0}%`}</small></div><div class="box"><span class="k">5/20/60/120/250</span><b>全部納入</b></div><div class="box"><span class="k">防追高</span><b>${r.chaseRisk}/100</b></div><div class="box"><span class="k">模型參與率保護</span><b>${r.history.bullStructure&&Number(STATE.noSignalDays?.[c]||0)>=15?'重錨中':'監控'}</b><small>模型連續無正式買點 ${Number(STATE.noSignalDays?.[c]||0)}日｜不等於你沒實際買進</small></div></div><div class="reading">SMA20 ${fmt(r.history.sma20)}｜60 ${fmt(r.history.sma60)}｜120 ${fmt(r.history.sma120)}｜250 ${fmt(r.history.sma250)}｜ATR ${fmt(r.history.atr14)}｜近1年價格位置 ${r.history.pricePercentile.toFixed(0)}%。</div></div>`}).join('')
+ $('modelCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return'';const r=x.r;return`<div class="card"><div class="row"><b>${c} ${NAME[c]}</b><span>${stageText(x.activeStatus,x.activeLayer+1)}</span></div><div class="grid4"><div class="box"><span class="k">${r.historyOfficial?'完整回測歷史':'暫用歷史樣本'}</span><b>${r.history.historyDays}日</b><small>${r.historyOfficial?'PASS':`${r.historyProgress?.doneMonths||0}/${r.historyProgress?.totalMonths||0}月｜${r.historyProgress?.percent||0}%`}</small></div><div class="box"><span class="k">5/20/60/120/250</span><b>全部納入</b></div><div class="box"><span class="k">防追高</span><b>${r.chaseRisk}/100</b></div><div class="box"><span class="k">模型參與率保護</span><b>${r.history.bullStructure&&effectiveNoSignalDays(c)>=15?'重錨中':'監控'}</b><small>模型${modelSignalText(c)}｜參與率計數 ${effectiveNoSignalDays(c)}日｜實際買進另列</small></div></div><div class="reading">SMA20 ${fmt(r.history.sma20)}｜60 ${fmt(r.history.sma60)}｜120 ${fmt(r.history.sma120)}｜250 ${fmt(r.history.sma250)}｜ATR ${fmt(r.history.atr14)}｜近1年價格位置 ${r.history.pricePercentile.toFixed(0)}%。</div></div>`}).join('')
 }
 function renderAllModel(){renderPreopen();renderHomeRanking();renderBuyCards();renderModelCards();renderEvents();if(selectedETF)renderDetailBuy()}
 function renderEvents(){const h=EVENTS.slice(-7).reverse().map(e=>`<div class="event">${new Date(e.at).toLocaleTimeString('zh-TW',{hour12:false})}｜${e.text}</div>`).join('')||'<div class="note">尚無事件。</div>';$('qaEvents').innerHTML=h;$('modelEvents').innerHTML=EVENTS.slice().reverse().map(e=>`<div class="event">${new Date(e.at).toLocaleString('zh-TW',{hour12:false})}｜${e.text}</div>`).join('')||'<div class="note">尚無事件。</div>'}
@@ -353,7 +377,17 @@ function renderCommentary(d){
  $('commentaryFocus').innerHTML=(d.focus||[]).map(x=>`<div class="commentaryFocusCard"><div class="focusTitle"><div><b>${x.code} ${x.name||''}</b><div class="note">組合權重 ${Number.isFinite(x.weight)?x.weight.toFixed(1)+'%':'—'}｜累積 ${pct(x.totalReturnPct)}</div></div><b class="${cls(x.dayPct)}">${pct(x.dayPct)}</b></div><div class="focusText">今日貢獻 ${commentaryMoney(x.dayPnl)}｜${x.comment||''}</div></div>`).join('')||'<div class="notice">目前沒有可計算的持股行情。</div>';
  $('commentaryMarket').textContent=d.marketImpact||'—';$('commentaryAction').textContent=d.action||'—';$('commentaryConclusion').textContent=d.conclusion||'—';$('commentaryDisclaimer').textContent=d.disclaimer||'';
 }
-async function loadCommentary(force=false){clearTimeout(commentaryTimer);const full=$('commentaryPage'),hold=$('holdingsPage'),active=!!(full?.classList.contains('on')||hold?.classList.contains('on'));if(!force&&!active)return;try{const miniModels=Object.fromEntries(ETF.map(c=>{const m=lastBuy?.models?.[c];return[c,m&&!m.error?{price:m.price,prevClose:m.prevClose,score:m.score,chaseRisk:m.chaseRisk,hardVeto:m.hardVeto,hardVetoReason:m.hardVetoReason,decisionGate:m.decisionGate,noBuyToday:m.noBuyToday,reachability:m.reachability,raw:m.raw,health:m.health}:null]}));const snapshot={quotes:{...(lastLive?.quotes||{}),...(lastBuy?.quotes||{})},market:lastLive?.market||lastBuy?.market||null,breadth:lastCtx?.breadth||lastBuy?.context?.breadth||null,models:miniModels};const d=await postJSON('/api/portfolio-commentary',{holdings:H,snapshot},15000);renderCommentary(d)}catch(e){renderCommentary({ok:false,error:e.message})}finally{const stillActive=!!(full?.classList.contains('on')||hold?.classList.contains('on'));if(stillActive)commentaryTimer=setTimeout(()=>loadCommentary(false),30000)}}
+function localCommentaryFallback(reason='API暫時不可用'){
+ const quotes={...(lastBuy?.quotes||{}),...(lastLive?.quotes||{})},rows=H.filter(h=>Number(h.s)>0).map(h=>{const q=quotes[h.t]||{},px=Number(q.last),prev=Number(q.prevClose),cost=Number(h.c)*Number(h.s),value=Number.isFinite(px)?px*Number(h.s):null,pnl=Number.isFinite(value)?value-cost:null,dayPnl=Number.isFinite(px)&&Number.isFinite(prev)?(px-prev)*Number(h.s):null,dayPct=Number.isFinite(px)&&Number.isFinite(prev)&&prev>0?(px/prev-1)*100:null;return{...h,px,prev,cost,value,pnl,dayPnl,dayPct}});
+ const valued=rows.filter(r=>Number.isFinite(r.value)),totalValue=valued.length?valued.reduce((a,r)=>a+r.value,0):null,totalCost=rows.reduce((a,r)=>a+r.cost,0),totalPnl=Number.isFinite(totalValue)?totalValue-totalCost:null,prevValue=rows.reduce((a,r)=>a+(Number.isFinite(r.prev)?r.prev*Number(r.s):(r.value||0)),0),dayPnl=rows.map(r=>r.dayPnl).filter(Number.isFinite).reduce((a,v)=>a+v,0),dayRet=prevValue>0?dayPnl/prevValue*100:null,totalRet=totalCost>0&&Number.isFinite(totalPnl)?totalPnl/totalCost*100:null;
+ const base=Number.isFinite(totalValue)&&totalValue>0?totalValue:totalCost;rows.forEach(r=>r.weight=base>0?(Number.isFinite(r.value)?r.value:r.cost)/base*100:null);const largest=rows.filter(r=>Number.isFinite(r.weight)).sort((a,b)=>b.weight-a.weight)[0],core=rows.filter(r=>r.t==='0050').reduce((a,r)=>a+(r.weight||0),0),high=rows.filter(r=>['0056','00878','00919'].includes(r.t)).reduce((a,r)=>a+(r.weight||0),0),style=core>=60?'大盤核心偏重':high>=60?'高股息收益偏重':'大盤核心＋高股息衛星';
+ const focus=rows.filter(r=>Number.isFinite(r.weight)).sort((a,b)=>(b.weight||0)-(a.weight||0)).slice(0,4).map(r=>{const m=lastBuy?.models?.[r.t],x=statusFor(r.t),state=x?displayModelState(x):'模型資料更新中';return{code:r.t,name:r.n||NAME[r.t]||r.t,weight:r.weight,last:r.px,dayPct:r.dayPct,dayPnl:r.dayPnl,totalReturnPct:r.cost>0&&Number.isFinite(r.pnl)?r.pnl/r.cost*100:null,comment:`${state}${m?.health?.usable?`；成分健康 ${m.health.score}/100`:''}`}});
+ const breadth=lastCtx?.breadth||lastBuy?.context?.breadth||null,marketImpact=breadth?`市場廣度 ${breadth.up}↑ / ${breadth.down}↓ / ${breadth.flat}平；目前由瀏覽器即時資料產生備援點評。`:'市場廣度仍在更新；先依持股與模型狀態產生備援點評。';
+ const action=ETF.filter(c=>statusFor(c)?.statuses?.some(v=>String(v).startsWith('CONFIRMED'))).length?`已有模型正式確認買點的 ETF；維持原分批規則，不因點評 API 異常改變交易條件。`:'目前以持有與等待原模型買點為主。';
+ return{ok:true,source:'client-fallback',day:dayKey(),session:{label:'瀏覽器備援版',live:true},generatedAt:new Date().toISOString(),empty:!rows.length,headline:`${dayKey()} 今日持股點評（備援）`,summary:[Number.isFinite(dayRet)?`今日組合估計損益 ${commentaryMoney(dayPnl)}（${pct(dayRet)}）。`:'部分即時行情尚未齊全，暫不硬算今日報酬。',`${style}${largest?`；${largest.t} 約占 ${largest.weight.toFixed(1)}%`:''}。`,`伺服器點評暫時未回應：${reason}；本頁已改用瀏覽器現有即時資料，不再整頁空白。`],portfolio:{totalValue,totalCost,totalPnl,totalReturnPct:totalRet,dayPnl,dayReturnPct:dayRet,coreWeight:core,highDivWeight:high,style,concentration:largest?.weight>=65?'集中度偏高':largest?.weight>=45?'集中度中等':'配置相對分散'},focus,styleComment:`${style}；備援版不額外呼叫外部資料源。`,marketImpact,action,conclusion:`${action} 點評 API 恢復後會自動切回完整伺服器版。`,disclaimer:'備援點評依瀏覽器已取得的持股、行情與模型狀態產生；不修改買點模型，也不代表投資建議。'};
+}
+
+async function loadCommentary(force=false){clearTimeout(commentaryTimer);const full=$('commentaryPage'),hold=$('holdingsPage'),active=!!(full?.classList.contains('on')||hold?.classList.contains('on'));if(!force&&!active)return;try{const miniModels=Object.fromEntries(ETF.map(c=>{const m=lastBuy?.models?.[c];return[c,m&&!m.error?{price:m.price,prevClose:m.prevClose,score:m.score,chaseRisk:m.chaseRisk,hardVeto:m.hardVeto,hardVetoReason:m.hardVetoReason,decisionGate:m.decisionGate,noBuyToday:m.noBuyToday,reachability:m.reachability,raw:m.raw,health:m.health}:null]}));const snapshot={quotes:{...(lastLive?.quotes||{}),...(lastBuy?.quotes||{})},market:lastLive?.market||lastBuy?.market||null,breadth:lastCtx?.breadth||lastBuy?.context?.breadth||null,models:miniModels};const d=await postJSON('/api/portfolio-commentary',{holdings:H,snapshot},15000);renderCommentary(d)}catch(e){renderCommentary(localCommentaryFallback(e.message))}finally{const stillActive=!!(full?.classList.contains('on')||hold?.classList.contains('on'));if(stillActive)commentaryTimer=setTimeout(()=>loadCommentary(false),30000)}}
 
 function holdingAssessment(h,px,ret,dayPct,weight){
  const model=ETF.includes(h.t)?lastBuy?.models?.[h.t]:null,raw=model&&!model.error?rawDecisionScore({r:model}):null,final=model&&!model.error?Number(model.score):null,health=model?.health?.usable?Number(model.health.score):null,chase=Number(model?.chaseRisk);
