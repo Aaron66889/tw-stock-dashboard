@@ -25,7 +25,7 @@ let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,l
 let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,selectedETF='0050',selectedBacktest='0050';
 let etfLiveTimer=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
-const CLIENT_REV='R3.36',CLIENT_BUILD='16.8.64-DEPLOY-CACHE-BUY-STATUS';
+const CLIENT_REV='R3.37',CLIENT_BUILD='16.8.65-FRONTEND-EMBEDDED';
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null};
 let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,message:'持股雲端同步檢查中'};

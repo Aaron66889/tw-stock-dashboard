@@ -642,7 +642,7 @@ Scope is limited to the server-side score term used by the existing layer-1 conf
 - 版本識別更新為 V12.4 FINAL R3.35 / 16.8.63-HOLDINGS-COMMENTARY-VISIBLE，方便確認 Render 是否真的部署到新版。
 
 
-## R3.36 / 16.8.64：部署快取與實際買進狀態修正
+## R3.37 / 16.8.64：部署快取與實際買進狀態修正
 - 啟動頁主動解除舊 Service Worker 並清除 Cache Storage，避免舊 R3.19 外殼長期殘留。
 - HTML / JS / CSS / 其他靜態檔一律 no-store；另提供 `/fresh` 與 `/__build` 做部署驗證。
 - 首頁會自動比對前端與伺服器 build，直接顯示是否同步。

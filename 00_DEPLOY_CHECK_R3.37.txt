@@ -1,0 +1,5 @@
+DEPLOY CHECK — R3.37 / 16.8.65
+1. Open /__build: revision must be R3.37 and frontendMode must be embedded.
+2. Open /fresh: header X-Frontend-Revision is R3.37 and page must show V12.4 FINAL R3.37.
+3. The nav must include 今日持股點評.
+4. ETF buy card uses 距上次實際買進; model no-signal days are shown separately.

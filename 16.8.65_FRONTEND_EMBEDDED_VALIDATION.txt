@@ -1,0 +1,6 @@
+16.8.65 / R3.37 FRONTEND EMBEDDED
+- Frontend HTML/JS/CSS/SW/manifest/icon are embedded in server.js.
+- Root, /fresh, /index.html, /app.js, /styles.css, /sw.js, /manifest.json, /icon.svg are served from embedded bytes.
+- This prevents a deployment where server.js updates but an old public/ directory (e.g. R3.19) remains.
+- /__build reports frontendMode=embedded and frontendRevision=R3.37.
+- Existing public/ files remain as backup only.
