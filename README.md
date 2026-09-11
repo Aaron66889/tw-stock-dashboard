@@ -640,3 +640,12 @@ Scope is limited to the server-side score term used by the existing layer-1 conf
 - 我的持股頁與完整點評頁共用同一個 `/api/portfolio-commentary` 資料，盤中每30秒更新。
 - 持股點評顯示總市值、今日/累積損益、配置風格、焦點持股、今日操作節奏與總結。
 - 版本識別更新為 V12.4 FINAL R3.35 / 16.8.63-HOLDINGS-COMMENTARY-VISIBLE，方便確認 Render 是否真的部署到新版。
+
+
+## R3.36 / 16.8.64：部署快取與實際買進狀態修正
+- 啟動頁主動解除舊 Service Worker 並清除 Cache Storage，避免舊 R3.19 外殼長期殘留。
+- HTML / JS / CSS / 其他靜態檔一律 no-store；另提供 `/fresh` 與 `/__build` 做部署驗證。
+- 首頁會自動比對前端與伺服器 build，直接顯示是否同步。
+- ETF 買點卡原「連續買不到」改為「距上次實際買進」；只要已透過模型買入或自主買入紀錄成交，立即顯示「今日已買」。
+- 原 `noSignalDays` 保留給模型參與率保護，改明確標示「模型連續無正式買點」，不再與使用者實際是否買進混為一談。
+- 記錄買入後立即刷新 ETF 卡、首頁排序、模型卡與持股點評，不必等待下一個30秒模型週期。

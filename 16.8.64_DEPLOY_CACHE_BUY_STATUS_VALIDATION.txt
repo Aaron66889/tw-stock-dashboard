@@ -1,0 +1,8 @@
+16.8.64 / R3.36 DEPLOY CACHE + ACTUAL BUY STATUS
+1. Client marker: R3.36.
+2. Server build: 16.8.64-DEPLOY-CACHE-BUY-STATUS.
+3. /__build returns server build; /fresh returns no-store index and clears browser cache data only.
+4. Legacy service workers/cache storage are unregistered/cleared from the new shell.
+5. ETF buy card shows actual recorded-buy recency; same-day recorded purchase => 今日已買.
+6. Model noSignalDays remains model-only and is labeled separately.
+7. Recording a trade immediately rerenders buy/model/home/holdings commentary.

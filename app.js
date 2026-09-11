@@ -25,6 +25,7 @@ let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,l
 let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,selectedETF='0050',selectedBacktest='0050';
 let etfLiveTimer=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
+const CLIENT_REV='R3.36',CLIENT_BUILD='16.8.64-DEPLOY-CACHE-BUY-STATUS';
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null};
 let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,message:'持股雲端同步檢查中'};
@@ -296,11 +297,23 @@ function etfDailyChangeText(code,px){
  const p=(last-prev)/prev*100;
  return `${p>0?'+':''}${p.toFixed(2)}%`;
 }
+function lastRecordedBuy(code){
+ const rows=(MODEL_TRADES||[]).filter(t=>t&&t.code===code&&t.entryAt&&Number(t.shares)>0&&Number(t.entryPrice)>0);
+ if(!rows.length)return null;
+ return rows.sort((a,b)=>Date.parse(b.entryAt)-Date.parse(a.entryAt))[0]||null;
+}
+function actualBuyRecency(code){
+ const t=lastRecordedBuy(code);if(!t)return{label:'無紀錄',days:null,small:`模型無正式買點 ${Number(STATE.noSignalDays?.[code]||0)}日`};
+ const today=dayKey(),entryDay=t.entryDate||new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date(t.entryAt));
+ const a=new Date(today+'T00:00:00+08:00'),b=new Date(entryDay+'T00:00:00+08:00');
+ const days=Math.max(0,Math.round((a-b)/86400000));
+ return{label:days===0?'今日已買':`${days}日`,days,small:`最近 ${Number(t.shares).toLocaleString()}股 @ ${Number(t.entryPrice).toFixed(2)}｜模型無正式買點 ${Number(STATE.noSignalDays?.[code]||0)}日`};
+}
 function renderBuyCards(){
- $('buyCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return`<section class="card">${c}載入中</section>`;const h=x.r.health||{};return`<section class="card buycard ${x.activeStatus==='CONFIRMED_IN'?'buyok':x.r.hardVeto?'invalid':''}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div>${scoreBadge(x)}</div><div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)}</b><small>${etfFetchStamp()}${etfExchangeStamp(selectedETF)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div><div class="healthgrid"><div class="box"><span class="k">防追高風險</span><b>${x.r.chaseRisk}/100</b></div><div class="box"><span class="k">環境</span><b>${x.r.environmentScore.toFixed(0)}</b></div><div class="box"><span class="k">成分健康</span><b>${h.usable?h.score+'/100':'資料不足'}</b></div><div class="box"><span class="k">連續買不到</span><b>${STATE.noSignalDays?.[c]||0}日</b></div></div><div class="reading"><b>白話：</b>${explain(c,x)}<br><b>決策拆解：</b>${decisionTransparency(x)}<br><b>第一層可觸及性：</b>${reachabilityText(x)}</div><div class="row" style="margin-top:8px"><span class="note">${h.usable?h.divergence:'完整成分覆蓋不足時不納入分數'}</span><button class="btn" onclick="openDetail('${c}')">查看成分／歷史</button> <button class="btn primary" onclick="openModelTrade('${c}',1)">記錄模型買入</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('')
+ $('buyCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return`<section class="card">${c}載入中</section>`;const h=x.r.health||{};return`<section class="card buycard ${x.activeStatus==='CONFIRMED_IN'?'buyok':x.r.hardVeto?'invalid':''}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div>${scoreBadge(x)}</div><div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)}</b><small>${etfFetchStamp()}${etfExchangeStamp(selectedETF)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div><div class="healthgrid"><div class="box"><span class="k">防追高風險</span><b>${x.r.chaseRisk}/100</b></div><div class="box"><span class="k">環境</span><b>${x.r.environmentScore.toFixed(0)}</b></div><div class="box"><span class="k">成分健康</span><b>${h.usable?h.score+'/100':'資料不足'}</b></div><div class="box"><span class="k">距上次實際買進</span><b>${actualBuyRecency(c).label}</b><small>${actualBuyRecency(c).small}</small></div></div><div class="reading"><b>白話：</b>${explain(c,x)}<br><b>決策拆解：</b>${decisionTransparency(x)}<br><b>第一層可觸及性：</b>${reachabilityText(x)}</div><div class="row" style="margin-top:8px"><span class="note">${h.usable?h.divergence:'完整成分覆蓋不足時不納入分數'}</span><button class="btn" onclick="openDetail('${c}')">查看成分／歷史</button> <button class="btn primary" onclick="openModelTrade('${c}',1)">記錄模型買入</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('')
 }
 function renderModelCards(){
- $('modelCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return'';const r=x.r;return`<div class="card"><div class="row"><b>${c} ${NAME[c]}</b><span>${stageText(x.activeStatus,x.activeLayer+1)}</span></div><div class="grid4"><div class="box"><span class="k">${r.historyOfficial?'完整回測歷史':'暫用歷史樣本'}</span><b>${r.history.historyDays}日</b><small>${r.historyOfficial?'PASS':`${r.historyProgress?.doneMonths||0}/${r.historyProgress?.totalMonths||0}月｜${r.historyProgress?.percent||0}%`}</small></div><div class="box"><span class="k">5/20/60/120/250</span><b>全部納入</b></div><div class="box"><span class="k">防追高</span><b>${r.chaseRisk}/100</b></div><div class="box"><span class="k">參與率保護</span><b>${r.history.bullStructure&&Number(STATE.noSignalDays?.[c]||0)>=15?'重錨中':'監控'}</b></div></div><div class="reading">SMA20 ${fmt(r.history.sma20)}｜60 ${fmt(r.history.sma60)}｜120 ${fmt(r.history.sma120)}｜250 ${fmt(r.history.sma250)}｜ATR ${fmt(r.history.atr14)}｜近1年價格位置 ${r.history.pricePercentile.toFixed(0)}%。</div></div>`}).join('')
+ $('modelCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return'';const r=x.r;return`<div class="card"><div class="row"><b>${c} ${NAME[c]}</b><span>${stageText(x.activeStatus,x.activeLayer+1)}</span></div><div class="grid4"><div class="box"><span class="k">${r.historyOfficial?'完整回測歷史':'暫用歷史樣本'}</span><b>${r.history.historyDays}日</b><small>${r.historyOfficial?'PASS':`${r.historyProgress?.doneMonths||0}/${r.historyProgress?.totalMonths||0}月｜${r.historyProgress?.percent||0}%`}</small></div><div class="box"><span class="k">5/20/60/120/250</span><b>全部納入</b></div><div class="box"><span class="k">防追高</span><b>${r.chaseRisk}/100</b></div><div class="box"><span class="k">模型參與率保護</span><b>${r.history.bullStructure&&Number(STATE.noSignalDays?.[c]||0)>=15?'重錨中':'監控'}</b><small>模型連續無正式買點 ${Number(STATE.noSignalDays?.[c]||0)}日｜不等於你沒實際買進</small></div></div><div class="reading">SMA20 ${fmt(r.history.sma20)}｜60 ${fmt(r.history.sma60)}｜120 ${fmt(r.history.sma120)}｜250 ${fmt(r.history.sma250)}｜ATR ${fmt(r.history.atr14)}｜近1年價格位置 ${r.history.pricePercentile.toFixed(0)}%。</div></div>`}).join('')
 }
 function renderAllModel(){renderPreopen();renderHomeRanking();renderBuyCards();renderModelCards();renderEvents();if(selectedETF)renderDetailBuy()}
 function renderEvents(){const h=EVENTS.slice(-7).reverse().map(e=>`<div class="event">${new Date(e.at).toLocaleTimeString('zh-TW',{hour12:false})}｜${e.text}</div>`).join('')||'<div class="note">尚無事件。</div>';$('qaEvents').innerHTML=h;$('modelEvents').innerHTML=EVENTS.slice().reverse().map(e=>`<div class="event">${new Date(e.at).toLocaleString('zh-TW',{hour12:false})}｜${e.text}</div>`).join('')||'<div class="note">尚無事件。</div>'}
@@ -651,14 +664,14 @@ function saveModelTrade(){
  const priceVsFirstHighPct=Number.isFinite(firstHigh)&&firstHigh>0?(price/firstHigh-1)*100:null;
  const signalText=x.r.noBuyToday?'今日暫無合理買點':stageText(x.activeStatus,x.activeLayer+1);
  const trade={id:'mt_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),code,name:NAME[code],tradeType,layer,entryAt:new Date().toISOString(),entryDate:dayKey(),entryPrice:price,shares,
-  snapshot:{zones:x.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),score:x.r.score,chaseRisk:x.r.chaseRisk,environmentScore:x.r.environmentScore,health:x.r.health||null,noBuyToday:!!x.r.noBuyToday,modelStatus:x.activeStatus||null,modelStatusText:signalText,priceVsFirstHighPct,night:lastNight?{last:lastNight.last,changePct:lastNight.changePct}:null,overseas:lastOverseas?.quotes?{NASDAQ:lastOverseas.quotes.NASDAQ?.changePct,SOX:lastOverseas.quotes.SOX?.changePct,TSM:lastOverseas.quotes.TSM?.changePct}:null,version:'V12.4',build:'16.8.62-SCORE-HOLDINGS-ASSESSMENT'},
+  snapshot:{zones:x.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),score:x.r.score,chaseRisk:x.r.chaseRisk,environmentScore:x.r.environmentScore,health:x.r.health||null,noBuyToday:!!x.r.noBuyToday,modelStatus:x.activeStatus||null,modelStatusText:signalText,priceVsFirstHighPct,night:lastNight?{last:lastNight.last,changePct:lastNight.changePct}:null,overseas:lastOverseas?.quotes?{NASDAQ:lastOverseas.quotes.NASDAQ?.changePct,SOX:lastOverseas.quotes.SOX?.changePct,TSM:lastOverseas.quotes.TSM?.changePct}:null,version:'V12.4',build:CLIENT_BUILD},
   exitAt:null,exitPrice:null,perf:null};
  markModelTradeDirty(trade);MODEL_TRADES.push(trade);modelSyncSaveLocal();
  const h=H.find(v=>v.t===code);
  if(h){const oldShares=Number(h.s)||0,oldCost=Number(h.c)||0,newShares=oldShares+shares;h.c=((oldShares*oldCost)+(shares*price))/newShares;h.s=newShares}
  else H.push({t:code,n:code,s:shares,c:price});
  saveHoldings();
- closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncModelTrades(true);
+ closeModelTrade();renderModelTrades();renderHoldings();renderBuyCards();renderHomeRanking();renderModelCards();loadCommentary(false);refreshModelTradePerformance();syncModelTrades(true);
  if(tradeType==='manual')addEvent(`${code} 已記錄自主買入（未觸發模型）：${shares}股 @ ${price.toFixed(2)}｜當下模型：${signalText}`,'trade');
  else addEvent(`${code} 已記錄模型第${layer}層實戰並同步持股：${shares}股 @ ${price.toFixed(2)}`,'trade');
  setPage('model')
@@ -745,7 +758,15 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),15000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy();loadValidation(false)}
+async function verifyRuntimeBuild(){
+ try{
+  const d=await get('/__build?ts='+Date.now(),5000),el=$('buildEyebrow');
+  if(!el)return;
+  if(d?.build===CLIENT_BUILD)el.textContent=`台股戰情｜V12.4 FINAL ${CLIENT_REV}｜伺服器已同步`;
+  else{el.innerHTML=`台股戰情｜V12.4 FINAL ${CLIENT_REV}｜<span class="amber">伺服器版本 ${d?.build||'未知'} 不一致</span>`;addEvent(`版本不一致：前端 ${CLIENT_BUILD}｜伺服器 ${d?.build||'未知'}`,'warn')}
+ }catch(e){const el=$('buildEyebrow');if(el)el.innerHTML=`台股戰情｜V12.4 FINAL ${CLIENT_REV}｜<span class="amber">版本檢查失敗</span>`}
+}
+function boot(){setMode();verifyRuntimeBuild();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),15000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy();loadValidation(false)}
 migrate1689Existing0050Trade();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadBuy();syncAllCloud(false)}})
 setInterval(()=>{

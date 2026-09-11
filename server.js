@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.63-HOLDINGS-COMMENTARY-VISIBLE';
+const BUILD='16.8.64-DEPLOY-CACHE-BUY-STATUS';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1964,6 +1964,10 @@ async function portfolioCommentary(inputHoldings,clientSnapshot={}){
 async function safeApi(res,label,fn){try{const data=await fn();const key={'market':'live','context':'ctx','night-future':'nf','overseas':'ovs','buy-model':'bm'}[label];if(key&&data){RUNTIME[key]=data;RUNTIME.lastRefresh=new Date().toISOString()}return send(res,200,data)}catch(e){console.error(label,e);RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith(label+':')),label+':'+(e.message||String(e))].slice(-20);return send(res,200,{ok:false,status:'ERROR',source:label,error:e.message||String(e),fetchedAt:new Date().toISOString()})}}
 const server=http.createServer(async(req,res)=>{
  const u=new URL(req.url,'http://'+req.headers.host);
+ if(u.pathname==='/__build')return send(res,200,{ok:true,version:VERSION,build:BUILD,revision:'R3.36',now:new Date().toISOString()});
+ if(u.pathname==='/fresh'){
+  try{const f=path.join(PUBLIC,'index.html');res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store, no-cache, must-revalidate, proxy-revalidate','Pragma':'no-cache','Expires':'0','Clear-Site-Data':'"cache"','X-Content-Type-Options':'nosniff'});return res.end(fs.readFileSync(f))}catch(e){return send(res,500,'Fresh shell error','text/plain; charset=utf-8')}
+ }
  if(['/health','/api/health','/healthz','/readyz'].includes(u.pathname))return send(res,200,{ok:true,status:'healthy',version:VERSION,build:BUILD,now:new Date().toISOString(),uptimeSec:Math.round(process.uptime())});
  if(u.pathname==='/api/model-sync/status')return send(res,200,{ok:true,configured:modelSyncConfigured(),authorized:modelSyncAuthorized(req),supabaseConfigured:!!(SUPABASE_URL&&SUPABASE_SECRET_KEY),build:BUILD});
  if(u.pathname==='/api/model-sync/login'&&req.method==='POST'){
@@ -2048,7 +2052,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/constituent-health'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'constituent-health',()=>ETF.includes(code)?constituentHealth(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/backtest'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'backtest',()=>ETF.includes(code)?backtest(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/trade-performance'){return safeApi(res,'trade-performance',()=>tradePerformance(u.searchParams.get('code'),u.searchParams.get('entryDate'),u.searchParams.get('entryPrice'),u.searchParams.get('layer2Low'),u.searchParams.get('layer3Low'),u.searchParams.get('layer1High')))}
- try{let rel=u.pathname==='/'?'/index.html':u.pathname.replace(/\.\./g,''),f=path.join(PUBLIC,rel);if(!f.startsWith(PUBLIC)||!fs.existsSync(f)||fs.statSync(f).isDirectory())return send(res,404,'Not found','text/plain; charset=utf-8');const type=mime(f);res.writeHead(200,{'Content-Type':type,'Cache-Control':/\.html$|\.js$|\.css$/.test(f)?'no-store, max-age=0':'public,max-age=120','X-Content-Type-Options':'nosniff'});return res.end(fs.readFileSync(f))}catch(e){return send(res,500,'Static error','text/plain; charset=utf-8')}
+ try{let rel=u.pathname==='/'?'/index.html':u.pathname.replace(/\.\./g,''),f=path.join(PUBLIC,rel);if(!f.startsWith(PUBLIC)||!fs.existsSync(f)||fs.statSync(f).isDirectory())return send(res,404,'Not found','text/plain; charset=utf-8');const type=mime(f);res.writeHead(200,{'Content-Type':type,'Cache-Control':'no-store, no-cache, must-revalidate, proxy-revalidate','Pragma':'no-cache','Expires':'0','X-Content-Type-Options':'nosniff'});return res.end(fs.readFileSync(f))}catch(e){return send(res,500,'Static error','text/plain; charset=utf-8')}
 });
 server.keepAliveTimeout=120000;
 server.headersTimeout=125000;
