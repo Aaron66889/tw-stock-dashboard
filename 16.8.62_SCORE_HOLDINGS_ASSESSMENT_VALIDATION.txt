@@ -1,0 +1,18 @@
+16.8.62 SCORE + HOLDINGS ASSESSMENT VALIDATION
+
+Scope
+1. UI transparency only for the existing score/Gate decision.
+2. Holdings-page assessment using existing live quote and buy-model outputs.
+3. No change to server score formula, 50-point threshold, layer prices, Gate logic, history, backtest, constituent engine, or cloud sync.
+
+Expected score behavior
+- scoreBreakdown.preGateScore = raw composite score before hard-Gate cap.
+- hard Gate active => final score remains capped by existing server rule at 42.
+- layer confirmation still requires priceReached + stable + final score >= 50 + !noBuyToday; hardVeto still exits before confirmation.
+- UI now labels 50 as the minimum confirmation threshold and distinguishes raw vs final score.
+
+Expected holdings behavior
+- Private holdings page does not print first/second/third buy-point prices.
+- Per holding: shares, average cost, current price, market value, cumulative P/L, daily P/L, weight, cost distance, existing-position assessment, new-position assessment, model summary.
+- Hard Gate is described as blocking new confirmation; it is not presented as an automatic sell signal for an existing position.
+- Holdings assessment rerenders on live-price refresh and buy-model refresh.

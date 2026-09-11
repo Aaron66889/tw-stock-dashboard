@@ -1,6 +1,6 @@
 {
   "name": "tw-stock-dashboard-v12-4-final",
-  "version": "12.4.0-r3.8",
+  "version": "12.4.0-r3.34",
   "private": true,
   "description": "Taiwan stock dashboard V12.4 Final - dynamic ETF buy points, risk controls, constituents, history and full-history backtests",
   "scripts": {

@@ -621,3 +621,14 @@ Scope is limited to the server-side score term used by the existing layer-1 conf
 - The existing client Gate remains `score >= 50 && chaseRisk < 88`; the threshold itself is not weakened.
 - `chaseRisk >= 88` still produces `noBuyToday`.
 - Adds `scoreBreakdown` to `/api/buy-model` for future verification without changing the UI.
+
+
+## 16.8.62 Score transparency + holdings assessment
+- The 50-point rule is now shown explicitly as the **minimum layer-1 confirmation threshold**. It is not a win probability.
+- Buy cards show the final decision score, the pre-Gate/raw score when different, the 50-point confirmation threshold, and a hard-Gate cap when active.
+- The existing score formula and `score >= 50` confirmation rule are unchanged; this release makes the distinction between raw score and Gate-limited final score visible.
+- `我的持股` remains a private holdings page and still does **not** show the three buy-point prices.
+- Holdings cards now add market value, cumulative P/L, daily P/L, portfolio weight, cost-distance/safety-buffer, existing-position assessment, new-position assessment, and a compact model summary (final/raw score, chase risk, constituent health).
+- Existing-position and new-position wording are deliberately separated: a hard Gate blocks new confirmation but does not automatically mean an existing holding should be sold.
+- Holdings assessment refreshes when live prices or the 30-second buy model refreshes.
+- `今日點評` remains separate and continues to provide portfolio-level commentary.
