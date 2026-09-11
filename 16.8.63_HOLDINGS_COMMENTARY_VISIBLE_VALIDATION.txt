@@ -1,0 +1,8 @@
+16.8.63 / R3.35 HOLDINGS COMMENTARY VISIBLE
+
+Changes:
+1. Nav label is now 今日持股點評.
+2. 我的持股 page includes a full visible 我的今日持股點評 card.
+3. The same commentary API renders into both holdings and full commentary pages.
+4. Commentary refreshes every 30 seconds while either page is open.
+5. Build markers: R3.35 / 16.8.63-HOLDINGS-COMMENTARY-VISIBLE.

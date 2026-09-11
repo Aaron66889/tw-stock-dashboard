@@ -632,3 +632,11 @@ Scope is limited to the server-side score term used by the existing layer-1 conf
 - Existing-position and new-position wording are deliberately separated: a hard Gate blocks new confirmation but does not automatically mean an existing holding should be sold.
 - Holdings assessment refreshes when live prices or the 30-second buy model refreshes.
 - `今日點評` remains separate and continues to provide portfolio-level commentary.
+
+
+## R3.35 / 16.8.63：今日持股點評可見性修正
+- 導覽列明確改名為「今日持股點評」。
+- 「我的持股」頁直接內嵌今日持股點評，不必切到另一頁才能看到。
+- 我的持股頁與完整點評頁共用同一個 `/api/portfolio-commentary` 資料，盤中每30秒更新。
+- 持股點評顯示總市值、今日/累積損益、配置風格、焦點持股、今日操作節奏與總結。
+- 版本識別更新為 V12.4 FINAL R3.35 / 16.8.63-HOLDINGS-COMMENTARY-VISIBLE，方便確認 Render 是否真的部署到新版。

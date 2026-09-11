@@ -27,9 +27,9 @@
 @keyframes priceFlashDown{0%,55%{color:#39c987!important;text-shadow:0 0 9px rgba(57,201,135,.4)}100%{color:inherit;text-shadow:none}}
 </style>
 </head><body><main>
-<div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.34</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
+<div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.35</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
 <nav class="topnav">
-<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
+<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日持股點評</button><button class="navb" data-page="buy">ETF買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
 </nav>
 
 <div id="home" class="page on">
@@ -43,13 +43,22 @@
 </div>
 
 <div id="holdingsPage" class="page">
-<section class="card private"><div class="row"><div><div class="sectiontitle">我的持股｜私人頁</div><div class="note">不和公開買點混在一起；新訪客預設空白。</div></div><button class="btn primary" onclick="openHolding()">＋新增持股</button></div>
+<section class="card private"><div class="row"><div><div class="sectiontitle">我的持股｜私人頁</div><div class="note">不和公開買點混在一起；股數、成本、今日損益與部位評估都在這裡。</div></div><button class="btn primary" onclick="openHolding()">＋新增持股</button></div>
 <div id="holdingTotals" class="grid4"></div><div id="holdingAssessment" class="reading">持股評估載入中。</div><div id="holdingManager"></div><div id="holdings"></div></section>
+<section class="card commentaryHero" id="holdingCommentaryCard"><div class="row"><div><div class="sectiontitle">我的今日持股點評</div><div class="note" id="holdingCommentaryMeta">依你的實際持股、今日行情、市場廣度與模型狀態自動更新。</div></div><button class="btn primary" onclick="loadCommentary(true)">重新整理</button></div>
+<div id="holdingCommentaryHeadline" class="commentaryHeadline">持股點評載入中…</div>
+<div id="holdingCommentarySummary" class="reading">正在整理今日持股。</div>
+<div id="holdingCommentaryPortfolio" class="grid4"></div>
+<div class="sectiontitle" style="margin-top:14px">今日焦點持股</div><div id="holdingCommentaryFocus"></div>
+<div class="reading" style="margin-top:10px"><b>今日操作節奏：</b><span id="holdingCommentaryAction">—</span></div>
+<div class="commentaryConclusion" id="holdingCommentaryConclusion">—</div>
+<div class="note" id="holdingCommentaryDisclaimer" style="margin-top:10px"></div>
+<div style="margin-top:10px"><button class="btn" onclick="setPage('commentaryPage')">查看完整今日持股點評</button></div></section>
 </div>
 
 
 <div id="commentaryPage" class="page">
-<section class="card commentaryHero"><div class="row"><div><div class="sectiontitle">今日投資組合點評</div><div class="note" id="commentaryMeta">依目前持股、行情、市場廣度與既有買點模型自動整理。</div></div><button class="btn primary" onclick="loadCommentary(true)">重新整理</button></div><div id="commentaryHeadline" class="commentaryHeadline">點評載入中…</div><div id="commentarySummary" class="reading">正在整理今日資料。</div></section>
+<section class="card commentaryHero"><div class="row"><div><div class="sectiontitle">今日持股點評｜完整分析</div><div class="note" id="commentaryMeta">依目前持股、行情、市場廣度與既有買點模型自動整理。</div></div><button class="btn primary" onclick="loadCommentary(true)">重新整理</button></div><div id="commentaryHeadline" class="commentaryHeadline">點評載入中…</div><div id="commentarySummary" class="reading">正在整理今日資料。</div></section>
 <section class="card"><div class="sectiontitle">投資風格與配置</div><div id="commentaryStyle" class="reading">—</div><div id="commentaryPortfolio" class="grid4"></div></section>
 <section class="card"><div class="sectiontitle">今日焦點持股</div><div id="commentaryFocus"></div></section>
 <section class="card"><div class="sectiontitle">市場對組合的影響</div><div id="commentaryMarket" class="reading">—</div></section>
@@ -128,4 +137,4 @@
 <div class="field" id="mtLayerField"><label>依模型哪一層買入</label><select id="mtLayer" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px"><option value="1">第一層</option><option value="2">第二／理想層</option><option value="3">第三／強力層</option></select></div>
 <div id="mtSnapshot" class="reading"></div><button id="mtSaveBtn" class="btn primary" style="width:100%;margin-top:12px" onclick="saveModelTrade()">保存這筆模型實戰</button></div></div>
 
-<script src="/app.js?v=R3.34"></script></body></html>
+<script src="/app.js?v=R3.35"></script></body></html>
