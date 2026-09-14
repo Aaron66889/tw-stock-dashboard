@@ -1,0 +1,13 @@
+16.8.63-COMMENTARY-INTEGRATED
+
+Integration guard:
+- Base: 16.8.62 portfolio narrative
+- Keeps existing homepage / holdings / ETF buy point / constituent / night / tomorrow / validation / logic / QA behavior.
+- Keeps the independent 今日點評 page in the top navigation.
+- Keeps 今日持股總評 on the commentary page.
+- No change to three-layer buy-point formulas, hard Gate, anti-chase, #34, constituent parsers, market sources, portfolio storage or sync logic.
+
+Expected visible marker after deployment:
+台股戰情｜V12.4 FINAL R3.35
+Navigation includes: 首頁｜我的持股｜今日點評｜ETF買點...
+Server diagnostics build: 16.8.63-COMMENTARY-INTEGRATED
