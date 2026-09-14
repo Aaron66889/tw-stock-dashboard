@@ -1,0 +1,19 @@
+16.8.62 PORTFOLIO NARRATIVE
+
+Scope: only extends the existing 今日點評 page with a richer 今日持股總評 narrative.
+
+Added:
+- Data-driven paragraph commentary using current portfolio P/L, allocation, market breadth, market relative performance, largest daily contributor/detractor and existing model action state.
+- Intraday/close wording changes automatically with the same 30-second commentary refresh.
+
+Not changed:
+- Three-layer buy-point formulas
+- Hard Gate / #34
+- Anti-chase logic
+- ETF constituent parsers / health scoring
+- Market data sources
+- Supabase sync / holdings sync
+- Existing portfolio values
+
+Build: 16.8.62-PORTFOLIO-NARRATIVE
+UI: V12.4 FINAL R3.34
