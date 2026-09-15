@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.63-COMMENTARY-INTEGRATED';
+const BUILD='16.8.64-HISTORICAL-CHASE-CALIBRATION';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -27,7 +27,7 @@ const META={
  '00919':{name:'群益台灣精選高息',listed:'2022-10-20',expected:40,source:'Capital',url:'https://www.capitalfund.com.tw/etf/product/detail/195/buyback',portfolioUrl:'https://www.capitalfund.com.tw/etf/product/detail/195/portfolio',
    cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20,firstReanchor:.31}}
 };
-const cache=new Map(),nightSamples=[],preopenTxfSamples=[];
+const cache=new Map(),nightSamples=[],preopenTxfSamples=[],CHASE_CAL_CACHE=new Map();
 const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':12,'00919':8};
 let WARM_ACTIVE=false;
 const RUNTIME={live:null,ctx:null,nf:null,ovs:null,bm:null,refreshing:false,lastRefresh:null,errors:[]};
@@ -1186,6 +1186,67 @@ function firstLayerPct({q1,atrPct,chaseRisk,envScore=0,healthScore=null,healthUs
  const minDepth=Math.max(.0025,baseDepth-a*.22),maxDepth=Math.min(.022,baseDepth+a*.24),finalDepth=clamp(rawDepth,minDepth,maxDepth);
  return{p1:-finalDepth,baseDepth,rawDepth,finalDepth,minDepth,maxDepth,chaseAdd,weakEnvAdd,envSupport,healthSupport,reanchorReduce,atrPct:a};
 }
+function chaseCalibrationObservations(code,rows){
+ const cfg=META[code].cfg,a=adjustedRows(rows),out=[];
+ if(a.length<360)return out;
+ const adj=a.map(x=>x.aClose),pAdj=prefix(adj);
+ for(let i=260;i<a.length-60;i++){
+  const day=a[i],rawPx=n(day.open)||n(a[i-1].close)||day.aClose,adjPx=day.aOpen??day.aClose;
+  if(!(rawPx>0&&adjPx>0))continue;
+  const trailing=a.slice(i-252,i).map(x=>n(x.close)).filter(v=>v>0),pctile=trailing.length?trailing.filter(v=>v<=rawPx).length/trailing.length*100:50;
+  const s20=i>=20?(pAdj[i]-pAdj[i-20])/20:null,r20=i>=21?a[i-1].aClose/a[i-21].aClose-1:0,dev20=s20?adjPx/s20-1:0;
+  const risk=clamp(Math.round(cfg.chaseBase+Math.max(0,pctile-cfg.chasePctile)*1.25+Math.max(0,dev20)*cfg.chaseDev+Math.max(0,r20-.05)*cfg.chaseR20),0,100);
+  const ret20=a[i+20].aClose/adjPx-1,lows=[];
+  for(let j=i;j<=Math.min(i+60,a.length-1);j++)lows.push((a[j].aLow??a[j].aClose)/adjPx-1);
+  const mae60=lows.length?Math.min(...lows):null;
+  if(Number.isFinite(ret20)&&Number.isFinite(mae60))out.push({date:day.date,year:Number(day.date.slice(0,4)),risk,ret20:ret20*100,mae60:mae60*100});
+ }
+ return out;
+}
+function chaseThresholdStats(obs,threshold){
+ const blocked=obs.filter(x=>x.risk>=threshold),allowed=obs.filter(x=>x.risk<threshold),n=obs.length;
+ if(!n||blocked.length<Math.max(18,Math.floor(n*.015))||allowed.length<80)return null;
+ const bad=a=>a.filter(x=>x.ret20<0).length/a.length*100,med=a=>median(a.map(x=>x.ret20)),mae=a=>mean(a.map(x=>x.mae60));
+ const blockedRate=blocked.length/n*100,participationProxy=100-blockedRate,badBlocked=bad(blocked),badAllowed=bad(allowed),medianBlocked20=med(blocked),medianAllowed20=med(allowed),maeBlocked=mae(blocked),maeAllowed=mae(allowed);
+ const badGap=badBlocked-badAllowed,retGap=(medianAllowed20??0)-(medianBlocked20??0),maeGap=(maeAllowed??0)-(maeBlocked??0);
+ // Reward a threshold only when the historically blocked chase states were materially worse.
+ // Participation guard: candidates blocking more than 15% of observations are rejected; the objective still discourages crowding near that ceiling.
+ const objective=badGap*.22+retGap*1.8+maeGap*1.2-Math.max(0,blockedRate-15)*.9;
+ return{threshold,objective,observations:n,blocked:blocked.length,blockedRate,participationProxy,badBlocked,badAllowed,medianBlocked20,medianAllowed20,maeBlocked,maeAllowed};
+}
+function selectChaseThreshold(obs){
+ const rows=[];for(let t=80;t<=95;t++){const m=chaseThresholdStats(obs,t);if(m&&m.blockedRate<=15&&m.participationProxy>=85)rows.push(m)}
+ if(!rows.length)return null;rows.sort((a,b)=>b.objective-a.objective||a.blockedRate-b.blockedRate);
+ const best=rows[0],near=rows.filter(x=>x.objective>=best.objective-Math.max(1.25,Math.abs(best.objective)*.12));
+ return{best,candidates:rows,near};
+}
+function calibrateChaseThresholds(code,rows){
+ const last=rows?.at(-1)?.date||'',key=`${code}|${rows?.length||0}|${last}`,old=CHASE_CAL_CACHE.get(key);if(old)return old;
+ const obs=chaseCalibrationObservations(code,rows||[]);
+ if(obs.length<320){const v={ready:false,source:'fallback',hardThreshold:88,warningThreshold:80,stableLow:86,stableHigh:90,observations:obs.length,walkForwardYears:[],participationGuard:85,firstLayerProtected:true,reason:'歷史樣本尚不足，暫沿用88'};for(const k of CHASE_CAL_CACHE.keys())if(k.startsWith(code+'|')&&k!==key)CHASE_CAL_CACHE.delete(k);CHASE_CAL_CACHE.set(key,v);return v}
+ const years=[...new Set(obs.map(x=>x.year))].sort((a,b)=>a-b),wf=[];
+ for(const y of years){
+  const train=obs.filter(x=>x.year>=y-3&&x.year<=y-1),test=obs.filter(x=>x.year===y);if(train.length<420||test.length<80)continue;
+  const sel=selectChaseThreshold(train);if(!sel)continue;const tm=chaseThresholdStats(test,sel.best.threshold);
+  wf.push({year:y,selectedThreshold:sel.best.threshold,trainObjective:sel.best.objective,trainBlockedRate:sel.best.blockedRate,testBlockedRate:tm?.blockedRate??null,testBadGap:tm?(tm.badBlocked-tm.badAllowed):null,testReturnGap:tm?((tm.medianAllowed20??0)-(tm.medianBlocked20??0)):null});
+ }
+ const full=selectChaseThreshold(obs),recent=wf.slice(-5).map(x=>x.selectedThreshold).filter(Number.isFinite);
+ if(!full&&!recent.length){const v={ready:false,source:'fallback-no-stable-candidate',hardThreshold:88,warningThreshold:80,stableLow:86,stableHigh:90,observations:obs.length,walkForwardYears:wf,participationGuard:85,firstLayerProtected:true,reason:'歷史樣本中沒有同時滿足85%參與率與最低樣本數的穩定門檻，暫沿用88'};for(const k of CHASE_CAL_CACHE.keys())if(k.startsWith(code+'|')&&k!==key)CHASE_CAL_CACHE.delete(k);CHASE_CAL_CACHE.set(key,v);return v}
+ let hard=full?.best?.threshold??88;if(recent.length)hard=Math.round(median(recent));
+ const stableSource=recent.length>=2?recent:(full?.near||[]).map(x=>x.threshold),stableLow=stableSource.length?Math.max(80,Math.round(quantile(stableSource,.25))):Math.max(80,hard-2),stableHigh=stableSource.length?Math.min(95,Math.round(quantile(stableSource,.75))):Math.min(95,hard+2);
+ hard=clamp(hard,Math.min(stableLow,stableHigh),Math.max(stableLow,stableHigh));
+ const riskQ75=Math.round(quantile(obs.map(x=>x.risk),.75)??(hard-6)),warning=Math.min(hard-2,clamp(riskQ75,70,93));
+ const spread=recent.length?(Math.max(...recent)-Math.min(...recent)):null,confidence=obs.length>=1600&&wf.length>=4&&(spread==null||spread<=4)?'高':obs.length>=700&&wf.length>=1?'中':'低';
+ const bestStats=full?.best||null,v={ready:true,source:'historical-walk-forward',hardThreshold:hard,warningThreshold:warning,stableLow:Math.min(stableLow,hard),stableHigh:Math.max(stableHigh,hard),observations:obs.length,walkForwardYears:wf,selectedHistory:recent,confidence,participationGuard:85,firstLayerProtected:true,fullSample:bestStats?{threshold:bestStats.threshold,objective:bestStats.objective,blockedRate:bestStats.blockedRate,participationProxy:bestStats.participationProxy,badBlocked:bestStats.badBlocked,badAllowed:bestStats.badAllowed,medianBlocked20:bestStats.medianBlocked20,medianAllowed20:bestStats.medianAllowed20,maeBlocked:bestStats.maeBlocked,maeAllowed:bestStats.maeAllowed}:null,method:'3年訓練→次年驗證；候選80–95；保留至少85%追價機會，並以近5個walk-forward年度門檻中位數定錨。第一層回檔後不重複否決。'};
+ for(const k of CHASE_CAL_CACHE.keys())if(k.startsWith(code+'|')&&k!==key)CHASE_CAL_CACHE.delete(k);CHASE_CAL_CACHE.set(key,v);return v;
+}
+function effectiveChaseCalibration(code,rows,st){
+ const base=calibrateChaseThresholds(code,rows),bull=!!(st?.sma20&&st?.sma60&&st?.sma120&&st?.sma250&&st.sma20>st.sma60&&st.sma60>st.sma120&&st.sma120>st.sma250),weak=!!(st?.sma20&&st?.sma60&&st?.sma120&&st.sma20<st.sma60&&st.sma60<st.sma120);
+ let hard=base.hardThreshold??88;
+ // Regime adjustment is intentionally limited to the historically stable band: +1 in a confirmed bull stack, -1 in a weak stack.
+ if(base.ready&&bull)hard=Math.min(base.stableHigh,hard+1);else if(base.ready&&weak)hard=Math.max(base.stableLow,hard-1);
+ return{...base,baseHardThreshold:base.hardThreshold,effectiveHardThreshold:hard,regime:bull?'強多頭':weak?'弱勢':'中性',regimeAdjustment:hard-(base.hardThreshold??hard)};
+}
 function pricePercentile(rows,px){const a=rows.slice(-252).map(x=>x.close).filter(Number.isFinite);return a.length?a.filter(v=>v<=px).length/a.length*100:50}
 function movePct(q){return q&&q.last>0&&q.prevClose>0?(q.last-q.prevClose)/q.prevClose*100:null}
 function normPct(v,scale){return Number.isFinite(v)?clamp(v/scale,-1,1):null}
@@ -1581,6 +1642,9 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const cfg=META[code].cfg,st=histStats(hist.rows,cfg.q),px=quote?.last??st.prevClose,prev=quote?.prevClose??st.prevClose;if(!(px>0&&prev>0))throw Error('No current price '+code);
  const atr=st.atr14||prev*.012,pctile=pricePercentile(hist.rows,px),dev20=st.sma20?px/st.sma20-1:0,r20=st.r20||0;
  const chaseRisk=clamp(Math.round(cfg.chaseBase+Math.max(0,pctile-cfg.chasePctile)*1.25+Math.max(0,dev20)*cfg.chaseDev+Math.max(0,r20-.05)*cfg.chaseR20),0,100);
+ const chaseHistoryValidated=!!(hist?.validation?.backtestReadyPass||hist?.validation?.fullHistoryPass);
+ const chaseCalibration=chaseHistoryValidated?effectiveChaseCalibration(code,hist.rows,st):{ready:false,source:'fallback-unvalidated-history',hardThreshold:88,effectiveHardThreshold:88,warningThreshold:80,stableLow:86,stableHigh:90,observations:hist.rows?.length||0,confidence:'等待官方歷史',participationGuard:85,firstLayerProtected:true,regime:'等待官方歷史',regimeAdjustment:0,reason:'TWSE官方可回測歷史尚未驗證完成，暫沿用88'};
+ const chaseHardThreshold=chaseCalibration.effectiveHardThreshold??88,chaseWarningThreshold=chaseCalibration.warningThreshold??Math.max(70,chaseHardThreshold-8);
  const chasePenalty=clamp((chaseRisk-45)/55*.010,0,.010),envShift=env.score<0?clamp(env.score/100*cfg.envShiftNeg,-.022,0):clamp(env.score/100*cfg.envShiftPos,0,.006);
  const healthShift=health?.usable?clamp((health.score-50)/50*cfg.healthShift,-.004,.004):0;
  const bull=st.sma20&&st.sma60&&st.sma120&&st.sma250&&st.sma20>st.sma60&&st.sma60>st.sma120&&st.sma120>st.sma250;
@@ -1610,16 +1674,16 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const aboveSessionOpen=sessionOpen>0&&px>sessionOpen;
  // High chaseRisk is a hard no-buy only while price is still above today's open (or before the cash open exists).
  // Once price has returned to/below the open, chaseRisk remains a score penalty but is not applied a second time as a veto.
- const chaseNoBuy=chaseRisk>=88&&(!(sessionOpen>0)||aboveSessionOpen);
+ const chaseNoBuy=chaseRisk>=chaseHardThreshold&&(!(sessionOpen>0)||aboveSessionOpen);
  const noBuyToday=!hardVeto&&(chaseNoBuy||(score<40&&px>z1.high));
- const noBuyReason=noBuyToday?(chaseNoBuy&&sessionOpen>0?`現價仍高於今日開盤 ${sessionOpen.toFixed(2)}，追高風險過高；不往上追買。`:'現價偏離合理區過遠／追高風險過高，今日不硬生買點'):null;
+ const noBuyReason=noBuyToday?(chaseNoBuy&&sessionOpen>0?`現價仍高於今日開盤 ${sessionOpen.toFixed(2)}，追高風險 ${chaseRisk} 已達本檔歷史硬線 ${chaseHardThreshold}；不往上追買。`:'現價偏離合理區過遠／追高風險過高，今日不硬生買點'):null;
  const calibrationVersion=sessionOpen>0?'first-touch-open-cap-v3-three-layer-live':'first-touch-open-cap-v3-three-layer-preopen';
  // 16.8.60 observability only: expose distance/reachability without changing any buy-point or Gate rule.
  const sessionLow=n(quote?.low),sessionHigh=n(quote?.high),dropNeeded=Math.max(0,px-z1.high),dropNeededPct=px>0?dropNeeded/px*100:null,atrPct=px>0?atr/px*100:null,atrUnits=atr>0?dropNeeded/atr:null;
  const touchedToday=sessionLow>0?sessionLow<=z1.high:px<=z1.high;
  const reachabilityLabel=touchedToday||dropNeeded<=0?'已觸及':(atrUnits<=.60?'高':atrUnits<=1.20?'中':'低');
  const decisionGate=hardVeto?{status:'FAIL',type:'HARD',reason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':'硬Gate')}:(noBuyToday?{status:'WAIT',type:'SOFT',reason:noBuyReason}:{status:'PASS',type:'NONE',reason:null});
- return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor'};
+ return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
@@ -1699,9 +1763,10 @@ async function backtest(code){
  if(!v?.backtestPrecisionPass)return{ok:true,ready:false,status:'VALIDATION_FAIL',code,error:'2010年後OHLC覆蓋不足98%，禁止用收盤價冒充日內最低/最高回測',validation:v,source:h.source};
  if(!v?.dividendCoveragePass)return{ok:true,ready:false,status:'VALIDATION_FAIL',code,error:`企業行動調整資料不足：${v?.dividendEvents||0}/${v?.dividendExpectedMin||'?'}`,validation:v,source:h.source};
  if(h.adjustmentAnomalies?.length)return{ok:true,ready:false,status:'VALIDATION_FAIL',code,error:'價格尺度校正後仍有>30%異常跳動，禁止回測',validation:v,anomalies:h.adjustmentAnomalies,source:h.source};
- const key='bt:r3:'+code,old=cache.get(key);if(old&&Date.now()-old.at<6*60*60*1000)return old.v;
+ const key='bt:r364:'+code,old=cache.get(key);if(old&&Date.now()-old.at<6*60*60*1000)return old.v;
  const on=signalSeries(code,h.rows,1),off=signalSeries(code,h.rows,0),c75=signalSeries(code,h.rows,.75),c125=signalSeries(code,h.rows,1.25),wf=walkForward(h.rows,{'0.75':c75,'1':on,'1.25':c125}),slices={full:metrics(on),y10:metrics(on,yearsAgo(10)),y5:metrics(on,yearsAgo(5)),y2:metrics(on,yearsAgo(2)),y1:metrics(on,yearsAgo(1))};
- const result={ok:true,ready:true,status:'READY',code,name:META[code].name,listed:META[code].listed,firstDate:v.first,lastDate:v.last,source:h.source,historyDays:h.rows.length,validation:v,corporateActions:h.corporateActions,scope:v.fullHistoryPass?'上市日至今完整歷史核心回測':`長期樣本回測（PARTIAL）：${v.first}～${v.last}，${v.rows}交易日；未宣稱上市日至今完整。`,slices,ab:{antiChaseOn:metrics(on),antiChaseOff:metrics(off)},walkForward:wf,generatedAt:new Date().toISOString()};cache.set(key,{at:Date.now(),v:result});return result;
+ const chaseCalibration=calibrateChaseThresholds(code,h.rows);
+ const result={ok:true,ready:true,status:'READY',code,name:META[code].name,listed:META[code].listed,firstDate:v.first,lastDate:v.last,source:h.source,historyDays:h.rows.length,validation:v,corporateActions:h.corporateActions,chaseCalibration,scope:v.fullHistoryPass?'上市日至今完整歷史核心回測':`長期樣本回測（PARTIAL）：${v.first}～${v.last}，${v.rows}交易日；未宣稱上市日至今完整。`,slices,ab:{antiChaseOn:metrics(on),antiChaseOff:metrics(off)},walkForward:wf,generatedAt:new Date().toISOString()};cache.set(key,{at:Date.now(),v:result});return result;
 }
 
 async function preopenTxfPump(){if(!txfPreopenWindowNow())return;try{const nf=await nightFuture();RUNTIME.nf=nf}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}}
@@ -2101,3 +2166,4 @@ server.listen(PORT,'0.0.0.0',()=>{
  setTimeout(autoWarmAllHistory,45000);
  setInterval(autoWarmAllHistory,30*60*1000);
 });
+

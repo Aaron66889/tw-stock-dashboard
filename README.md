@@ -621,3 +621,14 @@ Scope is limited to the server-side score term used by the existing layer-1 conf
 - The existing client Gate remains `score >= 50 && chaseRisk < 88`; the threshold itself is not weakened.
 - `chaseRisk >= 88` still produces `noBuyToday`.
 - Adds `scoreBreakdown` to `/api/buy-model` for future verification without changing the UI.
+
+
+## 16.8.64：四檔ETF防追高門檻改為歷史校準
+- 0050／0056／00878／00919不再共用固定88作為唯一硬線。
+- 每檔以自身歷史日K建立防追高風險觀測，候選門檻80–95。
+- Walk-forward：以前3年選門檻、下一年驗證；正式門檻以最近最多5個樣本外年度選擇的中位數定錨。
+- 參與率保護：候選門檻至少保留85%的追價觀察機會，避免為了低回撤把模型改成幾乎不給訊號。
+- 雙門檻：歷史警戒線只做提示／既有分數懲罰；歷史硬線只在現價仍高於當日開盤時阻止往上追。
+- 價格回到第一層後，不因同一個中期高檔風險再次否決，避免重複懲罰。
+- 強多頭／弱勢只允許在歷史穩定區間內微調硬線±1，不允許門檻自由漂移。
+- 三層買點公式、Hard Gate急殺／資料失效、成分股、行情來源、持股與同步均未改動。

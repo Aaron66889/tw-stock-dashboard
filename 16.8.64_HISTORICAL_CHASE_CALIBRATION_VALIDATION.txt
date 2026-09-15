@@ -1,0 +1,27 @@
+16.8.64-HISTORICAL-CHASE-CALIBRATION
+
+Scope
+- Only the four ETF anti-chase cutoff layer is changed.
+- Layer-1/2/3 price formulas are unchanged.
+- Hard Gate for stale data / knife-fall is unchanged.
+- Constituents, market/ETF quotes, holdings, commentary and Supabase sync are unchanged.
+
+Calibration
+- ETF-specific history observations; candidates 80..95.
+- Walk-forward: previous 3 calendar years train, next calendar year test.
+- Live hard cutoff anchors to the median of up to the latest 5 walk-forward selected thresholds.
+- Candidate cutoff must preserve >=85% chase-observation participation (blocked <=15%).
+- Warning cutoff is informational; it does not veto a buy.
+- Strong-bull / weak trend adjustment is limited to +/-1 and bounded by the historically stable band.
+- Only validated TWSE backtest-ready history may activate calibrated cutoffs. Until validation/history warm completes, legacy hard cutoff 88 is used as a safe fallback.
+
+No double penalty
+- The hard anti-chase cutoff applies only while live price remains above the current cash-session open (or before a valid cash open exists).
+- Once price returns to/below the session open / first-layer region, chaseRisk remains in the score but is not used again as a veto.
+
+Verification
+- node --check server.js: PASS
+- node --check public/app.js: PASS
+- synthetic 3000-trading-day calibration smoke test for all 4 ETFs: PASS
+- frontend shows per-ETF historical warning/hard cutoff: PASS
+- /api/backtest output includes chaseCalibration: PASS (code path)
