@@ -1,0 +1,33 @@
+16.8.67 TRADE DIAGNOSTIC / LAYER CONFIRMATION / DAILY CHASE LOCK
+
+Scope only:
+1) Real performance diagnostic download + per-trade benchmark/MAE/MFE/layer follow-through.
+2) L1/L2/L3 confirmation rules separated; layer prices are NOT changed.
+3) Historical anti-chase calibration locked once per Taiwan trading day with sample/WF/date evidence.
+
+Confirmation rules:
+- L1: score >= 50 + Gate pass + stable buy zone + actual price stop/rebound + 2 model cycles.
+- L2: score >= 46 + Gate pass + stable buy zone + deep pullback not accelerating + 2 cycles. The 4-point relaxation offsets the existing below-L1 priceFit penalty at a deeper layer.
+- L3: score >= 42 + Gate pass + stable buy zone + extreme pullback not accelerating + 2 cycles. The 8-point relaxation is the two-layer extension of the same depth-credit rule.
+- Hard Gate remains authoritative.
+- L1/L2/L3 price calculation untouched.
+
+Performance diagnostics:
+- Dedicated '下載績效診斷' button downloads JSON, separate from cloud holdings download.
+- Includes entry snapshot, model build, layer, score, chase thresholds, environment/health, current net P&L, 5/20/60d, MAE/MFE, later L2/L3 touch, same-day-open benchmark and delta.
+- Model trade button defaults to the currently active layer instead of always Layer 1.
+
+Chase calibration stability:
+- First calibration selected for the Taiwan day is persisted in data/chase_calibration_daily.json and cannot drift intraday.
+- 0056/00878/00919 require complete listed-history validation before a new daily lock; 0050 accepts validated long sample.
+- If history is not ready at the day's first calculation, carry forward the latest locked thresholds for the entire day when one exists. On a fresh deployment with no prior lock, 80/88 remains explicitly UNLOCKED until the first fully validated calibration is available, then that first valid result is frozen for the rest of the day.
+- Before 08:30, thresholds are preview/carry-forward only and are not written as the new trading-day lock, allowing overnight history refresh to finish.
+- UI shows observations, walk-forward period count, calibration date and lock status.
+
+Unaffected:
+- Three-layer price formulas
+- Hard Gate formula
+- constituent parsers/health
+- market breadth/data sources
+- holdings/cloud sync
+- portfolio commentary page

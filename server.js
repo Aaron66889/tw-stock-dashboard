@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.64-HISTORICAL-CHASE-CALIBRATION';
+const BUILD='16.8.67-TRADE-DIAGNOSTIC-CONFIRMATION';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -28,6 +28,7 @@ const META={
    cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20,firstReanchor:.31}}
 };
 const cache=new Map(),nightSamples=[],preopenTxfSamples=[],CHASE_CAL_CACHE=new Map();
+const CHASE_DAILY_LOCK_FILE='chase_calibration_daily.json';
 const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':12,'00919':8};
 let WARM_ACTIVE=false;
 const RUNTIME={live:null,ctx:null,nf:null,ovs:null,bm:null,refreshing:false,lastRefresh:null,errors:[]};
@@ -1247,6 +1248,37 @@ function effectiveChaseCalibration(code,rows,st){
  if(base.ready&&bull)hard=Math.min(base.stableHigh,hard+1);else if(base.ready&&weak)hard=Math.max(base.stableLow,hard-1);
  return{...base,baseHardThreshold:base.hardThreshold,effectiveHardThreshold:hard,regime:bull?'強多頭':weak?'弱勢':'中性',regimeAdjustment:hard-(base.hardThreshold??hard)};
 }
+function chaseHistoryStableForDailyLock(code,hist){
+ const p=historyProgress(code),validated=!!hist?.validation?.backtestReadyPass,notRefreshing=!p.refreshDue;
+ // 0050 accepts the validated long sample; the other three require complete listed-history validation before a new daily calibration can be locked.
+ const completeEnough=code==='0050'?validated:!!hist?.validation?.fullHistoryPass;
+ return{ok:!!(validated&&completeEnough&&notRefreshing),progress:p};
+}
+function dailyChaseCalibration(code,hist,st){
+ const day=ymdTaipei(),clock=taipeiClock(),mins=clock.h*60+clock.m,isTradingDay=['Mon','Tue','Wed','Thu','Fri'].includes(clock.weekday),lockWindow=isTradingDay&&mins>=510,store=diskRead(CHASE_DAILY_LOCK_FILE)||{},today=store?.[day]?.[code];
+ if(today)return{...today,fromDailyLock:true,lockStatus:today.lockStatus||'LOCKED'};
+ const stable=chaseHistoryStableForDailyLock(code,hist),days=Object.keys(store).sort().reverse(),priorDay=days.find(d=>d<day&&store?.[d]?.[code]),prior=priorDay?store[priorDay][code]:null;
+ // Before 08:30 (or on weekends) show the latest stable calibration without creating today's lock. This lets the overnight history refresh finish before the trading-day thresholds are frozen.
+ if(!lockWindow){
+  if(prior)return{...prior,fromDailyLock:true,lockStatus:'PRELOCK_CARRY',carriedFrom:priorDay,reason:'08:30前沿用最近一次鎖定值；今日門檻尚未封存。'};
+  const preview=stable.ok?effectiveChaseCalibration(code,hist?.rows||[],st):null;
+  return preview?{...preview,fromDailyLock:false,lockStatus:'PRELOCK_PREVIEW',lockedDate:null,lockedAt:null,historyRows:hist?.rows?.length||0,historyFirst:hist?.rows?.[0]?.date||null,historyLast:hist?.rows?.at(-1)?.date||null,walkForwardCount:preview.walkForwardYears?.length||0}:{ready:false,source:'prelock-fallback',hardThreshold:88,effectiveHardThreshold:88,warningThreshold:80,stableLow:86,stableHigh:90,observations:hist?.rows?.length||0,walkForwardYears:[],walkForwardCount:0,participationGuard:85,firstLayerProtected:true,confidence:'等待08:30鎖定',regime:'等待',regimeAdjustment:0,lockedDate:null,lockedAt:null,lockStatus:'PRELOCK_FALLBACK'};
+ }
+ let picked;
+ if(stable.ok){
+  const base=effectiveChaseCalibration(code,hist?.rows||[],st);
+  picked={...base,lockedDate:day,lockedAt:new Date().toISOString(),lockStatus:base.ready?'LOCKED':'FALLBACK_LOCKED',historyRows:hist?.rows?.length||0,historyFirst:hist?.rows?.[0]?.date||null,historyLast:hist?.rows?.at(-1)?.date||null,walkForwardCount:base.walkForwardYears?.length||0,historyStatus:stable.progress?.status||null};
+ }else if(prior){
+  picked={...prior,lockedDate:day,lockedAt:new Date().toISOString(),lockStatus:'CARRY_FORWARD',carriedFrom:priorDay,reason:'今日完整歷史尚未完成穩定驗證，整個交易日沿用最近一次已鎖定校準，避免盤中門檻漂移。',historyStatus:stable.progress?.status||null};
+ }else{
+  // Fresh deployment may have no previous lock while official history is warming. Do NOT freeze the temporary 80/88 fallback for the whole day.
+  // Keep it explicitly unlocked; as soon as validated history is ready, lock the first valid calibration and keep that value for the rest of the day.
+  return{ready:false,source:'daily-lock-wait-history',hardThreshold:88,effectiveHardThreshold:88,warningThreshold:80,stableLow:86,stableHigh:90,observations:hist?.rows?.length||0,walkForwardYears:[],walkForwardCount:0,participationGuard:85,firstLayerProtected:true,confidence:'等待官方歷史',regime:'等待官方歷史',regimeAdjustment:0,lockedDate:null,lockedAt:null,lockStatus:'WAIT_HISTORY',historyRows:hist?.rows?.length||0,historyFirst:hist?.rows?.[0]?.date||null,historyLast:hist?.rows?.at(-1)?.date||null,historyStatus:stable.progress?.status||null,reason:'完整歷史尚未就緒；暫用80/88但不封存。第一組通過驗證的歷史校準會成為今日唯一鎖定值。'};
+ }
+ store[day]=store[day]||{};store[day][code]=picked;
+ const keep=Object.keys(store).sort().slice(-14),trim={};for(const d of keep)trim[d]=store[d];diskWrite(CHASE_DAILY_LOCK_FILE,trim);
+ return{...picked,fromDailyLock:true};
+}
 function pricePercentile(rows,px){const a=rows.slice(-252).map(x=>x.close).filter(Number.isFinite);return a.length?a.filter(v=>v<=px).length/a.length*100:50}
 function movePct(q){return q&&q.last>0&&q.prevClose>0?(q.last-q.prevClose)/q.prevClose*100:null}
 function normPct(v,scale){return Number.isFinite(v)?clamp(v/scale,-1,1):null}
@@ -1643,7 +1675,8 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const atr=st.atr14||prev*.012,pctile=pricePercentile(hist.rows,px),dev20=st.sma20?px/st.sma20-1:0,r20=st.r20||0;
  const chaseRisk=clamp(Math.round(cfg.chaseBase+Math.max(0,pctile-cfg.chasePctile)*1.25+Math.max(0,dev20)*cfg.chaseDev+Math.max(0,r20-.05)*cfg.chaseR20),0,100);
  const chaseHistoryValidated=!!(hist?.validation?.backtestReadyPass||hist?.validation?.fullHistoryPass);
- const chaseCalibration=chaseHistoryValidated?effectiveChaseCalibration(code,hist.rows,st):{ready:false,source:'fallback-unvalidated-history',hardThreshold:88,effectiveHardThreshold:88,warningThreshold:80,stableLow:86,stableHigh:90,observations:hist.rows?.length||0,confidence:'等待官方歷史',participationGuard:85,firstLayerProtected:true,regime:'等待官方歷史',regimeAdjustment:0,reason:'TWSE官方可回測歷史尚未驗證完成，暫沿用88'};
+ // R16.8.67: chase thresholds are locked once per Taiwan trading day. A background history refresh can no longer move 82/88 to 72/90 intraday.
+ const chaseCalibration=dailyChaseCalibration(code,hist,st);
  const chaseHardThreshold=chaseCalibration.effectiveHardThreshold??88,chaseWarningThreshold=chaseCalibration.warningThreshold??Math.max(70,chaseHardThreshold-8);
  const chasePenalty=clamp((chaseRisk-45)/55*.010,0,.010),envShift=env.score<0?clamp(env.score/100*cfg.envShiftNeg,-.022,0):clamp(env.score/100*cfg.envShiftPos,0,.006);
  const healthShift=health?.usable?clamp((health.score-50)/50*cfg.healthShift,-.004,.004):0;
@@ -1683,7 +1716,7 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const touchedToday=sessionLow>0?sessionLow<=z1.high:px<=z1.high;
  const reachabilityLabel=touchedToday||dropNeeded<=0?'已觸及':(atrUnits<=.60?'高':atrUnits<=1.20?'中':'低');
  const decisionGate=hardVeto?{status:'FAIL',type:'HARD',reason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':'硬Gate')}:(noBuyToday?{status:'WAIT',type:'SOFT',reason:noBuyReason}:{status:'PASS',type:'NONE',reason:null});
- return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold'};
+ return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold + daily locked calibration'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
@@ -1840,14 +1873,18 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
   currentPnLPerShare:Number.isFinite(current)?current-ep:null,
   currentPriceSource:Number.isFinite(livePx)&&livePx>0?liveSource:(Number.isFinite(histPx)&&histPx>0?'daily history fallback':null)
  };
- if(!rows.length)return{ok:true,status:'TRACKING',code,entryDate,entryPrice:ep,...immediate,horizon:{5:null,20:null,60:null},maePct:null,mfePct:null,maeDate:null,mfeDate:null,
+ if(!rows.length)return{ok:true,status:'TRACKING',code,entryDate,entryPrice:ep,...immediate,horizon:{5:null,20:null,60:null},benchmark:{entryMode:'same-day-open',entryPrice:null,currentReturnPct:null,horizon:{5:null,20:null,60:null}},maePct:null,mfePct:null,maeDate:null,mfeDate:null,
   reachedLayer2:false,reachedLayer3:false,chaseEntry:Number.isFinite(Number(layer1High))?ep>Number(layer1High):null,historySource:h.source,officialHistory:!!h.validation?.fullHistoryPass,reason:'尚未形成進場日後的日K；即時損益仍持續追蹤',updatedAt:new Date().toISOString()};
  const r0=rows[0],entryFactor=r0.close>0&&r0.aClose>0?r0.aClose/r0.close:1,horizon={};
  for(const k of [5,20,60]){const x=rows[k];horizon[k]=x?{date:x.date,priceReturnPct:(x.close/ep-1)*100,totalReturnPct:(x.aClose/(ep*entryFactor)-1)*100}:null}
+ const benchmarkEntry=Number(r0.open??r0.close),benchmarkAdjEntry=Number(r0.aOpen??r0.aClose),benchmarkHorizon={};
+ for(const k of [5,20,60]){const x=rows[k];benchmarkHorizon[k]=x&&benchmarkAdjEntry>0?{date:x.date,totalReturnPct:(x.aClose/benchmarkAdjEntry-1)*100}:null}
+ const benchmark={entryMode:'same-day-open',entryPrice:benchmarkEntry>0?benchmarkEntry:null,currentReturnPct:Number.isFinite(current)&&benchmarkEntry>0?(current/benchmarkEntry-1)*100:null,horizon:benchmarkHorizon};
  let min=null,max=null;
  for(const x of rows){const lo=x.low??x.close,hi=x.high??x.close;if(!min||lo<min.price)min={date:x.date,price:lo};if(!max||hi>max.price)max={date:x.date,price:hi}}
  const l2=Number(layer2Low),l3=Number(layer3Low),l1h=Number(layer1High);
- return{ok:true,status:'READY',code,entryDate,entryPrice:ep,...immediate,horizon,
+ return{ok:true,status:'READY',code,entryDate,entryPrice:ep,...immediate,horizon,benchmark,
+  benchmarkDeltaCurrentPct:Number.isFinite(immediate.currentReturnPct)&&Number.isFinite(benchmark.currentReturnPct)?immediate.currentReturnPct-benchmark.currentReturnPct:null,
   maePct:min?(min.price/ep-1)*100:null,mfePct:max?(max.price/ep-1)*100:null,maeDate:min?.date||null,mfeDate:max?.date||null,
   reachedLayer2:Number.isFinite(l2)&&min?min.price<=l2:false,reachedLayer3:Number.isFinite(l3)&&min?min.price<=l3:false,
   chaseEntry:Number.isFinite(l1h)?ep>l1h:null,historySource:h.source,officialHistory:!!h.validation?.fullHistoryPass,updatedAt:new Date().toISOString()};
@@ -1856,9 +1893,9 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
 function modelTradeStaticProof(){
  try{
   const app=fs.readFileSync(path.join(PUBLIC,'app.js'),'utf8');
-  const required=['v124_model_trades','function saveModelTrade','function refreshModelTradePerformance','currentReturnPct','maePct','mfePct','reachedLayer2','reachedLayer3','chaseEntry','function closeTrackedTrade'];
+  const required=['v124_model_trades','function saveModelTrade','function refreshModelTradePerformance','function downloadTradeDiagnostics','currentReturnPct','maePct','mfePct','benchmarkDeltaCurrentPct','reachedLayer2','reachedLayer3','chaseEntry','function closeTrackedTrade'];
   const missing=required.filter(x=>!app.includes(x));
-  return{pass:missing.length===0,storageKey:'v124_model_trades',metrics:['currentPnL','5d','20d','60d','MAE','MFE','reachedLayer2','reachedLayer3','chaseEntry'],missing};
+  return{pass:missing.length===0,storageKey:'v124_model_trades',metrics:['currentPnL','5d','20d','60d','MAE','MFE','sameDayOpenBenchmark','benchmarkDelta','reachedLayer2','reachedLayer3','chaseEntry'],missing};
  }catch(e){return{pass:false,storageKey:'v124_model_trades',metrics:[],missing:['app.js unreadable'],error:e.message}}
 }
 
