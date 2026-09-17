@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.67-TRADE-DIAGNOSTIC-CONFIRMATION',CONFIRM_RULE_VERSION='layer-confirm-v2';
+const CLIENT_BUILD='16.8.68-EXDIV-EFFECTIVE-REFERENCE',CONFIRM_RULE_VERSION='layer-confirm-v2';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
@@ -129,9 +129,10 @@ function etfExchangeStamp(code){
  const q=lastLive?.quotes?.[code];
  if(!q)return'';
  const src=String(q.source||'');
- if(src.includes('Anue'))return'｜鉅亨即時';
- if(src.includes('TWSE'))return'｜TWSE備援'+(q.time?('｜成交 '+q.time):'');
- return src?('｜'+src):'';
+ let base=src.includes('Anue')?'｜鉅亨即時':src.includes('TWSE')?'｜TWSE備援'+(q.time?('｜成交 '+q.time):''):(src?('｜'+src):'');
+ if(q.corporateActionAdjusted&&Number(q.effectivePrevClose)>0)base+=`｜${q.corporateAction?.type||'除權息'}基準 ${Number(q.effectivePrevClose).toFixed(2)}`;
+ else if(q.corporateActionReferenceMissing)base+='｜⚠️除權息參考價待確認';
+ return base;
 }
 
 function nLive(v){const x=Number(v);return Number.isFinite(x)?x:null}
@@ -303,12 +304,13 @@ function explain(c,x){const touched=deepestTouchedLayer(x),activeL=x.m?.layers?.
 function decisionTransparency(x){const b=x?.r?.scoreBreakdown||{},g=x?.r?.decisionGate||{};const parts=[];if(Number.isFinite(b.base))parts.push(`基礎 ${fmt(b.base)}`);if(Number.isFinite(b.priceFit))parts.push(`價格 ${b.priceFit>=0?'+':''}${fmt(b.priceFit)}`);if(Number.isFinite(b.chase))parts.push(`追高 ${b.chase>=0?'+':''}${fmt(b.chase)}`);if(Number.isFinite(b.environment))parts.push(`環境 ${b.environment>=0?'+':''}${fmt(b.environment)}`);if(Number.isFinite(b.health))parts.push(`健康 ${b.health>=0?'+':''}${fmt(b.health)}`);const gate=g.status==='FAIL'?`硬Gate FAIL：${g.reason||x.r.hardVetoReason||'—'}`:g.status==='WAIT'?`暫不確認：${g.reason||x.r.noBuyReason||'—'}`:'Gate PASS';return `${parts.join('｜')} → <b>${x.r.score}/100</b>｜${gate}`}
 function reachabilityText(x){const q=x?.r?.reachability;if(!q)return'尚無可觸及性資料';if(q.touchedToday)return`<b>已觸及</b>｜今日低點 ${fmt(q.todayLow)} 已到目前第一層上緣 ${fmt(q.firstZoneHigh)}`;const need=Number.isFinite(q.dropNeededPct)?q.dropNeededPct:null,au=Number.isFinite(q.atrUnits)?q.atrUnits:null;return `<b>${q.label||'—'}</b>｜距第一層還需回檔 ${need==null?'—':fmt(need)+'%'}${au==null?'':`｜約 ${fmt(au)} ATR`}｜ATR ${Number.isFinite(q.atrPct)?fmt(q.atrPct)+'%':'—'}`}
 function etfPriceClass(code,px){
- const q=lastLive?.quotes?.[code],last=Number(px??q?.last),prev=Number(q?.prevClose);
- if(!Number.isFinite(last)||!Number.isFinite(prev))return'';
+ const q=lastLive?.quotes?.[code],last=Number(px??q?.last),prev=Number(q?.effectivePrevClose??q?.prevClose);
+ if(q?.referenceReliable===false||!Number.isFinite(last)||!Number.isFinite(prev))return'';
  return last>prev?'etf-price-up':last<prev?'etf-price-down':'';
 }
 function etfDailyChangeText(code,px){
- const q=lastLive?.quotes?.[code],last=Number(px??q?.last),prev=Number(q?.prevClose);
+ const q=lastLive?.quotes?.[code],last=Number(px??q?.last),prev=Number(q?.effectivePrevClose??q?.prevClose);
+ if(q?.referenceReliable===false)return'參考價待確認';
  if(!Number.isFinite(last)||!Number.isFinite(prev)||prev<=0)return'';
  const p=(last-prev)/prev*100;
  return `${p>0?'+':''}${p.toFixed(2)}%`;
