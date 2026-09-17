@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.67-TRADE-DIAGNOSTIC-CONFIRMATION';
+const BUILD='16.8.69-CONSTITUENT-SOURCE-RECOVERY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -84,6 +84,67 @@ function txfPreopenWindowNow(d=new Date()){const t=taipeiClock(d),mins=t.h*60+t.
 function parseROCDate(s){const m=String(s||'').match(/(\d{3})[\/.-](\d{1,2})[\/.-](\d{1,2})/);return m?`${Number(m[1])+1911}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`:null}
 function parseISODate(s){const m=String(s||'').match(/(20\d{2})[\/.-](\d{1,2})[\/.-](\d{1,2})/);return m?`${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`:null}
 function dateMinus(days){const d=new Date(Date.now()-days*86400000);return ymdTaipei(d)}
+
+function twseFieldIndex(fields,patterns){
+ const xs=(fields||[]).map(x=>String(x||'').replace(/\s+/g,''));
+ for(let i=0;i<xs.length;i++)if(patterns.some(p=>p.test(xs[i])))return i;
+ return-1;
+}
+async function twseExRightReferences(day=ymdTaipei()){
+ const key=String(day).replace(/-/g,''),cacheKey='twse:twt49u:'+key;
+ return cached(cacheKey,6*60*60*1000,async()=>{
+  const url=`https://www.twse.com.tw/exchangeReport/TWT49U?response=json&strDate=${key}&endDate=${key}&_=${Date.now()}`;
+  const d=await getJSONQuick(url,{'Referer':'https://www.twse.com.tw/','Cache-Control':'no-cache','Pragma':'no-cache'},6500);
+  const table=Array.isArray(d?.tables)?d.tables[0]:null,fields=d?.fields||table?.fields||[],rows=d?.data||table?.data||[],map={};
+  const iCode=twseFieldIndex(fields,[/^股票代號$/,/^證券代號$/]),iName=twseFieldIndex(fields,[/^股票名稱$/,/^證券名稱$/]),
+        iPrev=twseFieldIndex(fields,[/除權息前收盤價/,/前一日收盤價/]),iRef=twseFieldIndex(fields,[/^除權息參考價$/,/^除權參考價$/]),
+        iValue=twseFieldIndex(fields,[/權值\+息值/,/^權值$/,/^息值$/]),iType=twseFieldIndex(fields,[/權\/息/,/權息別/]),
+        iOpen=twseFieldIndex(fields,[/開盤競價基準/]),iDividendRef=twseFieldIndex(fields,[/減除股利參考價/]),iDate=twseFieldIndex(fields,[/^資料日期$/,/^除權息日期$/]);
+  if(iCode<0||iRef<0)throw Error('TWT49U欄位格式異常');
+  for(const r of rows||[]){
+   const code=String(r?.[iCode]||'').trim();if(!ETF.includes(code))continue;
+   const ref=n(r?.[iRef]),prev=iPrev>=0?n(r?.[iPrev]):null;if(!(ref>0))continue;
+   map[code]={code,name:iName>=0?String(r?.[iName]||'').trim():(META[code]?.name||code),date:day,previousClose:prev,referencePrice:ref,
+    value:iValue>=0?n(r?.[iValue]):null,type:iType>=0?String(r?.[iType]||'').trim():'權息',openingAuctionBasis:iOpen>=0?n(r?.[iOpen]):null,
+    dividendAdjustedReference:iDividendRef>=0?n(r?.[iDividendRef]):null,reportedDate:iDate>=0?String(r?.[iDate]||'').trim():null,source:'TWSE TWT49U'};
+  }
+  return{ok:true,day,map,rows:(rows||[]).length,source:'TWSE TWT49U 除權除息計算結果表',sourceUrl:url,fetchedAt:new Date().toISOString()};
+ });
+}
+function providerImpliedReference(q){
+ const last=n(q?.last),chg=n(q?.change),pct=n(q?.changePct);if(!(last>0)||!Number.isFinite(chg))return null;
+ const ref=last-chg;if(!(ref>0))return null;
+ if(Number.isFinite(pct)){const calc=(last-ref)/ref*100;if(Math.abs(calc-pct)>.35)return null}
+ return ref;
+}
+function applyEtfEffectiveReferences(quotes,official,errors=[]){
+ const officialOk=!!official?.ok,today=ymdTaipei();
+ for(const code of ETF){
+  const q=quotes?.[code];if(!q)continue;
+  const raw=n(q.prevClose),ev=official?.map?.[code]||null,implied=providerImpliedReference(q);
+  q.rawPrevClose=raw;
+  q.effectivePrevClose=raw;
+  q.referenceReliable=true;
+  q.referenceSource='行情昨收';
+  q.corporateActionAdjusted=false;
+  q.corporateActionReferenceMissing=false;
+  if(ev?.referencePrice>0){
+   const ref=Number(ev.referencePrice);
+   q.effectivePrevClose=ref;q.prevClose=ref;q.referenceSource='TWSE TWT49U';q.referenceReliable=true;q.corporateActionAdjusted=true;
+   q.corporateAction={...ev,day:today,rawPrevClose:raw,effectivePrevClose:ref,scaleFactor:raw>0?ref/raw:1};
+   if(q.last>0){q.change=q.last-ref;q.changePct=(q.last-ref)/ref*100}
+   q.source=(q.source||'ETF即時')+'＋TWSE除權息參考價';
+   continue;
+  }
+  // If TWSE could not be reached and the quote provider's own change implies a materially different reference,
+  // do not silently keep using the unadjusted previous close. Mark this ETF unsafe for model confirmation.
+  if(!officialOk&&raw>0&&implied>0&&Math.abs(implied/raw-1)>.0035){
+   q.corporateActionReferenceMissing=true;q.referenceReliable=false;q.suspectedReference=implied;q.referenceSource='除權息參考價待官方確認';
+   errors.push(`${code}:疑似除權息，但TWSE TWT49U參考價暫不可用；模型暫停確認`);
+  }
+ }
+ return quotes;
+}
 
 async function mis(exch){
  const nonce=Date.now()+'_'+Math.random().toString(36).slice(2);
@@ -291,7 +352,9 @@ async function liveStable(extra=[]){
  throw err||Error('market live unavailable');
 }
 async function liveEtf4(){
- const quotes={},errors=[];
+ const quotes={},errors=[],today=ymdTaipei();
+ // Fetch the official ex-right/ex-dividend reference in parallel with live quotes so the first request does not add serial latency.
+ const corpRefPromise=deadline(twseExRightReferences(today).catch(e=>({ok:false,day:today,map:{},source:'TWSE TWT49U',error:e.message})),4200,null);
  // Primary: Anue. Keep its live last price when available.
  try{
   const syms=ETF.map(c=>'TWS:'+c+':STOCK').join(',');
@@ -354,8 +417,11 @@ async function liveEtf4(){
   }
  }
 
- const openRequired=twMarketOpenNow(),now=Date.now(),today=ymdTaipei();
- // Save each complete quote. A single transport wobble may reuse only the same-day quote for <=90 seconds.
+ const corpRefs=await corpRefPromise;
+ if(!corpRefs)errors.push('TWSE TWT49U: timeout');else if(!corpRefs.ok&&corpRefs.error)errors.push('TWSE TWT49U: '+corpRefs.error);
+ applyEtfEffectiveReferences(quotes,corpRefs,errors);
+ const openRequired=twMarketOpenNow(),now=Date.now();
+ // Save each complete quote after the effective reference has been applied, so the 90s last-good path cannot resurrect an unadjusted ex-dividend previous close. A single transport wobble may reuse only the same-day quote for <=90 seconds.
  for(const c of ETF){
   const q=quotes[c];
   if(etfQuoteComplete(q,openRequired)){
@@ -377,7 +443,8 @@ async function liveEtf4(){
   }
  }
  const incomplete=ETF.filter(c=>!etfQuoteComplete(quotes[c],openRequired));
- return{ok:incomplete.length===0,source:'Anue 鉅亨 primary + TWSE field completion + 90s last-good',fetchedAt:new Date().toISOString(),quotes,
+ const corporateActions=Object.fromEntries(ETF.filter(c=>quotes[c]?.corporateActionAdjusted||quotes[c]?.corporateActionReferenceMissing).map(c=>[c,{adjusted:!!quotes[c]?.corporateActionAdjusted,reliable:quotes[c]?.referenceReliable!==false,rawPrevClose:quotes[c]?.rawPrevClose??null,effectivePrevClose:quotes[c]?.effectivePrevClose??null,referenceSource:quotes[c]?.referenceSource||null,event:quotes[c]?.corporateAction||null}]));
+ return{ok:incomplete.length===0,source:'Anue 鉅亨 primary + TWSE field completion + TWSE TWT49U effective reference + 90s last-good',fetchedAt:new Date().toISOString(),quotes,corporateActions,
   missing:ETF.filter(c=>!quotes[c]?.last),incomplete,errors};
 }
 
@@ -1283,6 +1350,87 @@ function pricePercentile(rows,px){const a=rows.slice(-252).map(x=>x.close).filte
 function movePct(q){return q&&q.last>0&&q.prevClose>0?(q.last-q.prevClose)/q.prevClose*100:null}
 function normPct(v,scale){return Number.isFinite(v)?clamp(v/scale,-1,1):null}
 
+
+const CONSTITUENT_LAST_GOOD_FILE=path.join(DATA_DIR,'constituents-last-good.json');
+function normKey(k){return String(k??'').toLowerCase().replace(/[\s_\-()./%％：:]/g,'')}
+function firstObjVal(o,patterns){
+ for(const [k,v] of Object.entries(o||{})){const nk=normKey(k);if(patterns.some(p=>p.test(nk)))return v}
+ return null;
+}
+function jsonHoldingRows(payload){
+ const out=[];
+ function walk(x){
+  if(Array.isArray(x)){for(const y of x)walk(y);return}
+  if(!x||typeof x!=='object')return;
+  const codeRaw=firstObjVal(x,[/^(code|stkcode|stockcode|productcode|symbol|securitycode|商品代碼|股票代號|證券代號)$/,/代碼$/,/代號$/]);
+  const nameRaw=firstObjVal(x,[/^(name|stkname|stockname|productname|securityname|商品名稱|股票名稱|證券名稱)$/,/名稱$/]);
+  const weightRaw=firstObjVal(x,[/^(weight|weightrate|ratio|percentage|percent|holdingweight|stockweight|商品權重|持股權重|持股比重|投資比例)$/,/權重$/,/比重$/,/比例$/]);
+  const sharesRaw=firstObjVal(x,[/^(shares|qty|quantity|stockqty|holdingqty|商品數量|股數|持有股數)$/,/數量$/,/股數$/]);
+  const code=String(codeRaw??'').match(/(?:^|\D)(\d{4,6})(?:\D|$)/)?.[1]||null;
+  let weight=n(String(weightRaw??'').replace(/[%％,]/g,''));
+  if(Number.isFinite(weight)&&weight>0&&weight<.2&&!String(weightRaw??'').includes('%'))weight*=100;
+  const name=String(nameRaw??'').replace(/\s+/g,' ').trim();
+  if(code&&name&&Number.isFinite(weight)&&weight>=0&&weight<=100)out.push({code,name,weight,shares:n(String(sharesRaw??'').replace(/,/g,''))??null});
+  for(const v of Object.values(x))if(v&&typeof v==='object')walk(v);
+ }
+ walk(payload);
+ return [...new Map(out.map(x=>[x.code,x])).values()].sort((a,b)=>(b.weight||0)-(a.weight||0));
+}
+function saveConstituentLastGood(c){
+ if(!c?.complete||!c?.items?.length)return c;
+ const store=diskRead(CONSTITUENT_LAST_GOOD_FILE)||{};store[c.code]={...c,savedAt:new Date().toISOString()};diskWrite(CONSTITUENT_LAST_GOOD_FILE,store);return c;
+}
+function constituentLastGood(code,maxAgeDays=7){
+ const x=(diskRead(CONSTITUENT_LAST_GOOD_FILE)||{})[code];if(!x?.complete||!x?.items?.length||!x?.savedAt)return null;
+ const age=(Date.now()-new Date(x.savedAt).getTime())/86400000;if(!Number.isFinite(age)||age>maxAgeDays)return null;
+ return{...x,source:(x.source||'完整持股')+'（最近成功快照）',note:`即時來源本輪不完整，暫沿用 ${x.savedAt.slice(0,10)} 最近成功完整快照；最多保留${maxAgeDays}日。`,lastGoodFallback:true};
+}
+function overlapProof(visible,full,minRatio=.75){
+ const a=(visible?.items||[]).map(x=>x.code),b=new Set((full?.items||[]).map(x=>x.code));
+ const hit=a.filter(c=>b.has(c)).length,need=Math.max(3,Math.ceil(a.length*minRatio));
+ return{visible:a.length,hit,need,pass:a.length>=4&&hit>=need};
+}
+function parseOfficialHoldingText(html){
+ const text=stripTags(html).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(),items=[];
+ const patterns=[
+  /商品代碼\s*(\d{4,6})\s*商品名稱\s*([^\d]{1,40}?)\s*商品數量\s*([\d,]+(?:\.\d+)?)\s*商品權重\s*(\d+(?:\.\d+)?)/g,
+  /(?:股票代號\s*)?(\d{4,6})\s+([^\d%]{1,45}?)\s+(\d+(?:\.\d+)?)%\s+([\d,]+)/g
+ ];
+ for(let pi=0;pi<patterns.length;pi++){let m;while((m=patterns[pi].exec(text))){
+  let code,name,weight,shares;if(pi===0){code=m[1];name=m[2].trim();shares=n(m[3]);weight=n(m[4])}else{code=m[1];name=m[2].trim();weight=n(m[3]);shares=n(m[4])}
+  if(/^\d{4,6}$/.test(code)&&name&&Number.isFinite(weight)&&weight>=0&&weight<=100)items.push({code,name,weight,shares});
+ }}
+ const dates=[...text.matchAll(/(?:交易日期|資料日期|查詢日期)\s*[:：]?\s*(20\d{2}[\/.\-]\d{1,2}[\/.\-]\d{1,2})/g)].map(x=>parseISODate(x[1])).filter(Boolean);
+ return{date:dates[0]||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
+}
+async function yuantaOfficialConstituents(code){
+ const expected=META[code].expected,fundid=META[code].fundId,errs=[];
+ const api=`https://www.yuantaetfs.com/api/StkWeights?date=&fundid=${fundid}`;
+ try{
+  const d=await deadline(getJSONQuick(api,{'Accept':'application/json, text/plain, */*','Referer':META[code].url,'Origin':'https://www.yuantaetfs.com','X-Requested-With':'XMLHttpRequest'},7000),7500,null);
+  if(d){const items=jsonHoldingRows(d);if(items.length>=expected)return saveConstituentLastGood({code,asOf:ymdTaipei(),effectiveDate:ymdTaipei(),items:items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'元大投信官方 StkWeights',sourceUrl:api,historicalAvailable:false,note:`元大官方 StkWeights API 完整解析 ${items.length}/${expected} 檔。`,attempts:[{source:'Yuanta StkWeights',ok:true,count:items.length,url:api}]});errs.push(`StkWeights parsed ${items.length}/${expected}`)}else errs.push('StkWeights timeout');
+ }catch(e){errs.push('StkWeights '+e.message)}
+ // Official visible holdings are used as proof when the official API is temporarily blocked from Render.
+ let visible={date:ymdTaipei(),items:[]};
+ try{const html=await deadline(getText(META[code].url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),7000,null);if(html)visible=parseOfficialHoldingText(html)}catch(e){errs.push('Yuanta ratio '+e.message)}
+ let full=await moneyDJConstituents(code).catch(()=>null);if(!full?.complete)full=await pocketConstituents(code).catch(()=>null);
+ const proof=overlapProof(visible,full,.75);
+ if(full?.complete&&proof.pass)return saveConstituentLastGood({...full,code,asOf:full.asOf||visible.date,effectiveDate:full.effectiveDate||visible.date,complete:true,expected,officialOnly:false,thirdParty:true,source:`完整持股備援＋元大官方交叉驗證`,sourceUrl:META[code].url,note:`元大官方 API 本輪未完整；完整持股備援 ${full.items.length}/${expected}，與元大官方可見持股交叉驗證 ${proof.hit}/${proof.visible} 通過。`,officialProof:{source:'Yuanta ratio',visible:proof.visible,matched:proof.hit,pass:true},errors:errs});
+ const lg=constituentLastGood(code);if(lg)return lg;
+ const best=full?.items?.length>(visible.items?.length||0)?full:visible;
+ return{code,asOf:best?.asOf||best?.date||ymdTaipei(),effectiveDate:best?.effectiveDate||best?.date||ymdTaipei(),items:best?.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'元大持股來源未完整',sourceUrl:META[code].url,historicalAvailable:false,note:`本輪僅取得 ${(best?.items||[]).length}/${expected} 檔；不完整時不納入模型。`,errors:errs,officialProof:proof};
+}
+async function capitalOfficialConstituents(code='00919'){
+ const expected=META[code].expected,errs=[],urls=[META[code].portfolioUrl,META[code].url].filter(Boolean);let visible={date:ymdTaipei(),items:[]},visibleUrl=urls[0];
+ for(const url of urls){try{const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.capitalfund.com.tw/'},1),7000,null);if(!html){errs.push('timeout '+url);continue}const p=parseOfficialHoldingText(html);if(p.items.length>visible.items.length){visible=p;visibleUrl=url}if(p.items.length>=expected)return saveConstituentLastGood({code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'群益投信官方投資組合',sourceUrl:url,historicalAvailable:false,note:`群益官方頁完整解析 ${p.items.length}/${expected} 檔。`})}catch(e){errs.push(e.message)}}
+ let full=await moneyDJConstituents(code).catch(()=>null);if(!full?.complete)full=await pocketConstituents(code).catch(()=>null);
+ const proof=overlapProof(visible,full,.75);
+ if(full?.complete&&proof.pass)return saveConstituentLastGood({...full,code,complete:true,expected,officialOnly:false,thirdParty:true,source:'完整持股備援＋群益官方交叉驗證',sourceUrl:visibleUrl,note:`群益官方頁目前公開前段持股 ${proof.visible} 檔；完整持股備援 ${full.items.length}/${expected}，交叉驗證 ${proof.hit}/${proof.visible} 通過。`,officialProof:{source:'Capital official',visible:proof.visible,matched:proof.hit,pass:true},errors:errs});
+ const lg=constituentLastGood(code);if(lg)return lg;
+ const best=full?.items?.length>(visible.items?.length||0)?full:visible;
+ return{code,asOf:best?.asOf||best?.date||ymdTaipei(),effectiveDate:best?.effectiveDate||best?.date||ymdTaipei(),items:best?.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'群益持股來源未完整',sourceUrl:visibleUrl,historicalAvailable:false,note:`本輪僅取得 ${(best?.items||[]).length}/${expected} 檔；不完整時不納入模型。`,errors:errs,officialProof:proof};
+}
+
 function parseMoneyDJHoldings(code,html){
  const text=stripTags(html).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(),items=[];
  // Example: 台積電(2330.TW) 57.40 568,615,359.00
@@ -1618,16 +1766,17 @@ async function cathayOfficialExcelConstituents(date=null){
 }
 
 async function constituents(code,date=null){
- const key='const:r337:'+code+':'+(date||'latest');
- return cached(key,date?6*60*60*1000:30*60*1000,async()=>{
-  if(code==='00878')return cathayOfficialExcelConstituents(date);
+ const key='const:r339:'+code+':'+(date||'latest');
+ return cached(key,date?6*60*60*1000:20*60*1000,async()=>{
+  if(code==='00878'){const c=await cathayOfficialExcelConstituents(date);return c?.complete?saveConstituentLastGood(c):(constituentLastGood(code)||c)}
   if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
-  if(code==='0050'||code==='0056'||code==='00919')return moneyDJConstituents(code);
+  if(code==='0050'||code==='0056')return yuantaOfficialConstituents(code);
+  if(code==='00919')return capitalOfficialConstituents(code);
   throw Error('unsupported constituents');
  });
 }
 async function constituentHealth(code){
- return cached('health:r337:'+code,8000,async()=>{
+ return cached('health:r339:'+code,8000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.stockExpected||c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
@@ -1671,8 +1820,11 @@ function buildEnvironment(code,ld,ctx,ovs,nf,health){
  return{score:clamp(base,-100,100),baseScore:base,parts,breadth:broad};
 }
 function modelOne(code,quote,hist,env,health,fresh=true){
- const cfg=META[code].cfg,st=histStats(hist.rows,cfg.q),px=quote?.last??st.prevClose,prev=quote?.prevClose??st.prevClose;if(!(px>0&&prev>0))throw Error('No current price '+code);
- const atr=st.atr14||prev*.012,pctile=pricePercentile(hist.rows,px),dev20=st.sma20?px/st.sma20-1:0,r20=st.r20||0;
+ const cfg=META[code].cfg,st=histStats(hist.rows,cfg.q),px=quote?.last??st.prevClose,prev=quote?.prevClose??st.prevClose,rawPrev=n(quote?.rawPrevClose)??prev;if(!(px>0&&prev>0))throw Error('No current price '+code);
+ // On an ex-right/ex-dividend day the live price is on the post-action scale while yesterday's history is still on the pre-action scale.
+ // Use TWSE's effective reference for today's layers/P&L and map current-price-vs-history diagnostics back to the pre-action scale so chaseRisk is not mechanically deflated by the dividend gap.
+ const actionFactor=quote?.corporateActionAdjusted&&rawPrev>0&&prev>0?prev/rawPrev:1,histPx=actionFactor>0?px/actionFactor:px;
+ const atr=(st.atr14||rawPrev*.012)*actionFactor,pctile=pricePercentile(hist.rows,histPx),dev20=st.sma20?histPx/st.sma20-1:0,r20=st.r20||0;
  const chaseRisk=clamp(Math.round(cfg.chaseBase+Math.max(0,pctile-cfg.chasePctile)*1.25+Math.max(0,dev20)*cfg.chaseDev+Math.max(0,r20-.05)*cfg.chaseR20),0,100);
  const chaseHistoryValidated=!!(hist?.validation?.backtestReadyPass||hist?.validation?.fullHistoryPass);
  // R16.8.67: chase thresholds are locked once per Taiwan trading day. A background history refresh can no longer move 82/88 to 72/90 intraday.
@@ -1698,7 +1850,7 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  l2=Math.min(l2,l1-Math.max(atr*.35,prev*.004));l3=Math.min(l3,l2-Math.max(atr*.45,prev*.006));
  const marketCh=movePct(env.liveMarket),tsmcCh=movePct(env.liveTsmc),b=env.breadth?.usableForModel?env.breadth:null;
  const knife=(Number.isFinite(marketCh)&&marketCh<-2.2?1:0)+(Number.isFinite(tsmcCh)&&tsmcCh<-3?1:0)+(b&&b.ratio<.22?1:0)+(env.score<-65?1:0);
- const stale=!fresh,hardVeto=stale||knife>=2,z1=z(l1);
+ const stale=!fresh,corpActionBlocked=quote?.corporateActionReferenceMissing===true,hardVeto=stale||knife>=2||corpActionBlocked,z1=z(l1);
  // Price-fit must improve as price approaches layer 1. The previous formula rewarded being farther ABOVE l1, so score fell exactly when the buy zone was reached.
  const aboveZonePct=px>z1.high?(px-z1.high)/px*100:0,belowZonePct=px<z1.low?(z1.low-px)/px*100:0;
  const priceFit=px>z1.high?clamp(14-aboveZonePct*8,-8,14):(px<z1.low?clamp(14-belowZonePct*4,8,14):14);
@@ -1715,8 +1867,10 @@ function modelOne(code,quote,hist,env,health,fresh=true){
  const sessionLow=n(quote?.low),sessionHigh=n(quote?.high),dropNeeded=Math.max(0,px-z1.high),dropNeededPct=px>0?dropNeeded/px*100:null,atrPct=px>0?atr/px*100:null,atrUnits=atr>0?dropNeeded/atr:null;
  const touchedToday=sessionLow>0?sessionLow<=z1.high:px<=z1.high;
  const reachabilityLabel=touchedToday||dropNeeded<=0?'已觸及':(atrUnits<=.60?'高':atrUnits<=1.20?'中':'低');
- const decisionGate=hardVeto?{status:'FAIL',type:'HARD',reason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':'硬Gate')}:(noBuyToday?{status:'WAIT',type:'SOFT',reason:noBuyReason}:{status:'PASS',type:'NONE',reason:null});
- return{code,name:META[code].name,price:px,prevClose:prev,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null),noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...st,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold + daily locked calibration'};
+ const hardReason=corpActionBlocked?'偵測到疑似除權息，但TWSE官方除權息參考價暫不可用；本檔買點暫停採用':(stale?'資料時間戳逾時':(knife>=2?'市場/權值/廣度至少兩項急殺':null));
+ const decisionGate=hardVeto?{status:'FAIL',type:'HARD',reason:hardReason||'硬Gate'}:(noBuyToday?{status:'WAIT',type:'SOFT',reason:noBuyReason}:{status:'PASS',type:'NONE',reason:null});
+ const historyView={...st,sma20:Number.isFinite(st.sma20)?st.sma20*actionFactor:st.sma20,sma60:Number.isFinite(st.sma60)?st.sma60*actionFactor:st.sma60,sma120:Number.isFinite(st.sma120)?st.sma120*actionFactor:st.sma120,sma250:Number.isFinite(st.sma250)?st.sma250*actionFactor:st.sma250,atr14:atr};
+ return{code,name:META[code].name,price:px,prevClose:prev,rawPrevClose:rawPrev,effectivePrevClose:prev,referenceSource:quote?.referenceSource||'行情昨收',referenceReliable:quote?.referenceReliable!==false,corporateAction:quote?.corporateAction||null,corporateActionAdjusted:!!quote?.corporateActionAdjusted,corporateActionReferenceMissing:!!quote?.corporateActionReferenceMissing,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:hardReason,noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...historyView,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull,corporateActionScaleFactor:actionFactor},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold + daily locked calibration + TWSE TWT49U effective ex-right/ex-dividend reference'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
@@ -1739,12 +1893,12 @@ async function buyModel(){
  const marketFresh=marketFieldsOk&&Number.isFinite(marketAgeMs)&&marketAgeMs<90000;
  const quoteStatus=Object.fromEntries(ETF.map(c=>{const q=etfLd?.quotes?.[c]||{},qat=Date.parse(q.serverFetchedAt||etfLd?.fetchedAt||0),ageMs=qat?Date.now()-qat:Infinity;
   const fieldsOk=Number(q.last)>0&&Number(q.prevClose)>0&&(!openRequired||Number(q.open)>0),ok=fieldsOk&&ageMs<90000;
-  return[c,{ok,fieldsOk,ageMs:Number.isFinite(ageMs)?ageMs:null,last:Number(q.last)||null,prevClose:Number(q.prevClose)||null,open:Number(q.open)||null,openSource:q.openSource||null,source:q.source||null,lastGoodFallback:!!q.lastGoodFallback}]}));
+  return[c,{ok,fieldsOk,ageMs:Number.isFinite(ageMs)?ageMs:null,last:Number(q.last)||null,prevClose:Number(q.prevClose)||null,rawPrevClose:Number(q.rawPrevClose)||null,effectivePrevClose:Number(q.effectivePrevClose)||null,referenceSource:q.referenceSource||null,referenceReliable:q.referenceReliable!==false,corporateActionAdjusted:!!q.corporateActionAdjusted,corporateActionReferenceMissing:!!q.corporateActionReferenceMissing,corporateAction:q.corporateAction||null,open:Number(q.open)||null,openSource:q.openSource||null,source:q.source||null,lastGoodFallback:!!q.lastGoodFallback}]}));
  const etfQuotesOk=ETF.every(c=>quoteStatus[c].ok);
  const etfFresh=etfQuotesOk;
  const fresh=marketFresh&&etfFresh;
  for(const c of ETF){try{const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;models[c]=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],fresh)}catch(e){models[c]={code:c,error:e.message}}}
- return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,quoteStatus,etfQuoteErrors:etfLd?.errors||[],degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}]))};
+ return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,quoteStatus,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}]))};
 }
 
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
@@ -1835,12 +1989,13 @@ async function validationReport(deep=false){
  out[5]=V('WAIT','需真實08:57–08:59:30由瀏覽器端鎖定');out[6]=V('PASS','首頁具08:57–09:00盤前優先邏輯');out[7]=V(bm&&Object.values(bm.models||{}).some(x=>x&&'noBuyToday' in x)?'PASS':'PARTIAL','支援「今日暫無合理買點」');out[8]=V(new Set(ETF.map(c=>JSON.stringify(META[c].cfg))).size===4?'PASS':'FAIL','四檔使用獨立參數');out[9]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.first?.low)?'PASS':'PARTIAL','第一層為動態區間');out[10]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.third?.low)?'PASS':'PARTIAL','三層價格輸出');out[11]=V(bm&&ETF.some(c=>Number.isFinite(bm.models?.[c]?.score))?'PASS':'PARTIAL','綜合評分輸出');out[12]=V('PASS','前端分層狀態機支援分批');out[13]=V(bm&&ETF.some(c=>'hardVeto' in (bm.models?.[c]||{}))?'PASS':'PARTIAL','硬Gate含資料失效/急殺');out[14]=V(bm&&ETF.some(c=>bm.models?.[c]?.history?.sma250)?'PASS':'PARTIAL','5/20/60/120/250納入');out[15]=V('PASS','買點上修有速度上限');out[16]=V(bm&&ETF.some(c=>'bullStructure' in (bm.models?.[c]?.history||{}))?'PASS':'PARTIAL','中樞慢速重新定錨');
  out[17]=V('WAIT','瀏覽器歷史紀錄由前端補驗');out[18]=V('WAIT','實際價格同步由前端補驗');out[19]=V('WAIT','重複區間折疊由前端補驗');out[20]=V('WAIT','需累積7日買點歷史');
  const hs=bm?.health||{},usable=ETF.filter(c=>hs[c]?.usable).length,connected=ETF.filter(c=>hs[c]&&hs[c].sourceCoverage>0).length;out[21]=V(usable===4?'PASS':connected?'PARTIAL':'FAIL',`成分來源已連線 ${connected}/4；完整健康可計分 ${usable}/4`);out[22]=V(connected?'PASS':'PARTIAL',`成分資料畫面可顯示 ${connected}/4；不足者明示不計分`);out[23]=V(usable===4?'PASS':usable?'PARTIAL':'WAIT',`健康度可正式計分 ${usable}/4`);out[24]=V(usable?'PASS':'WAIT','健康度可用時採權重式分歧/背離');out[25]=V('PASS','健康度位於各ETF detail頁');out[26]=V('PARTIAL','新有效日期會保存版本；待實際換股事件驗證');out[27]=V('PARTIAL','沒有當時版本就禁止今日成分倒灌歷史');
- out[28]=V(ctx?.breadth?.total&&ctx.breadth?.sourceDate===ymdTaipei()?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平｜${ctx.breadth.mode}｜${ctx.breadth.sourceDate||'—'}${Number.isFinite(ctx.breadth.coverage)?`｜覆蓋${Math.round(ctx.breadth.coverage*100)}%`:''}`:`廣度來源暫不可用${BREADTH_RUNTIME.error?'｜'+BREADTH_RUNTIME.error:''}／盤前不沿用舊資料`);out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');const etfPriceCount=ETF.filter(c=>Number(bm?.quotes?.[c]?.last)>0).length;out[33]=V(etfPriceCount===4?'PASS':etfPriceCount?'PARTIAL':'WAIT',`四檔ETF即時現價 ${etfPriceCount}/4｜持股市值損益使用同一即時quote`);out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?`marketFresh=${bm.marketFresh?'OK':'FAIL'}(${bm.marketAgeMs!=null?Math.round(bm.marketAgeMs/1000)+'s':'—'}${bm.marketLastGoodFallback?',緩衝':''})｜etfFresh=${bm.etfFresh?'OK':'FAIL'}｜${ETF.map(c=>{const q=bm.quoteStatus?.[c],age=q?.ageMs!=null?Math.round(q.ageMs/1000)+'s':'—';return`${c}:${q?.ok?'OK':`缺${q?.last?'':'現價/'}${q?.prevClose?'':'昨收/'}${twMarketOpenNow()&&!q?.open?'開盤':''}`}(${age}${q?.lastGoodFallback?',緩衝':''}${q?.openSource?',open='+q.openSource:''})`}).join('｜')}`:'等待模型資料');
+ out[28]=V(ctx?.breadth?.total&&ctx.breadth?.sourceDate===ymdTaipei()?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平｜${ctx.breadth.mode}｜${ctx.breadth.sourceDate||'—'}${Number.isFinite(ctx.breadth.coverage)?`｜覆蓋${Math.round(ctx.breadth.coverage*100)}%`:''}`:`廣度來源暫不可用${BREADTH_RUNTIME.error?'｜'+BREADTH_RUNTIME.error:''}／盤前不沿用舊資料`);out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');const etfPriceCount=ETF.filter(c=>Number(bm?.quotes?.[c]?.last)>0).length;out[33]=V(etfPriceCount===4?'PASS':etfPriceCount?'PARTIAL':'WAIT',`四檔ETF即時現價 ${etfPriceCount}/4｜持股市值損益使用同一即時quote`);out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?`marketFresh=${bm.marketFresh?'OK':'FAIL'}(${bm.marketAgeMs!=null?Math.round(bm.marketAgeMs/1000)+'s':'—'}${bm.marketLastGoodFallback?',緩衝':''})｜etfFresh=${bm.etfFresh?'OK':'FAIL'}｜${ETF.map(c=>{const q=bm.quoteStatus?.[c],age=q?.ageMs!=null?Math.round(q.ageMs/1000)+'s':'—';return`${c}:${q?.ok?'OK':`缺${q?.last?'':'現價/'}${q?.prevClose?'':'參考價/'}${twMarketOpenNow()&&!q?.open?'開盤':''}`}(${age}${q?.corporateActionAdjusted?',除權息已調整':''}${q?.corporateActionReferenceMissing?',除權息待確認':''}${q?.lastGoodFallback?',緩衝':''}${q?.openSource?',open='+q.openSource:''})`}).join('｜')}`:'等待模型資料');
  out[35]=V('PASS','visibilitychange 回到前景時，前端立即重抓 ETF／大盤／環境／夜盤／模型／雲端同步');
  out[36]=V('PASS','實際刷新頻率：ETF盤中5秒（非盤中10秒）／大盤10秒／夜盤10秒／環境30秒／模型30秒');
  if(deep)ETF.forEach(c=>enqueueHistory(c,false));const hp=ETF.map(c=>historyProgress(c)),ready=hp.filter(x=>x.backtestReadyPass===true).length;out[37]=V(ready===4?'PASS':ready?'PARTIAL':'WAIT',`四檔可回測完整樣本 ${ready}/4`,hp.map(x=>`${x.code}:${x.status}${x.backtestReadyPass?'✓':'✗'} ${x.first||'—'}→${x.last||'—'} ${x.rows||0}日`).join('｜'));out[38]=V('PASS','主結果全歷史；10/5/2/1年只做切片');
  let corpPass=0,btReady=0,wfPass=0,abPass=0,kpiPass=0,cred=[];for(const c of ETF){const h=diskRead(readyFile(c));if(h?.validation?.dividendCoveragePass&&h?.validation?.adjustmentPass)corpPass++;if(h?.rows?.length){try{const b=await backtest(c);if(b.ready){btReady++;const w=b.walkForward?.metrics,on=b.ab?.antiChaseOn,off=b.ab?.antiChaseOff,m=b.slices?.full,mins={'0050':20,'0056':20,'00878':10,'00919':5};if((w?.signals||0)>=mins[c])wfPass++;if(Number.isFinite(on?.highEntryRate)&&Number.isFinite(off?.highEntryRate)&&on.highEntryRate<=off.highEntryRate)abPass++;if([m?.avg5,m?.avg20,m?.avg60,m?.worstMAE60].every(Number.isFinite))kpiPass++;cred.push(`${c}:歷史${b.historyDays}日/WF${w?.signals||0}`)}}catch(e){cred.push(`${c}:回測錯誤 ${e.message}`)}}}
- out[39]=V(wfPass===4?'PASS':btReady?'PARTIAL':'WAIT',`Walk-forward樣本門檻 ${wfPass}/4`,cred.join('｜'));out[40]=V(corpPass===4?'PASS':corpPass?'PARTIAL':ready?'FAIL':'WAIT',`除息/分割/還原驗證 ${corpPass}/4`);out[41]=V(abPass===4?'PASS':btReady?'PARTIAL':'WAIT',`防追高A/B可驗證 ${abPass}/4`);out[42]=V(kpiPass===4?'PASS':btReady?'PARTIAL':'WAIT',`5/20/60、MAE、參與率等KPI ${kpiPass}/4`);out[43]=V(btReady===4?'PASS':btReady?'PARTIAL':'WAIT',`可信度輸出 ${btReady}/4`,cred.join('｜'));out[44]=V('PASS','全站紅漲綠跌');out[45]=V('PASS',`全站版本 ${VERSION} / build ${BUILD}`);
+ const liveCorp=ETF.filter(c=>bm?.quoteStatus?.[c]?.corporateActionAdjusted),liveCorpMissing=ETF.filter(c=>bm?.quoteStatus?.[c]?.corporateActionReferenceMissing),liveCorpText=liveCorp.length?`｜今日即時參考價 ${liveCorp.map(c=>`${c}:${bm.quoteStatus[c].effectivePrevClose}(${bm.quoteStatus[c].referenceSource})`).join('、')}`:'｜今日四檔無除權息調整';
+ out[39]=V(wfPass===4?'PASS':btReady?'PARTIAL':'WAIT',`Walk-forward樣本門檻 ${wfPass}/4`,cred.join('｜'));out[40]=V(liveCorpMissing.length?'FAIL':corpPass===4?'PASS':corpPass?'PARTIAL':ready?'FAIL':'WAIT',`歷史除息/分割/還原 ${corpPass}/4${liveCorpText}${liveCorpMissing.length?`｜待確認 ${liveCorpMissing.join(',')}`:''}`);out[41]=V(abPass===4?'PASS':btReady?'PARTIAL':'WAIT',`防追高A/B可驗證 ${abPass}/4`);out[42]=V(kpiPass===4?'PASS':btReady?'PARTIAL':'WAIT',`5/20/60、MAE、參與率等KPI ${kpiPass}/4`);out[43]=V(btReady===4?'PASS':btReady?'PARTIAL':'WAIT',`可信度輸出 ${btReady}/4`,cred.join('｜'));out[44]=V('PASS','全站紅漲綠跌');out[45]=V('PASS',`全站版本 ${VERSION} / build ${BUILD}`);
  return{ok:true,version:VERSION,build:BUILD,deep,checks:out,historyProgress:hp,errors,generatedAt:new Date().toISOString()};
 }
 

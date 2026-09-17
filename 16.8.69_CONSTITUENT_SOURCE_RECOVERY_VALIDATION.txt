@@ -1,0 +1,8 @@
+16.8.69 CONSTITUENT SOURCE RECOVERY
+- Preserve 16.8.68 ex-dividend effectivePrevClose logic.
+- 0050/0056: Yuanta StkWeights official API first.
+- 00878: Cathay official Excel unchanged.
+- 00919: Capital official portfolio/buyback first.
+- When official full source is temporarily truncated/blocked, allow a complete backup only after cross-validating official visible holdings.
+- Persist last successful complete constituent snapshot and use it for up to 7 days if all live sources fail.
+- Incomplete constituent data never enters health scoring.
