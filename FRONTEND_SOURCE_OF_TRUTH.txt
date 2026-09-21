@@ -1,0 +1,13 @@
+FRONTEND SOURCE OF TRUTH
+
+Render/Node serves static files from /public (see server.js PUBLIC path).
+Edit and deploy these files only:
+  public/index.html
+  public/app.js
+  public/styles.css
+  public/sw.js
+  public/manifest.json
+  public/icon.svg
+
+Do not create duplicate frontend copies at repository root.
+server.js remains at repository root.

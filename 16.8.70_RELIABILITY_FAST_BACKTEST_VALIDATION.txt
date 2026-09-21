@@ -1,0 +1,45 @@
+16.8.70 RELIABILITY / FAST-BACKTEST VALIDATION
+
+1) Syntax
+- node --check server.js: PASS
+- node --check public/app.js: PASS
+
+2) Local service boot
+- /health HTTP 200
+- build = 16.8.70-RELIABILITY-FAST-BACKTEST
+
+3) Backtest equivalence/performance regression
+Synthetic deterministic 4,600-row daily OHLC series, all four chase scales (0 / 0.75 / 1 / 1.25):
+- 0050: generated signal arrays EXACT MATCH; old 2305 ms, new 261 ms, ~8.83x signal-series speedup.
+- 00919: generated signal arrays EXACT MATCH; old 2224 ms, new 233 ms, ~9.55x signal-series speedup.
+Actual Render speed varies with CPU/history I/O, but the expensive repeated signal-series work is removed.
+
+4) Freshness isolation
+- buyModel now computes modelFreshByCode[ETF] = marketFresh && quoteStatus[ETF].ok.
+- modelOne receives its own ETF freshness rather than the all-four etfQuotesOk aggregate.
+- Overall dataFresh still reports whole-dashboard completeness.
+
+5) No-signal trading-day accounting
+- Server returns recent exchange tradingDates from ETF history.
+- Browser date rollover advances noSignalDays only by tradingDates in [old day, new day).
+- Calendar weekends/holidays no longer add one merely because the browser was opened.
+
+6) Confirmation observation integrity
+- Server emits quoteObservationKey from date/time/last/high/low/volume.
+- Browser priceSamples / confirmation counters advance only on a new observation key.
+- Re-reading an unchanged quote does not count as another confirmation sample.
+
+7) First-confirm snapshot
+- confirmedZone / confirmedAt / confirmedPrice / confirmedObservationKey stored at first formal confirmation.
+- Live layer zone remains dynamic and continues to drift.
+- UI displays first-confirm zone/time as audit reminder.
+- Model trade snapshot exports confirmedSnapshots in addition to current zones.
+
+8) WF / backtest semantics
+- UI labels chase calibration as 防追高門檻 WF.
+- Backtest walk-forward is labeled 價格核心回測 WF.
+- Historical backtest events are labeled 價格核心訊號; page notes that it does not fully replay live intraday environment/health/confirmation state.
+
+9) Frontend source of truth
+- Removed legacy duplicate root frontend files.
+- /public is the only frontend source of truth.

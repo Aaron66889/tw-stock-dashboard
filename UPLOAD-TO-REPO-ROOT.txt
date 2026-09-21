@@ -1,2 +1,16 @@
-16.8.64 ROOT HOTFIX
-把 server.js 上傳到 GitHub repository 最外層，覆蓋原 server.js。
+16.8.70 DEPLOY NOTE
+
+Repository root:
+- server.js
+- package.json
+- render.yaml / Procfile
+
+Frontend source of truth:
+- /public/index.html
+- /public/app.js
+- /public/styles.css
+- /public/sw.js
+- /public/manifest.json
+- /public/icon.svg
+
+Do NOT upload duplicate app.js/index.html/styles.css/sw.js/manifest.json/icon.svg to the repository root.

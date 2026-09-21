@@ -632,3 +632,15 @@ Scope is limited to the server-side score term used by the existing layer-1 conf
 - 價格回到第一層後，不因同一個中期高檔風險再次否決，避免重複懲罰。
 - 強多頭／弱勢只允許在歷史穩定區間內微調硬線±1，不允許門檻自由漂移。
 - 三層買點公式、Hard Gate急殺／資料失效、成分股、行情來源、持股與同步均未改動。
+
+## 16.8.70 Reliability / fast-backtest patch
+
+Scope: reliability, auditability, and compute reuse. The live three-layer formulas, ETF-specific parameters, ATR spacing, open-price anti-chase ceiling, chase thresholds, and Gate score thresholds are not loosened.
+
+- Backtest acceleration: prepare adjusted OHLC, rolling indicators, and historical pullback quantile windows once, then reuse them across chase scales 0 / 0.75 / 1 / 1.25. Quantile windows are sorted once per refresh point instead of once per quantile. Formula output is intended to be byte-for-byte numerically equivalent; synthetic 4,600-row regression tests matched all generated signals and showed about 8.8–9.6x signal-series speedup.
+- Per-ETF freshness isolation: a stale/broken quote now hard-Gates only that ETF. Other ETFs can continue if market context and their own quote are fresh.
+- No-signal streaks now advance using recent exchange trading dates from history rather than calendar-day rollover, so weekends/holidays do not add days.
+- Layer confirmation requires distinct market observations (price/high/low/volume observation key), not repeated model refreshes of an unchanged quote.
+- First-confirm snapshot: when a layer first becomes formally confirmed, the zone/time/price are stored. The live zone remains dynamic and can continue to drift; the snapshot is audit history only.
+- UI now distinguishes `防追高門檻 WF` from `價格核心回測 WF`, and the backtest calls historical events `價格核心訊號` rather than implying a full replay of the live intraday policy.
+- Frontend source of truth is `/public`; legacy duplicate root frontend files were removed to prevent editing/deploying the wrong copy.
