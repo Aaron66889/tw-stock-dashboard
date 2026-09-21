@@ -1,4 +1,4 @@
-16.8.70 DEPLOY NOTE
+16.8.71 DEPLOY NOTE
 
 Repository root:
 - server.js

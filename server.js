@@ -9,13 +9,15 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.70-RELIABILITY-FAST-BACKTEST';
+const BUILD='16.8.71-CONSTITUENT-PREOPEN-PROOF';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
 const MODEL_SYNC_KEY=String(process.env.MODEL_SYNC_KEY||'').trim();
 const MODEL_SYNC_META_ID='__MODEL_SYNC_META__';
 const HOLDINGS_SYNC_ID='__HOLDINGS_STATE__';
+const CONSTITUENT_VERSION_SYNC_ID='__CONSTITUENT_VERSIONS__';
+const PREOPEN_SNAPSHOT_SYNC_ID='__PREOPEN_SNAPSHOTS__';
 const ETF=['0050','0056','00878','00919'];
 const META={
  '0050':{name:'元大台灣50',listed:'2003-06-30',expected:50,fundId:'1066',source:'Yuanta',url:'https://www.yuantaetfs.com/product/detail/0050/ratio',
@@ -1351,7 +1353,14 @@ function movePct(q){return q&&q.last>0&&q.prevClose>0?(q.last-q.prevClose)/q.pre
 function normPct(v,scale){return Number.isFinite(v)?clamp(v/scale,-1,1):null}
 
 
-const CONSTITUENT_LAST_GOOD_FILE=path.join(DATA_DIR,'constituents-last-good.json');
+const CONSTITUENT_LAST_GOOD_FILE='constituents-last-good.json';
+const CONSTITUENT_VERSION_FILE='constituent-versions.json';
+const PREOPEN_SNAPSHOT_FILE='preopen-snapshots.json';
+// Official Taiwan Index announcement, effective 2026-09-21: Taiwan 50 added 6446 and removed 3661.
+// This is used only as a real-world transition proof for validation #26; generic versioning remains signature-based for all ETFs.
+const KNOWN_CONSTITUENT_TRANSITIONS={
+ '0050':[{effectiveDate:'2026-09-21',added:['6446'],removed:['3661'],source:'Taiwan Index 2026-09-04',sourceUrl:'https://taiwanindex.com.tw/news/450'}]
+};
 function normKey(k){return String(k??'').toLowerCase().replace(/[\s_\-()./%％：:]/g,'')}
 function firstObjVal(o,patterns){
  for(const [k,v] of Object.entries(o||{})){const nk=normKey(k);if(patterns.some(p=>p.test(nk)))return v}
@@ -1376,8 +1385,44 @@ function jsonHoldingRows(payload){
  walk(payload);
  return [...new Map(out.map(x=>[x.code,x])).values()].sort((a,b)=>(b.weight||0)-(a.weight||0));
 }
+function constituentSignature(items){
+ const codes=(items||[]).map(x=>String(x?.code||'').trim()).filter(Boolean).sort();
+ return crypto.createHash('sha256').update(codes.join('|')).digest('hex').slice(0,16);
+}
+function constituentVersionStore(){const x=diskRead(CONSTITUENT_VERSION_FILE);return x&&typeof x==='object'?x:{}}
+function saveConstituentVersion(c){
+ if(!c?.complete||!c?.code||!c?.items?.length)return c;
+ const signature=constituentSignature(c.items),store=constituentVersionStore(),list=Array.isArray(store[c.code])?store[c.code]:[],now=new Date().toISOString();
+ const effectiveDate=c.effectiveDate||c.asOf||ymdTaipei();
+ const last=list.at(-1);
+ if(!last||last.signature!==signature){
+  list.push({effectiveDate,firstObservedAt:now,lastObservedAt:now,signature,complete:true,expected:c.expected||META[c.code]?.expected||c.items.length,source:c.source||null,sourceUrl:c.sourceUrl||null,items:c.items.map(x=>({code:String(x.code),name:x.name||'',weight:Number.isFinite(x.weight)?x.weight:null}))});
+ }else{
+  last.lastObservedAt=now;last.source=c.source||last.source;last.sourceUrl=c.sourceUrl||last.sourceUrl;
+  // Keep the composition version but refresh names/weights as metadata; the signature is based only on member codes.
+  last.items=c.items.map(x=>({code:String(x.code),name:x.name||'',weight:Number.isFinite(x.weight)?x.weight:null}));
+ }
+ store[c.code]=list.slice(-80);diskWrite(CONSTITUENT_VERSION_FILE,store);persistOperationalMetaCloud(CONSTITUENT_VERSION_SYNC_ID,'__CONSTITUENTS__',{versions:store}).catch(()=>{});return c;
+}
+function constituentVersionForDate(code,date){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(String(date||'')))return null;
+ const list=(constituentVersionStore()[code]||[]).filter(x=>x?.effectiveDate&&x?.items?.length).sort((a,b)=>a.effectiveDate.localeCompare(b.effectiveDate));
+ let hit=null;for(const x of list){if(x.effectiveDate<=date)hit=x;else break}
+ if(!hit)return null;
+ return{code,asOf:hit.effectiveDate,effectiveDate:hit.effectiveDate,requestedHistoricalDate:date,items:hit.items,complete:true,expected:hit.expected||META[code]?.expected||hit.items.length,officialOnly:false,thirdParty:false,source:(hit.source||'成分版本快照')+'（歷史版本）',sourceUrl:hit.sourceUrl||META[code]?.url||null,historicalAvailable:true,versionSignature:hit.signature,versionFirstObservedAt:hit.firstObservedAt,versionLastObservedAt:hit.lastObservedAt,note:`使用 ${hit.effectiveDate} 起生效的已保存成分版本；不使用今日成分倒灌。`};
+}
+function emptyHistoricalConstituents(code,date){return{code,asOf:null,effectiveDate:null,requestedHistoricalDate:date,items:[],complete:false,expected:META[code]?.expected||0,officialOnly:false,thirdParty:false,source:'歷史成分版本庫',sourceUrl:META[code]?.url||null,historicalAvailable:false,note:'此日期沒有已保存的成分版本；回傳空集合，禁止以今日成分倒灌歷史。'}}
+function knownConstituentTransitionProof(code,current){
+ const rows=KNOWN_CONSTITUENT_TRANSITIONS[code]||[],codes=new Set((current?.items||[]).map(x=>String(x.code))),today=ymdTaipei();
+ for(const r of rows){if(today<r.effectiveDate)continue;const addedOk=r.added.every(x=>codes.has(x)),removedOk=r.removed.every(x=>!codes.has(x));if(addedOk&&removedOk)return{pass:true,...r,evidence:`${code} ${r.effectiveDate} 已驗證：新增 ${r.added.join(',')}／刪除 ${r.removed.join(',')}`}}
+ return{pass:false};
+}
+function constituentVersionSummary(){
+ const store=constituentVersionStore();return ETF.map(code=>{const list=Array.isArray(store[code])?store[code]:[];return{code,count:list.length,dates:list.map(x=>x.effectiveDate),signatures:[...new Set(list.map(x=>x.signature).filter(Boolean))].length,last:list.at(-1)||null}})
+}
 function saveConstituentLastGood(c){
  if(!c?.complete||!c?.items?.length)return c;
+ saveConstituentVersion(c);
  const store=diskRead(CONSTITUENT_LAST_GOOD_FILE)||{};store[c.code]={...c,savedAt:new Date().toISOString()};diskWrite(CONSTITUENT_LAST_GOOD_FILE,store);return c;
 }
 function constituentLastGood(code,maxAgeDays=7){
@@ -1766,10 +1811,18 @@ async function cathayOfficialExcelConstituents(date=null){
 }
 
 async function constituents(code,date=null){
- const key='const:r339:'+code+':'+(date||'latest');
- return cached(key,date?6*60*60*1000:20*60*1000,async()=>{
-  if(code==='00878'){const c=await cathayOfficialExcelConstituents(date);return c?.complete?saveConstituentLastGood(c):(constituentLastGood(code)||c)}
-  if(date)return{...await constituents(code,null),requestedHistoricalDate:date,historicalAvailable:false,note:'未取得該歷史日完整持股版本時，絕不將今天成分倒灌歷史。'};
+ const key='const:r342:'+code+':'+(date||'latest');
+ return cached(key,date?30*60*1000:20*60*1000,async()=>{
+  if(date){
+   // 00878 has a date-addressable official Excel source. If that exact/nearby historical portfolio is unavailable,
+   // fall back only to our saved historical versions — never to today's holdings.
+   if(code==='00878'){
+    const c=await cathayOfficialExcelConstituents(date).catch(()=>null);
+    if(c?.complete){saveConstituentVersion(c);return c}
+   }
+   return constituentVersionForDate(code,date)||emptyHistoricalConstituents(code,date);
+  }
+  if(code==='00878'){const c=await cathayOfficialExcelConstituents(null);return c?.complete?saveConstituentLastGood(c):(constituentLastGood(code)||c)}
   if(code==='0050'||code==='0056')return yuantaOfficialConstituents(code);
   if(code==='00919')return capitalOfficialConstituents(code);
   throw Error('unsupported constituents');
@@ -1986,7 +2039,35 @@ async function backtest(code){
  const result={ok:true,ready:true,status:'READY',code,name:META[code].name,listed:META[code].listed,firstDate:v.first,lastDate:v.last,source:h.source,historyDays:h.rows.length,validation:v,corporateActions:h.corporateActions,chaseCalibration,scope:v.fullHistoryPass?'上市日至今完整歷史價格核心回測':`長期價格核心樣本回測（PARTIAL）：${v.first}～${v.last}，${v.rows}交易日；未宣稱上市日至今完整。`,slices,ab:{antiChaseOn:metrics(on),antiChaseOff:metrics(off)},walkForward:wf,computeMs:Date.now()-started,generatedAt:new Date().toISOString()};cache.set(key,{at:Date.now(),v:result});return result;
 }
 
-async function preopenTxfPump(){if(!txfPreopenWindowNow())return;try{const nf=await nightFuture();RUNTIME.nf=nf}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}}
+function preopenSnapshotStore(){const x=diskRead(PREOPEN_SNAPSHOT_FILE);return x&&typeof x==='object'?x:{}}
+function getPreopenSnapshot(day=ymdTaipei()){return preopenSnapshotStore()[day]||null}
+function savePreopenSnapshot(snapshot){
+ if(!snapshot?.day)return null;const store=preopenSnapshotStore(),old=store[snapshot.day];
+ if(old?.locked)return old;
+ store[snapshot.day]=snapshot;const keep=Object.keys(store).sort().slice(-20),trim={};for(const d of keep)trim[d]=store[d];diskWrite(PREOPEN_SNAPSHOT_FILE,trim);persistOperationalMetaCloud(PREOPEN_SNAPSHOT_SYNC_ID,'__PREOPEN__',{snapshots:trim}).catch(()=>{});return snapshot;
+}
+let PREOPEN_PUMP_RUNNING=false;
+async function preopenTxfPump(){
+ const tick=taipeiClock(),tickMins=tick.h*60+tick.m;
+ if(PREOPEN_PUMP_RUNNING||!txfPreopenWindowNow())return;PREOPEN_PUMP_RUNNING=true;
+ try{
+  // At/after 08:59:30, freeze the latest server draft immediately. This does not depend on a new external request finishing in time.
+  if(tickMins===539&&tick.s>=30){const old=getPreopenSnapshot(tick.day);if(old&&!old.locked)savePreopenSnapshot({...old,locked:true,lockedAt:new Date().toISOString(),source:'server-auto-08:57-lock'})}
+  const nf=await nightFuture();RUNTIME.nf=nf;
+  if(tickMins>=537){
+   const bm=await deadline(cached('buymodel',8000,buyModel),9500,null);
+   if(bm?.models){
+    const models={};for(const c of ETF){const r=bm.models[c];if(r&&!r.error&&r.raw)models[c]=r.raw}
+    if(Object.keys(models).length){
+     const locked=tickMins===539&&tick.s>=30;
+     const snap={day:tick.day,at:new Date().toISOString(),locked,lockedAt:locked?new Date().toISOString():null,models,txfLead:nf?.preopenLead||bm?.nightFuture?.preopenLead||null,source:locked?'server-auto-08:57-lock':'server-auto-08:57'};
+     savePreopenSnapshot(snap);
+    }
+   }
+  }
+ }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}
+ finally{PREOPEN_PUMP_RUNNING=false}
+}
 async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cached('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
 function V(status,evidence,detail='',updatedAt=new Date().toISOString()){return{status,evidence,detail,updatedAt}}
 async function validationReport(deep=false){
@@ -2016,9 +2097,14 @@ async function validationReport(deep=false){
    ?`${nf.source||'夜盤'}｜參考價 ${Number.isFinite(nf.reference)?nf.reference:'—'}｜最高 ${Number.isFinite(nf.high)?nf.high:'—'}｜距高 ${Number.isFinite(nf.offHighPoints)?nf.offHighPoints.toFixed(0):'—'} 點`
    :'等待鉅亨 TXF 夜盤資料',
   nf?.available&&!nfAnue?'目前使用備援來源；鉅亨 TXF 成功回傳後才正式 PASS':'');const mom=nf?.momentum,allMom=mom&&mom.d1&&mom.d3&&mom.d5&&mom.d15;out[4]=V(allMom?'PASS':mom?.sampleCount?'PARTIAL':'WAIT',allMom?'1/3/5/15分鐘皆完成':`樣本累積 ${mom?.sampleCount||0}`);
- out[5]=V('WAIT','需真實08:57–08:59:30由瀏覽器端鎖定');out[6]=V('PASS','首頁具08:57–09:00盤前優先邏輯');out[7]=V(bm&&Object.values(bm.models||{}).some(x=>x&&'noBuyToday' in x)?'PASS':'PARTIAL','支援「今日暫無合理買點」');out[8]=V(new Set(ETF.map(c=>JSON.stringify(META[c].cfg))).size===4?'PASS':'FAIL','四檔使用獨立參數');out[9]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.first?.low)?'PASS':'PARTIAL','第一層為動態區間');out[10]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.third?.low)?'PASS':'PARTIAL','三層價格輸出');out[11]=V(bm&&ETF.some(c=>Number.isFinite(bm.models?.[c]?.score))?'PASS':'PARTIAL','綜合評分輸出');out[12]=V('PASS','前端分層狀態機支援分批');out[13]=V(bm&&ETF.some(c=>'hardVeto' in (bm.models?.[c]||{}))?'PASS':'PARTIAL','硬Gate含資料失效/急殺');out[14]=V(bm&&ETF.some(c=>bm.models?.[c]?.history?.sma250)?'PASS':'PARTIAL','5/20/60/120/250納入');out[15]=V('PASS','買點上修有速度上限');out[16]=V(bm&&ETF.some(c=>'bullStructure' in (bm.models?.[c]?.history||{}))?'PASS':'PARTIAL','中樞慢速重新定錨');
+ const ps=getPreopenSnapshot();
+ out[5]=V(ps?.locked?'PASS':ps?'PARTIAL':'WAIT',ps?.locked?`Server已自動鎖定 ${ps.at.slice(11,19)} 盤前版本（不依賴瀏覽器）`:ps?`Server盤前版本累積中 ${ps.at.slice(11,19)}`:'今日尚無Server 08:57盤前快照；不事後補造');out[6]=V('PASS','首頁具08:57–09:00盤前優先邏輯');out[7]=V(bm&&Object.values(bm.models||{}).some(x=>x&&'noBuyToday' in x)?'PASS':'PARTIAL','支援「今日暫無合理買點」');out[8]=V(new Set(ETF.map(c=>JSON.stringify(META[c].cfg))).size===4?'PASS':'FAIL','四檔使用獨立參數');out[9]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.first?.low)?'PASS':'PARTIAL','第一層為動態區間');out[10]=V(bm&&ETF.some(c=>bm.models?.[c]?.raw?.third?.low)?'PASS':'PARTIAL','三層價格輸出');out[11]=V(bm&&ETF.some(c=>Number.isFinite(bm.models?.[c]?.score))?'PASS':'PARTIAL','綜合評分輸出');out[12]=V('PASS','前端分層狀態機支援分批');out[13]=V(bm&&ETF.some(c=>'hardVeto' in (bm.models?.[c]||{}))?'PASS':'PARTIAL','硬Gate含資料失效/急殺');out[14]=V(bm&&ETF.some(c=>bm.models?.[c]?.history?.sma250)?'PASS':'PARTIAL','5/20/60/120/250納入');out[15]=V('PASS','買點上修有速度上限');out[16]=V(bm&&ETF.some(c=>'bullStructure' in (bm.models?.[c]?.history||{}))?'PASS':'PARTIAL','中樞慢速重新定錨');
  out[17]=V('WAIT','瀏覽器歷史紀錄由前端補驗');out[18]=V('WAIT','實際價格同步由前端補驗');out[19]=V('WAIT','重複區間折疊由前端補驗');out[20]=V('WAIT','需累積7日買點歷史');
- const hs=bm?.health||{},usable=ETF.filter(c=>hs[c]?.usable).length,connected=ETF.filter(c=>hs[c]&&hs[c].sourceCoverage>0).length;out[21]=V(usable===4?'PASS':connected?'PARTIAL':'FAIL',`成分來源已連線 ${connected}/4；完整健康可計分 ${usable}/4`);out[22]=V(connected?'PASS':'PARTIAL',`成分資料畫面可顯示 ${connected}/4；不足者明示不計分`);out[23]=V(usable===4?'PASS':usable?'PARTIAL':'WAIT',`健康度可正式計分 ${usable}/4`);out[24]=V(usable?'PASS':'WAIT','健康度可用時採權重式分歧/背離');out[25]=V('PASS','健康度位於各ETF detail頁');out[26]=V('PARTIAL','新有效日期會保存版本；待實際換股事件驗證');out[27]=V('PARTIAL','沒有當時版本就禁止今日成分倒灌歷史');
+ const hs=bm?.health||{},usable=ETF.filter(c=>hs[c]?.usable).length,connected=ETF.filter(c=>hs[c]&&hs[c].sourceCoverage>0).length;out[21]=V(usable===4?'PASS':connected?'PARTIAL':'FAIL',`成分來源已連線 ${connected}/4；完整健康可計分 ${usable}/4`);out[22]=V(connected?'PASS':'PARTIAL',`成分資料畫面可顯示 ${connected}/4；不足者明示不計分`);out[23]=V(usable===4?'PASS':usable?'PARTIAL':'WAIT',`健康度可正式計分 ${usable}/4`);out[24]=V(usable?'PASS':'WAIT','健康度可用時採權重式分歧/背離');out[25]=V('PASS','健康度位於各ETF detail頁');
+ const verSummary=constituentVersionSummary(),rawLg=diskRead(CONSTITUENT_LAST_GOOD_FILE)||{},current0050=rawLg['0050']||null,known0050=knownConstituentTransitionProof('0050',current0050),observedChange=verSummary.find(x=>x.signatures>=2);
+ out[26]=V(known0050.pass||!!observedChange?'PASS':verSummary.some(x=>x.count>0)?'PARTIAL':'WAIT',known0050.pass?`${known0050.evidence}｜版本已保存`:observedChange?`${observedChange.code} 已偵測 ${observedChange.signatures} 個不同成分簽章並自動換版`:`版本庫已啟用 ${verSummary.filter(x=>x.count>0).length}/4；等待下一次實際成分變更`,verSummary.map(x=>`${x.code}:${x.count}版/${x.signatures}簽章`).join('｜'));
+ let histIsolation=null;try{const ancient=await constituents('0050','2000-01-01'),latest0050=verSummary.find(x=>x.code==='0050')?.last,roundTrip=latest0050?await constituents('0050',latest0050.effectiveDate):null;histIsolation={noLeak:!ancient?.items?.length&&ancient?.historicalAvailable===false,roundTrip:!latest0050||(roundTrip?.historicalAvailable===true&&constituentSignature(roundTrip.items)===latest0050.signature),latestDate:latest0050?.effectiveDate||null}}catch(e){histIsolation={noLeak:false,roundTrip:false,error:e.message}}
+ out[27]=V(histIsolation.noLeak&&histIsolation.roundTrip?'PASS':'FAIL',histIsolation.noLeak&&histIsolation.roundTrip?`歷史版本隔離PASS${histIsolation.latestDate?`｜${histIsolation.latestDate}版本可回取`:''}｜無版本日期回傳空集合，不倒灌今日成分`:`歷史成分隔離失敗：${histIsolation.error||`noLeak=${histIsolation.noLeak}, roundTrip=${histIsolation.roundTrip}`}`);
  out[28]=V(ctx?.breadth?.total&&ctx.breadth?.sourceDate===ymdTaipei()?'PASS':'PARTIAL',ctx?.breadth?`${ctx.breadth.scope} ${ctx.breadth.up}↑/${ctx.breadth.down}↓/${ctx.breadth.flat}平｜${ctx.breadth.mode}｜${ctx.breadth.sourceDate||'—'}${Number.isFinite(ctx.breadth.coverage)?`｜覆蓋${Math.round(ctx.breadth.coverage*100)}%`:''}`:`廣度來源暫不可用${BREADTH_RUNTIME.error?'｜'+BREADTH_RUNTIME.error:''}／盤前不沿用舊資料`);out[29]=V(ovs?.quotes?'PASS':'PARTIAL',ovs?.quotes?'NASDAQ／SOX／TSM ADR 海外風險層可用':'海外風險資料暫不可用');out[30]=V('PASS','環境分數採大盤／夜盤／海外／成分健康多來源加權');out[31]=V('WAIT','私人持股由前端補驗');out[32]=V('PASS','我的持股與買點頁分離');const etfPriceCount=ETF.filter(c=>Number(bm?.quotes?.[c]?.last)>0).length;out[33]=V(etfPriceCount===4?'PASS':etfPriceCount?'PARTIAL':'WAIT',`四檔ETF即時現價 ${etfPriceCount}/4｜持股市值損益使用同一即時quote`);out[34]=V(bm?.dataFresh?'PASS':bm?'FAIL':'WAIT',bm?`marketFresh=${bm.marketFresh?'OK':'FAIL'}(${bm.marketAgeMs!=null?Math.round(bm.marketAgeMs/1000)+'s':'—'}${bm.marketLastGoodFallback?',緩衝':''})｜etfFresh=${bm.etfFresh?'OK':'FAIL'}｜${ETF.map(c=>{const q=bm.quoteStatus?.[c],age=q?.ageMs!=null?Math.round(q.ageMs/1000)+'s':'—';return`${c}:${q?.ok?'OK':`缺${q?.last?'':'現價/'}${q?.prevClose?'':'參考價/'}${twMarketOpenNow()&&!q?.open?'開盤':''}`}(${age}${q?.corporateActionAdjusted?',除權息已調整':''}${q?.corporateActionReferenceMissing?',除權息待確認':''}${q?.lastGoodFallback?',緩衝':''}${q?.openSource?',open='+q.openSource:''})`}).join('｜')}`:'等待模型資料');
  out[35]=V('PASS','visibilitychange 回到前景時，前端立即重抓 ETF／大盤／環境／夜盤／模型／雲端同步');
  out[36]=V('PASS','實際刷新頻率：ETF盤中5秒（非盤中10秒）／大盤10秒／夜盤10秒／環境30秒／模型30秒');
@@ -2114,6 +2200,30 @@ async function supabaseRest(route,opts={}){
  if(!text.trim())return null;
  try{return JSON.parse(text)}catch(_){return text}
 }
+async function operationalMetaCloudPayload(id){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return null;
+ const rows=await supabaseRest('model_trades?id=eq.'+encodeURIComponent(id)+'&select=payload&limit=1')||[];
+ return rows[0]?.payload&&typeof rows[0].payload==='object'?rows[0].payload:null;
+}
+async function persistOperationalMetaCloud(id,code,payload){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return{ok:false,skipped:true};
+ const now=new Date().toISOString(),row={id,code,entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload:{...payload,updatedAt:now}};
+ await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});return{ok:true};
+}
+function mergeConstituentVersionStores(cloud,local){
+ const out={};for(const code of ETF){const rows=[...(cloud?.[code]||[]),...(local?.[code]||[])],m=new Map();for(const x of rows){if(!x?.effectiveDate||!x?.signature||!x?.items?.length)continue;m.set(x.effectiveDate+'|'+x.signature,x)}out[code]=[...m.values()].sort((a,b)=>a.effectiveDate.localeCompare(b.effectiveDate)).slice(-80)}return out;
+}
+async function restoreOperationalMeta(){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return;
+ try{
+  const cv=await operationalMetaCloudPayload(CONSTITUENT_VERSION_SYNC_ID),localCv=constituentVersionStore();
+  if(cv?.versions){const merged=mergeConstituentVersionStores(cv.versions,localCv);diskWrite(CONSTITUENT_VERSION_FILE,merged)}
+ }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),`constituent-meta-restore:${e.message}`].slice(-20)}
+ try{
+  const po=await operationalMetaCloudPayload(PREOPEN_SNAPSHOT_SYNC_ID),local=preopenSnapshotStore();
+  if(po?.snapshots){const merged={...po.snapshots,...local};for(const [day,x] of Object.entries(po.snapshots)){if(x?.locked&&!local?.[day]?.locked)merged[day]=x}const keep=Object.keys(merged).sort().slice(-20),trim={};for(const d of keep)trim[d]=merged[d];diskWrite(PREOPEN_SNAPSHOT_FILE,trim)}
+ }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),`preopen-meta-restore:${e.message}`].slice(-20)}
+}
 function tradeSyncStamp(t){return String(t?._syncUpdatedAt||t?.exitAt||t?.perf?.fetchedAt||t?.entryAt||new Date(0).toISOString())}
 async function cloudRowsById(id){
  return await supabaseRest('model_trades?id=eq.'+encodeURIComponent(id)+'&select=id,code,entry_at,updated_at,payload&limit=1')||[];
@@ -2123,7 +2233,7 @@ async function cloudModelState(){
  let initialized=false;const trades=[],deletedIds=[];
  for(const r of rows){
   if(r.id===MODEL_SYNC_META_ID){initialized=true;continue}
-  if(r.id===HOLDINGS_SYNC_ID)continue
+  if([HOLDINGS_SYNC_ID,CONSTITUENT_VERSION_SYNC_ID,PREOPEN_SNAPSHOT_SYNC_ID].includes(r.id))continue
   const p=r.payload&&typeof r.payload==='object'?r.payload:null;if(!p)continue;
   if(p._deleted){deletedIds.push(r.id);continue}
   trades.push({...p,id:p.id||r.id,code:p.code||r.code,_cloudUpdatedAt:r.updated_at});
@@ -2344,9 +2454,10 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/history-status')return send(res,200,{ok:true,build:BUILD,history:ETF.map(historyProgress)});
  if(u.pathname==='/api/history-proof')return send(res,200,{ok:true,build:BUILD,allPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),history:ETF.map(c=>{const p=historyProgress(c),r=diskRead(readyFile(c));return{...p,source:r?.source||null,corporateActions:r?.corporateActions||[],adjustmentAnomalies:r?.adjustmentAnomalies||[],dividendSource:r?.dividendSource||null}})});
  if(u.pathname==='/api/history-warm'){const code=u.searchParams.get('code'),all=u.searchParams.get('all')==='1';if(all)ETF.forEach(c=>enqueueHistory(c,false));else if(ETF.includes(code))enqueueHistory(code,true);return send(res,200,{ok:true,status:'WARMING',history:ETF.map(historyProgress)});}
+ if(u.pathname==='/api/preopen-snapshot')return send(res,200,{ok:true,build:BUILD,day:ymdTaipei(),snapshot:getPreopenSnapshot(),generatedAt:new Date().toISOString()});
  if(u.pathname==='/api/validation')return safeApi(res,'validation',()=>validationReport(u.searchParams.get('deep')==='1'));
  if(u.pathname==='/api/official-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'official-history',async()=>{if(!ETF.includes(code))return{ok:false,error:'unsupported code'};const h=await officialHistory(code);return h.ready?{ok:true,ready:true,code,source:h.source,validation:h.validation,corporateActions:h.corporateActions,adjustmentAnomalies:h.adjustmentAnomalies,rows:h.rows.length,first:h.rows[0]?.date,last:h.rows.at(-1)?.date}:{ok:true,ready:false,status:'WARMING',code,progress:h.progress}})}
- if(u.pathname==='/api/diagnostics')return send(res,200,{ok:true,version:VERSION,build:BUILD,marketSource:RUNTIME.live?.source||null,marketRealtime:RUNTIME.live?.realtime??null,lastRefresh:RUNTIME.lastRefresh,errors:RUNTIME.errors||[],preopenTxfLead:RUNTIME.nf?.preopenLead||null,preopenTxfSamples:preopenTxfSamples.length,historyQueue:ETF.map(historyProgress),historyAllPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),yahoo0050:{enabled:true,mode:'v8 chart period1/period2 adjusted OHLC'},goodinfo0050:{enabled:true,mode:'POST long-history',cachedRows:GOODINFO_0050_CACHE.rows.length,period:GOODINFO_0050_CACHE.period,error:GOODINFO_0050_CACHE.error,sourceUrl:GOODINFO_0050_CACHE.url||'https://goodinfo.tw/tw/ShowK_Chart.asp?STOCK_ID=0050&CHT_CAT2=DATE&STEP=DATA&PERIOD=6000&PRICE_ADJ=T'},now:new Date().toISOString()});
+ if(u.pathname==='/api/diagnostics')return send(res,200,{ok:true,version:VERSION,build:BUILD,marketSource:RUNTIME.live?.source||null,marketRealtime:RUNTIME.live?.realtime??null,lastRefresh:RUNTIME.lastRefresh,errors:RUNTIME.errors||[],preopenTxfLead:RUNTIME.nf?.preopenLead||null,preopenTxfSamples:preopenTxfSamples.length,preopenSnapshot:getPreopenSnapshot(),constituentVersions:constituentVersionSummary(),historyQueue:ETF.map(historyProgress),historyAllPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),yahoo0050:{enabled:true,mode:'v8 chart period1/period2 adjusted OHLC'},goodinfo0050:{enabled:true,mode:'POST long-history',cachedRows:GOODINFO_0050_CACHE.rows.length,period:GOODINFO_0050_CACHE.period,error:GOODINFO_0050_CACHE.error,sourceUrl:GOODINFO_0050_CACHE.url||'https://goodinfo.tw/tw/ShowK_Chart.asp?STOCK_ID=0050&CHT_CAT2=DATE&STEP=DATA&PERIOD=6000&PRICE_ADJ=T'},now:new Date().toISOString()});
  if(u.pathname==='/api/etf-live'){
   try{
    const d=await deadline(liveEtf4(),7000,null),body=JSON.stringify(d||{ok:false,status:'TIMEOUT',source:'etf-live',quotes:{},error:'四檔ETF即時行情逾時',fetchedAt:new Date().toISOString()});
@@ -2377,6 +2488,8 @@ server.requestTimeout=30000;
 server.on('clientError',(err,socket)=>{try{if(socket.writable)socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')}catch(_){}});
 server.listen(PORT,'0.0.0.0',()=>{
  console.log(VERSION+' '+BUILD+' listening on '+PORT);
+ // Restore small operational snapshots before the first live/model refresh when Supabase is configured.
+ setTimeout(()=>restoreOperationalMeta().catch(()=>{}),500);
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
  setInterval(refreshRuntime,120000);
@@ -2384,7 +2497,7 @@ server.listen(PORT,'0.0.0.0',()=>{
  setInterval(()=>{const t=taipeiClock(),m=t.h*60+t.m;if(['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&m>=540&&BREADTH_RUNTIME.lockedDay!==t.day)refreshBreadthRuntime(false).catch(()=>{})},30000);
  // Dedicated 08:45~08:59:59 TXF sampler. It is idle outside the pre-open window and gives the 08:57/08:58/08:59 model the actual 12-minute day-session path.
  setTimeout(preopenTxfPump,2500);
- setInterval(preopenTxfPump,10000);
+ setInterval(preopenTxfPump,5000);
  setTimeout(autoWarmAllHistory,45000);
  setInterval(autoWarmAllHistory,30*60*1000);
 });

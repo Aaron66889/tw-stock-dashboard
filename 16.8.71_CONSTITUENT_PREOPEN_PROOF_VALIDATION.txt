@@ -1,0 +1,10 @@
+16.8.71 CONSTITUENT / PREOPEN PROOF VALIDATION
+
+Build: 16.8.71-CONSTITUENT-PREOPEN-PROOF
+UI marker: V12.4 FINAL R3.42
+
+Changes:
+1. #26 constituent auto-versioning is signature-based and persists complete composition snapshots. A verified 0050 2026-09-21 transition proof checks 6446 present / 3661 absent.
+2. #27 historical constituent query uses saved versions only. Dates with no version return an empty set and historicalAvailable=false; today's composition is never backfilled. 00878 may use its date-addressable official Excel source first.
+3. #5 server now automatically captures 08:57-08:59:30 pre-open model snapshots and locks them without requiring a browser to be open. No post-hoc reconstruction after 09:00.
+4. #1 validation no longer stays stale because of browser load order; market/context/night/model refreshes immediately re-render validation, and a backend PASS is not downgraded by transient client timing.
