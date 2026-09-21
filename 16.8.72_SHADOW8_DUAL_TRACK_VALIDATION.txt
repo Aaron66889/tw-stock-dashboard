@@ -1,0 +1,59 @@
+V12.4 FINAL R3.50 / 16.8.72-SHADOW8-DUAL-TRACK
+
+Purpose
+- Preserve the R3.42 official buy-point engine as the production source of buy signals.
+- Add a parallel Shadow model for experimentation and live comparison.
+- Shadow can NEVER overwrite official models or official confirmation state.
+
+Implemented
+1) Time-based drift (Shadow only)
+   - Shadow zone movement scales by elapsed time rather than browser/model refresh count.
+   - Official moveZone/updateOne logic is unchanged.
+
+2) Confirm Snapshot
+   - Existing confirmedZone / confirmedAt / confirmedPrice is preserved for official.
+   - Shadow keeps the same independent snapshot fields.
+
+3) Intraday replay ledger
+   - Every distinct live market observation records official zones/status plus Shadow zones/status.
+   - Stored in localStorage key v124_shadow_replay (rolling 2400 observations).
+   - This is forward/live replay data; it does not pretend that unavailable historical environment/health data can be reconstructed.
+
+4) Critical Data Gate (Shadow only)
+   - Quote freshness
+   - Effective reference / ex-dividend reference reliability
+   - ATR validity
+   - Layer ordering / numeric validity
+   - Daily chase calibration must be READY + LOCKED
+   - Historical price data must be backtest-ready
+   - Constituent health must be usable
+   - Failure BLOCKS Shadow confirmation only; official signal is untouched.
+
+5) Quantile experiment
+   - Per ETF candidate families around the existing q1/q2/q3.
+   - No giant parameter grid; five compact families only.
+
+6) Walk-forward OOS quantile selection
+   - 3-year train -> next-year test.
+   - Recent OOS selections determine current Shadow quantile family.
+   - Cache keyed by ETF + latest history date + row count.
+   - At most ONE uncached OOS calibration is computed per /api/buy-model request to avoid blocking Render.
+
+7) Shadow score/cycle policy
+   - Official floors remain 50/46/42 and 2 distinct observations.
+   - Shadow may use stricter floors/cycles only when OOS confidence is sufficient.
+   - These are explicitly Shadow-only candidates; they are not promoted to production automatically.
+
+8) Old/New dual-track comparison
+   - Official card remains production buy point.
+   - Shadow panel shows three Shadow zones, L1 difference, Critical Gate, policy/WF, confirmation policy, replay count.
+   - Model trade snapshots save the Shadow state alongside the official snapshot for later performance comparison.
+
+Official-path regression proof
+- server.js modelOne official call was regression-tested against R3.42 on the same synthetic history/quote/environment/health input: identical output for score, chaseRisk, hardVeto, noBuyToday, three raw zones, calibration and decision gate.
+- public/app.js official initModel(), updateOne(), and moveZone() functions are byte-for-byte unchanged from R3.42.
+- Shadow data is returned in a separate shadowModels object.
+
+Important limitation
+- This build does NOT claim a full historical 1-minute/5-minute reconstruction of the entire live policy, because historical environment, constituent-health and every market observation are not reliably available for the full ETF history.
+- Instead, R3.50 starts collecting true live observation-by-observation replay data going forward. Historical price-core OOS remains separate and clearly labeled.
