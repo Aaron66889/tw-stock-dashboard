@@ -1,4 +1,2 @@
-16.8.71 PUBLIC DEPLOY
-/public is the only frontend source of truth.
-Replace app.js / index.html / styles.css / sw.js / manifest.json / icon.svg here.
-Expected marker: V12.4 FINAL R3.42.
+Upload these files into the repository public/ directory.
+Expected visible marker: V12.4 FINAL R3.50.
