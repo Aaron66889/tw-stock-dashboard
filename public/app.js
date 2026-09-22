@@ -19,13 +19,13 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.74-DIVIDEND-AUTO',CONFIRM_RULE_VERSION='layer-confirm-v3-distinct-observation',SHADOW_CONFIRM_VERSION='shadow-confirm-v1-time-drift-critical-gate';
+const CLIENT_BUILD='16.8.76-DIVIDEND-AUTO-00919-COST-FIX',CONFIRM_RULE_VERSION='layer-confirm-v3-distinct-observation',SHADOW_CONFIRM_VERSION='shadow-confirm-v1-time-drift-critical-gate';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
 let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,selectedETF='0050',selectedBacktest='0050';
 let etfLiveTimer=null;
-const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
+const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:550,c:18.80}];
 
 // 16.8.74 dividend baseline: reconstructed once from the user's Fubon statements; future distributions are automatic.
 // Privacy: only aggregate totals are kept in the deployed app; the detailed transaction ledger is not embedded.
@@ -41,12 +41,16 @@ const DIVIDEND_SEED={
 // Entitled but not yet paid as of the reconstruction date. Once the pay date arrives,
 // it is automatically included unless the user has already updated the dividend total past that date.
 const DIVIDEND_KNOWN_FUTURE={
- '00919':[{exDate:'2026-09-16',payDate:'2026-10-15',cash:275,shares:250,amount:1.10}]
+ '00919':[{exDate:'2026-09-16',payDate:'2026-10-15',cash:605,shares:550,amount:1.10}]
 };
 function normalizeHoldingRecord(x){
  const t=String(x?.t||''),seed=DIVIDEND_SEED[t];
  const raw=Number(x?.dividendReceived),has=Number.isFinite(raw)&&raw>=0;
- return{...x,t,n:String(x?.n||t),s:Number(x?.s)||0,c:Number(x?.c)||0,
+ let s=Number(x?.s)||0,c=Number(x?.c)||0;
+ // R3.54: R3.53 briefly shipped an incorrect 00919 default cost of 19.89.
+ // Only migrate that exact known bad tuple; preserve every other user-entered cost.
+ if(t==='00919'&&s===550&&Math.abs(c-19.89)<0.001)c=18.80;
+ return{...x,t,n:String(x?.n||t),s,c,
   dividendReceived:has?raw:(Number.isFinite(seed)?seed:0),
   dividendAsOf:String(x?.dividendAsOf||(Number.isFinite(seed)?DIVIDEND_SEED_ASOF:''))};
 }
