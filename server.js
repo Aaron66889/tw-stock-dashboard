@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.74-DIVIDEND-AUTO';
+const BUILD='16.8.76-DIVIDEND-AUTO-00919-COST-FIX';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -29,7 +29,7 @@ const DIVIDEND_BASE={
 };
 // 2026/09/16 00919 entitlement predates the automatic snapshot start, so migrate it once as a locked entitlement.
 const DIVIDEND_BOOTSTRAP_LOCKS={
- '00919:2026-09-16':{code:'00919',exDate:'2026-09-16',recordDate:'2026-09-22',payDate:'2026-10-15',amount:1.10,shares:250,cash:275,source:'TWSE ETF e添富＋2026-09-22 migration'}
+ '00919:2026-09-16':{code:'00919',exDate:'2026-09-16',recordDate:'2026-09-22',payDate:'2026-10-15',amount:1.10,shares:550,cash:605,source:'TWSE ETF e添富＋2026-09-22 corrected migration'}
 };
 const ETF=['0050','0056','00878','00919'];
 const META={
@@ -2355,7 +2355,19 @@ async function cloudDeleteTrade(id){
 async function cloudHoldingsState(){
  const rows=await cloudRowsById(HOLDINGS_SYNC_ID),r=rows[0];
  const p=r?.payload&&typeof r.payload==='object'?r.payload:null;
- return{initialized:!!p,holdings:Array.isArray(p?.holdings)?p.holdings:[],updatedAt:r?.updated_at||p?.updatedAt||null};
+ let holdings=Array.isArray(p?.holdings)?p.holdings:[];
+ // R3.54 one-time correction: R3.53 briefly seeded 00919 550 shares at 19.89.
+ // Migrate only that exact known bad tuple so legitimate user costs are untouched.
+ let corrected=false;
+ holdings=holdings.map(h=>{
+  const t=String(h?.t||''),shares=Number(h?.s)||0,cost=Number(h?.c)||0;
+  if(t==='00919'&&shares===550&&Math.abs(cost-19.89)<0.001){corrected=true;return{...h,c:18.80}}
+  return h;
+ });
+ if(corrected){
+  try{const saved=await cloudUpsertHoldings(holdings);holdings=saved.holdings||holdings}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),`00919-cost-migration:${e.message}`].slice(-20)}
+ }
+ return{initialized:!!p,holdings,updatedAt:r?.updated_at||p?.updatedAt||null};
 }
 function dividendHoldingMap(holdings){
  const out=Object.fromEntries(ETF.map(c=>[c,0]));
@@ -2397,7 +2409,7 @@ async function dividendAutoReport(){
   if(hs.initialized){state.snapshots.push({day:today,holdings:dividendHoldingMap(hs.holdings),recordedAt:new Date().toISOString(),bootstrap:true});dirty=true}
  }
  // One migrated entitlement that occurred before the automatic snapshot start but pays after it.
- for(const [key,v] of Object.entries(DIVIDEND_BOOTSTRAP_LOCKS))if(!state.locked[key]){state.locked[key]={...v,key,lockedAt:new Date().toISOString(),snapshotDay:'migration'};dirty=true}
+ for(const [key,v] of Object.entries(DIVIDEND_BOOTSTRAP_LOCKS)){const cur=state.locked[key];const needsCorrection=!cur||Number(cur.shares)!==Number(v.shares)||Number(cur.cash)!==Number(v.cash)||Number(cur.amount)!==Number(v.amount)||String(cur.payDate||'')!==String(v.payDate||'');if(needsCorrection){state.locked[key]={...v,key,lockedAt:cur?.lockedAt||new Date().toISOString(),correctedAt:new Date().toISOString(),snapshotDay:'migration'};dirty=true}}
  const fetched=await Promise.all(ETF.map(async code=>{try{return[code,await twseDividendEvents(code)]}catch(e){return[code,{ok:false,events:[],errors:[e.message],source:'TWSE ETF e添富'}]}}));
  const sourceByCode=Object.fromEntries(fetched),allEvents={};
  for(const [code,d] of fetched){
