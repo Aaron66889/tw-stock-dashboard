@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.73-DIVIDEND-LIVE-CHANGE';
+const BUILD='16.8.74-DIVIDEND-AUTO';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -18,6 +18,19 @@ const MODEL_SYNC_META_ID='__MODEL_SYNC_META__';
 const HOLDINGS_SYNC_ID='__HOLDINGS_STATE__';
 const CONSTITUENT_VERSION_SYNC_ID='__CONSTITUENT_VERSIONS__';
 const PREOPEN_SNAPSHOT_SYNC_ID='__PREOPEN_SNAPSHOTS__';
+const DIVIDEND_SYNC_ID='__DIVIDEND_AUTO__';
+const DIVIDEND_AUTO_START='2026-09-22';
+const DIVIDEND_BASE_ASOF='2026-09-22';
+const DIVIDEND_BASE={
+ '0050':2954,
+ '0056':3836,
+ '00878':15645,
+ '00919':1788
+};
+// 2026/09/16 00919 entitlement predates the automatic snapshot start, so migrate it once as a locked entitlement.
+const DIVIDEND_BOOTSTRAP_LOCKS={
+ '00919:2026-09-16':{code:'00919',exDate:'2026-09-16',recordDate:'2026-09-22',payDate:'2026-10-15',amount:1.10,shares:250,cash:275,source:'TWSE ETF e添富＋2026-09-22 migration'}
+};
 const ETF=['0050','0056','00878','00919'];
 const META={
  '0050':{name:'元大台灣50',listed:'2003-06-30',expected:50,fundId:'1066',source:'Yuanta',url:'https://www.yuantaetfs.com/product/detail/0050/ratio',
@@ -1082,27 +1095,29 @@ async function twseHistoryMonth(code,iso){
  const err=Error(errors.join(' | ')||'TWSE/Goodinfo month unavailable');err.code='TWSE_MONTH_EMPTY';throw err;
 }
 
+function rocDividendDate(y,m,d){return `${Number(y)+1911}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`}
 function parseDividendText(code,html){
  const text=stripTags(html),events=[];
- // row-like pattern: code, name, ex-date, record-date, pay-date, amount
+ // TWSE ETF e添富 columns: ex-dividend date, record date, pay date, distribution per unit.
  const re=new RegExp(`${code}\\s+[^\\d]{0,80}?(\\d{3})年(\\d{1,2})月(\\d{1,2})日\\s+(\\d{3})年(\\d{1,2})月(\\d{1,2})日\\s+(\\d{3})年(\\d{1,2})月(\\d{1,2})日\\s+([0-9]+(?:\\.[0-9]+)?)`,'g');let m;
  while((m=re.exec(text))){
-  const date=`${Number(m[1])+1911}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`,amount=n(m[10]);
-  if(amount>0)events.push({date,amount,source:'TWSE ETF e添富配息清單'});
+  const exDate=rocDividendDate(m[1],m[2],m[3]),recordDate=rocDividendDate(m[4],m[5],m[6]),payDate=rocDividendDate(m[7],m[8],m[9]),amount=n(m[10]);
+  if(amount>0)events.push({date:exDate,exDate,recordDate,payDate,amount,source:'TWSE ETF e添富配息清單'});
  }
- // Fallback to the looser parser for older layouts.
+ // Fallback to the looser parser for older layouts while preserving all three dates when present.
  if(!events.length){
   let pos=0;
   while(true){const idx=text.indexOf(code,pos);if(idx<0)break;const seg=text.slice(idx,idx+1400);pos=idx+code.length;
    const dates=[...seg.matchAll(/(\d{3})年(\d{1,2})月(\d{1,2})日/g)];if(dates.length<3)continue;
-   const after=seg.slice((dates[2].index||0)+dates[2][0].length),am=after.match(/\s([0-9]+(?:\.[0-9]+)?)\s+(?:詳細資料|\\d{3}(?:\s|$))/),amount=am?n(am[1]):null;if(!(amount>0))continue;
-   const d=dates[0],date=`${Number(d[1])+1911}-${String(d[2]).padStart(2,'0')}-${String(d[3]).padStart(2,'0')}`;events.push({date,amount,source:'TWSE ETF e添富配息清單'});
+   const after=seg.slice((dates[2].index||0)+dates[2][0].length),am=after.match(/\s([0-9]+(?:\.[0-9]+)?)\s+(?:詳細資料|\d{3}(?:\s|$))/),amount=am?n(am[1]):null;if(!(amount>0))continue;
+   const exDate=rocDividendDate(dates[0][1],dates[0][2],dates[0][3]),recordDate=rocDividendDate(dates[1][1],dates[1][2],dates[1][3]),payDate=rocDividendDate(dates[2][1],dates[2][2],dates[2][3]);
+   events.push({date:exDate,exDate,recordDate,payDate,amount,source:'TWSE ETF e添富配息清單'});
   }
  }
- return[...new Map(events.map(x=>[x.date,x])).values()].sort((a,b)=>a.date.localeCompare(b.date));
+ return[...new Map(events.map(x=>[x.exDate||x.date,x])).values()].sort((a,b)=>(a.exDate||a.date).localeCompare(b.exDate||b.date));
 }
 async function twseDividendEvents(code){
- return cached('div:r3:'+code,24*60*60*1000,async()=>{
+ return cached('div:r4:'+code,6*60*60*1000,async()=>{
   const y0=Number(META[code].listed.slice(0,4)),y1=Number(ymdTaipei().slice(0,4));let events=[],errors=[];
   try{const html=await getText(`https://www.twse.com.tw/zh/ETFortune/dividendList?startDate=${y0}&endDate=${y1}&stkNo=${code}`);events=parseDividendText(code,html)}catch(e){errors.push('range:'+e.message)}
   if(events.length<DIV_MIN[code]){
@@ -2296,7 +2311,7 @@ async function cloudModelState(){
  let initialized=false;const trades=[],deletedIds=[];
  for(const r of rows){
   if(r.id===MODEL_SYNC_META_ID){initialized=true;continue}
-  if([HOLDINGS_SYNC_ID,CONSTITUENT_VERSION_SYNC_ID,PREOPEN_SNAPSHOT_SYNC_ID].includes(r.id))continue
+  if([HOLDINGS_SYNC_ID,CONSTITUENT_VERSION_SYNC_ID,PREOPEN_SNAPSHOT_SYNC_ID,DIVIDEND_SYNC_ID].includes(r.id))continue
   const p=r.payload&&typeof r.payload==='object'?r.payload:null;if(!p)continue;
   if(p._deleted){deletedIds.push(r.id);continue}
   trades.push({...p,id:p.id||r.id,code:p.code||r.code,_cloudUpdatedAt:r.updated_at});
@@ -2342,6 +2357,74 @@ async function cloudHoldingsState(){
  const p=r?.payload&&typeof r.payload==='object'?r.payload:null;
  return{initialized:!!p,holdings:Array.isArray(p?.holdings)?p.holdings:[],updatedAt:r?.updated_at||p?.updatedAt||null};
 }
+function dividendHoldingMap(holdings){
+ const out=Object.fromEntries(ETF.map(c=>[c,0]));
+ for(const h of (Array.isArray(holdings)?holdings:[])){const c=String(h?.t||'');if(ETF.includes(c))out[c]=Math.max(0,Number(h?.s)||0)}
+ return out;
+}
+function normalizeDividendCloudState(p){
+ const x=p&&typeof p==='object'?p:{};
+ const snapshots=Array.isArray(x.snapshots)?x.snapshots.filter(v=>v&&/^\d{4}-\d{2}-\d{2}$/.test(String(v.day||''))&&v.holdings&&typeof v.holdings==='object'):[];
+ const locked=x.locked&&typeof x.locked==='object'&&!Array.isArray(x.locked)?x.locked:{};
+ return{version:'div-auto-v1',startDate:DIVIDEND_AUTO_START,baseAsOf:DIVIDEND_BASE_ASOF,snapshots,locked,updatedAt:x.updatedAt||null};
+}
+async function cloudDividendState(){
+ const rows=await cloudRowsById(DIVIDEND_SYNC_ID),r=rows[0],p=r?.payload&&typeof r.payload==='object'?r.payload:null;
+ return{initialized:!!p,state:normalizeDividendCloudState(p),updatedAt:r?.updated_at||p?.updatedAt||null};
+}
+async function saveCloudDividendState(input){
+ const state=normalizeDividendCloudState(input),now=new Date().toISOString();state.updatedAt=now;
+ // Snapshots are sparse (only when holdings change / first bootstrap). Keep a generous history.
+ state.snapshots=state.snapshots.sort((a,b)=>a.day.localeCompare(b.day)).slice(-2000);
+ const row={id:DIVIDEND_SYNC_ID,code:'__DIVIDEND_AUTO__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload:state};
+ await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
+ return state;
+}
+async function recordDividendHoldingsSnapshot(holdings,day=ymdTaipei()){
+ const cur=await cloudDividendState(),state=cur.state,map=dividendHoldingMap(holdings),snap={day:String(day),holdings:map,recordedAt:new Date().toISOString()};
+ const idx=state.snapshots.findIndex(x=>x.day===snap.day);if(idx>=0)state.snapshots[idx]=snap;else state.snapshots.push(snap);
+ return saveCloudDividendState(state);
+}
+function latestDividendSnapshotBefore(snapshots,day){
+ const rows=(snapshots||[]).filter(x=>x?.day&&x.day<day).sort((a,b)=>a.day.localeCompare(b.day));return rows.at(-1)||null;
+}
+function latestDividendSnapshot(snapshots){return (snapshots||[]).slice().sort((a,b)=>a.day.localeCompare(b.day)).at(-1)||null}
+async function dividendAutoReport(){
+ const today=ymdTaipei();let cloud=await cloudDividendState(),state=cloud.state,dirty=false;
+ // First deployment bootstrap: the current cloud holding becomes the baseline for every future ex-date.
+ if(!state.snapshots.length){
+  const hs=await cloudHoldingsState();
+  if(hs.initialized){state.snapshots.push({day:today,holdings:dividendHoldingMap(hs.holdings),recordedAt:new Date().toISOString(),bootstrap:true});dirty=true}
+ }
+ // One migrated entitlement that occurred before the automatic snapshot start but pays after it.
+ for(const [key,v] of Object.entries(DIVIDEND_BOOTSTRAP_LOCKS))if(!state.locked[key]){state.locked[key]={...v,key,lockedAt:new Date().toISOString(),snapshotDay:'migration'};dirty=true}
+ const fetched=await Promise.all(ETF.map(async code=>{try{return[code,await twseDividendEvents(code)]}catch(e){return[code,{ok:false,events:[],errors:[e.message],source:'TWSE ETF e添富'}]}}));
+ const sourceByCode=Object.fromEntries(fetched),allEvents={};
+ for(const [code,d] of fetched){
+  const events=(d?.events||[]).map(e=>({...e,code,exDate:e.exDate||e.date})).filter(e=>e.exDate&&e.payDate&&Number(e.amount)>0).sort((a,b)=>a.exDate.localeCompare(b.exDate));
+  allEvents[code]=events;
+  for(const e of events){
+   // Baseline totals already include all paid distributions through 2026-09-22. Only lock later ex-dates automatically.
+   if(e.exDate<=DIVIDEND_AUTO_START||e.exDate>today)continue;
+   const key=`${code}:${e.exDate}`;if(state.locked[key])continue;
+   const snap=latestDividendSnapshotBefore(state.snapshots,e.exDate);if(!snap)continue;
+   const shares=Math.max(0,Number(snap.holdings?.[code])||0),cash=Math.max(0,Math.round(shares*Number(e.amount)));
+   state.locked[key]={key,code,exDate:e.exDate,recordDate:e.recordDate||null,payDate:e.payDate,amount:Number(e.amount),shares,cash,source:e.source||'TWSE ETF e添富',snapshotDay:snap.day,lockedAt:new Date().toISOString()};dirty=true;
+  }
+ }
+ if(dirty)state=await saveCloudDividendState(state);
+ const latestSnap=latestDividendSnapshot(state.snapshots),currentHoldings=latestSnap?.holdings||{};
+ const byCode={};
+ for(const code of ETF){
+  const locks=Object.values(state.locked).filter(x=>x?.code===code).sort((a,b)=>(a.exDate||'').localeCompare(b.exDate||''));
+  const paidLocks=locks.filter(x=>x.payDate&&x.payDate<=today),pendingLocks=locks.filter(x=>x.exDate<=today&&x.payDate>today);
+  const autoPaid=paidLocks.reduce((sum,x)=>sum+(Number(x.cash)||0),0),pending=pendingLocks.reduce((sum,x)=>sum+(Number(x.cash)||0),0),received=(Number(DIVIDEND_BASE[code])||0)+autoPaid;
+  const upcoming=(allEvents[code]||[]).filter(e=>e.exDate>today).map(e=>{const shares=Math.max(0,Number(currentHoldings?.[code])||0);return{...e,sharesEstimate:shares,cashEstimate:Math.max(0,Math.round(shares*Number(e.amount)))}})[0]||null;
+  const nextPending=pendingLocks[0]||null,lastPaid=paidLocks.at(-1)||null;
+  byCode[code]={code,base:Number(DIVIDEND_BASE[code])||0,baseAsOf:DIVIDEND_BASE_ASOF,autoPaid,received,pending,nextPending,lastPaid,upcoming,locks:locks.slice(-12),snapshotDay:latestSnap?.day||null,source:sourceByCode[code]?.source||'TWSE ETF e添富',sourceOk:!!sourceByCode[code]?.ok,sourceErrors:sourceByCode[code]?.errors||[]};
+ }
+ return{ok:true,build:BUILD,version:'div-auto-v1',automatic:true,startDate:DIVIDEND_AUTO_START,baseAsOf:DIVIDEND_BASE_ASOF,today,snapshotDay:latestSnap?.day||null,byCode,source:'TWSE ETF e添富配息清單＋雲端持股日快照',updatedAt:state.updatedAt||cloud.updatedAt||null,fetchedAt:new Date().toISOString()};
+}
 async function cloudUpsertHoldings(holdings){
  if(!Array.isArray(holdings)||holdings.length>100)throw Error('invalid holdings');
  const clean=holdings.map(h=>({t:String(h?.t||''),n:String(h?.n||h?.t||''),s:Number(h?.s)||0,c:Number(h?.c)||0,dividendReceived:Math.max(0,Number(h?.dividendReceived)||0),dividendAsOf:String(h?.dividendAsOf||'')}))
@@ -2349,7 +2432,9 @@ async function cloudUpsertHoldings(holdings){
  const now=new Date().toISOString();
  const row={id:HOLDINGS_SYNC_ID,code:'__HOLDINGS__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload:{holdings:clean,updatedAt:now}};
  await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
- return{ok:true,holdings:clean,updatedAt:now};
+ let dividendSnapshotRecorded=false,dividendSnapshotError=null;
+ try{await recordDividendHoldingsSnapshot(clean,ymdTaipei());dividendSnapshotRecorded=true}catch(e){dividendSnapshotError=e.message||String(e)}
+ return{ok:true,holdings:clean,updatedAt:now,dividendSnapshotRecorded,dividendSnapshotError};
 }
 
 
@@ -2478,6 +2563,11 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'){
    try{const body=await readJSONBody(req);return send(res,200,await cloudUpsertHoldings(body.holdings))}catch(e){return send(res,400,{ok:false,error:e.message})}
   }
+ }
+ if(u.pathname==='/api/dividend-auto'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'股息自動同步尚未完成後端設定'});
+  if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'股息自動同步尚未解鎖'});
+  if(req.method==='GET')return safeApi(res,'dividend-auto',dividendAutoReport);
  }
  if(u.pathname==='/api/model-trades'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'模型雲端同步尚未完成後端設定'});
