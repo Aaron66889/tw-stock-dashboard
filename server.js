@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.72-SHADOW8-DUAL-TRACK';
+const BUILD='16.8.73-DIVIDEND-LIVE-CHANGE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -2344,7 +2344,7 @@ async function cloudHoldingsState(){
 }
 async function cloudUpsertHoldings(holdings){
  if(!Array.isArray(holdings)||holdings.length>100)throw Error('invalid holdings');
- const clean=holdings.map(h=>({t:String(h?.t||''),n:String(h?.n||h?.t||''),s:Number(h?.s)||0,c:Number(h?.c)||0}))
+ const clean=holdings.map(h=>({t:String(h?.t||''),n:String(h?.n||h?.t||''),s:Number(h?.s)||0,c:Number(h?.c)||0,dividendReceived:Math.max(0,Number(h?.dividendReceived)||0),dividendAsOf:String(h?.dividendAsOf||'')}))
    .filter(h=>h.t&&h.s>=0&&h.c>=0);
  const now=new Date().toISOString();
  const row={id:HOLDINGS_SYNC_ID,code:'__HOLDINGS__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload:{holdings:clean,updatedAt:now}};
