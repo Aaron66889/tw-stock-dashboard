@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.73-DIVIDEND-LIVE-CHANGE',CONFIRM_RULE_VERSION='layer-confirm-v3-distinct-observation',SHADOW_CONFIRM_VERSION='shadow-confirm-v1-time-drift-critical-gate';
+const CLIENT_BUILD='16.8.74-DIVIDEND-AUTO',CONFIRM_RULE_VERSION='layer-confirm-v3-distinct-observation',SHADOW_CONFIRM_VERSION='shadow-confirm-v1-time-drift-critical-gate';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
@@ -27,7 +27,7 @@ let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,selectedETF='0050'
 let etfLiveTimer=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:500,c:18.61}];
 
-// 16.8.73 dividend totals: reconstructed once from the user's Fubon statements.
+// 16.8.74 dividend baseline: reconstructed once from the user's Fubon statements; future distributions are automatic.
 // Privacy: only aggregate totals are kept in the deployed app; the detailed transaction ledger is not embedded.
 const DIVIDEND_LEDGER_START='2024-04-22';
 const DIVIDEND_SEED_ASOF='2026-09-22';
@@ -41,7 +41,7 @@ const DIVIDEND_SEED={
 // Entitled but not yet paid as of the reconstruction date. Once the pay date arrives,
 // it is automatically included unless the user has already updated the dividend total past that date.
 const DIVIDEND_KNOWN_FUTURE={
- '00919':[{exDate:'2026-09-16',payDate:'2026-10-15',cash:715,shares:650,amount:1.10}]
+ '00919':[{exDate:'2026-09-16',payDate:'2026-10-15',cash:275,shares:250,amount:1.10}]
 };
 function normalizeHoldingRecord(x){
  const t=String(x?.t||''),seed=DIVIDEND_SEED[t];
@@ -51,23 +51,26 @@ function normalizeHoldingRecord(x){
   dividendAsOf:String(x?.dividendAsOf||(Number.isFinite(seed)?DIVIDEND_SEED_ASOF:''))};
 }
 function dividendStats(code,holding){
+ const auto=DIVIDEND_AUTO?.byCode?.[code];
+ if(auto&&Number.isFinite(Number(auto.received))){
+  return{received:Number(auto.received)||0,pending:Number(auto.pending)||0,items:auto.locks||[],lastPaid:auto.lastPaid||null,nextPending:auto.nextPending||null,upcoming:auto.upcoming||null,version:'div-auto-v1',asOf:auto.lastPaid?.payDate||auto.baseAsOf||DIVIDEND_SEED_ASOF,automatic:true,snapshotDay:auto.snapshotDay||DIVIDEND_AUTO.snapshotDay||null};
+ }
+ // Safe fallback while cloud/TWSE is loading: reconstructed seed + the one pre-auto 00919 entitlement.
  const today=dayKey(),seed=Number(DIVIDEND_SEED[code])||0,h=holding||H?.find?.(x=>x.t===code),raw=Number(h?.dividendReceived);
  let received=Number.isFinite(raw)&&raw>=0?raw:seed;
  const asOf=String(h?.dividendAsOf||(Number.isFinite(seed)?DIVIDEND_SEED_ASOF:''));
- const items=(DIVIDEND_KNOWN_FUTURE[code]||[]).map(e=>({...e,
-  received:e.payDate<=today,
-  pending:e.exDate<=today&&e.payDate>today
- }));
- // Add only distributions whose pay date is later than the saved total's as-of date.
+ const items=(DIVIDEND_KNOWN_FUTURE[code]||[]).map(e=>({...e,received:e.payDate<=today,pending:e.exDate<=today&&e.payDate>today}));
  let effectiveAsOf=asOf;
  for(const e of items)if(e.received&&(!asOf||e.payDate>asOf)){received+=Number(e.cash)||0;if(!effectiveAsOf||e.payDate>effectiveAsOf)effectiveAsOf=e.payDate}
- const pending=items.filter(e=>e.pending&&(!asOf||e.payDate>asOf)).reduce((s,e)=>s+(Number(e.cash)||0),0);
- return{received,pending,items,lastPaid:null,nextPending:items.find(e=>e.pending&&(!asOf||e.payDate>asOf))||null,version:DIVIDEND_LEDGER_VERSION,asOf:effectiveAsOf};
+ const pending=items.filter(e=>e.pending&&(!asOf||e.payDate>asOf)).reduce((sum,e)=>sum+(Number(e.cash)||0),0);
+ return{received,pending,items,lastPaid:null,nextPending:items.find(e=>e.pending&&(!asOf||e.payDate>asOf))||null,upcoming:null,version:DIVIDEND_LEDGER_VERSION,asOf:effectiveAsOf,automatic:false};
 }
+
 function money0(n){return Number.isFinite(Number(n))?Math.round(Number(n)).toLocaleString():'—'}
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),SHADOW_STATE=loadJSON('v124_shadow_state',{day:null,models:{}}),SHADOW_LOG=loadJSON('v124_shadow_replay',[]),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null};
 let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,message:'持股雲端同步檢查中'};
+let DIVIDEND_AUTO={busy:false,ready:false,lastAt:null,message:'股息自動同步檢查中',byCode:{},snapshotDay:null,source:null};
 let MODEL_PENDING_DELETES=loadJSON('v124_model_trade_pending_deletes',[]);
 
 function migrate1689Existing0050Trade(){
@@ -445,18 +448,26 @@ function renderHoldings(){
   const ds=ETF.includes(h.t)?dividendStats(h.t,h):{received:0,pending:0,lastPaid:null,nextPending:null};
   const withDivPnl=p!=null?p+ds.received:null,withDivRet=withDivPnl!=null&&c?withDivPnl/c*100:null;
   cost+=c;if(v!=null)val+=v;dividendTotal+=ds.received;pendingDividendTotal+=ds.pending;
-  const divNote=ds.pending>0?`2024/4/22起重建｜待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:`2024/4/22起重建｜已領截至 ${String(ds.asOf||DIVIDEND_SEED_ASOF).replaceAll('-','/')}`;
+  const divNote=ds.automatic?(ds.pending>0?`全自動｜已鎖定待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:ds.upcoming?`全自動｜下次除息 ${String(ds.upcoming.exDate||'').replaceAll('-','/')}｜目前股數估 ${money0(ds.upcoming.cashEstimate)}`:`全自動｜TWSE配息＋持股快照 ${String(ds.snapshotDay||DIVIDEND_AUTO.snapshotDay||'').replaceAll('-','/')}`):(ds.pending>0?`自動資料載入中｜待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:`自動資料載入中｜基準截至 ${String(ds.asOf||DIVIDEND_SEED_ASOF).replaceAll('-','/')}`);
   cards+=`<div class="card"><div class="row"><b>${h.t}</b><b class="${cls(withDivRet)}">含息 ${pct(withDivRet)}</b></div><div class="grid6"><div class="box"><span class="k">持有</span><b>${Number(h.s).toLocaleString()}股</b></div><div class="box"><span class="k">平均成本</span><b>${fmt(h.c)}</b></div><div class="box"><span class="k">現價</span><b class="${etfPriceClass(h.t,px)}">${fmt(px)}${ETF.includes(h.t)?` <span class="etf-daily-pct">${etfDailyChangeText(h.t,px)}</span>`:''}</b></div><div class="box"><span class="k">未實現</span><b class="${cls(p)}">${p==null?'—':money0(p)}</b><small>${pct(r)}</small></div><div class="box"><span class="k">累積已領股息</span><b class="upc">${money0(ds.received)}</b><small>${divNote}</small></div><div class="box"><span class="k">含息總報酬</span><b class="${cls(withDivPnl)}">${withDivPnl==null?'—':money0(withDivPnl)}</b><small>${pct(withDivRet)}</small></div></div></div>`;
  }
  $('holdings').innerHTML=cards;
  const p=val-cost,withDivPnl=p+dividendTotal,withDivRet=cost?withDivPnl/cost*100:null;
  $('holdingTotals').className='grid6';
- $('holdingTotals').innerHTML=`<div class="box"><span class="k">市值</span><b>${money0(val)}</b></div><div class="box"><span class="k">成本</span><b>${money0(cost)}</b></div><div class="box"><span class="k">價差損益</span><b class="${cls(p)}">${money0(p)}</b></div><div class="box"><span class="k">累積已領股息</span><b class="upc">${money0(dividendTotal)}</b><small>${pendingDividendTotal>0?`另有待入帳 ${money0(pendingDividendTotal)}`:`${DIVIDEND_LEDGER_START.replaceAll('-','/')} 起`}</small></div><div class="box"><span class="k">含息總損益</span><b class="${cls(withDivPnl)}">${money0(withDivPnl)}</b></div><div class="box"><span class="k">含息總報酬率</span><b class="${cls(withDivRet)}">${pct(withDivRet)}</b><small>價差＋已入帳股息</small></div>`;
+ $('holdingTotals').innerHTML=`<div class="box"><span class="k">市值</span><b>${money0(val)}</b></div><div class="box"><span class="k">成本</span><b>${money0(cost)}</b></div><div class="box"><span class="k">價差損益</span><b class="${cls(p)}">${money0(p)}</b></div><div class="box"><span class="k">累積已領股息</span><b class="upc">${money0(dividendTotal)}</b><small>${pendingDividendTotal>0?`全自動｜另有待入帳 ${money0(pendingDividendTotal)}`:DIVIDEND_AUTO.ready?'四檔全自動抓取':'自動同步載入中'}</small></div><div class="box"><span class="k">含息總損益</span><b class="${cls(withDivPnl)}">${money0(withDivPnl)}</b></div><div class="box"><span class="k">含息總報酬率</span><b class="${cls(withDivRet)}">${pct(withDivRet)}</b><small>價差＋已入帳股息</small></div>`;
 }
-function openHolding(){ $('holdingTitle').textContent='新增持股';$('editHoldingId').value='';$('hCode').value='';$('hShares').value='';$('hCost').value='';if($('hDividend'))$('hDividend').value='0';$('holdingModal').classList.add('on')}
+function setDividendEditorMode(code){
+ const isAuto=ETF.includes(String(code||'').trim().toUpperCase()),inp=$('hDividend'),note=$('hDividendNote');if(!inp)return;
+ inp.disabled=isAuto;if(note)note.textContent=isAuto?'0050／0056／00878／00919 已全自動：TWSE 抓配息，除息日前持股快照鎖定股數；此欄不需手動填。':'非四檔標的可手動填寫累積股息。';
+}
+function openHolding(){ $('holdingTitle').textContent='新增持股';$('editHoldingId').value='';$('hCode').value='';$('hShares').value='';$('hCost').value='';if($('hDividend'))$('hDividend').value='0';setDividendEditorMode('');$('holdingModal').classList.add('on')}
 function closeHolding(){$('holdingModal').classList.remove('on')}
-function editHolding(t){const h=H.find(x=>x.t===t);if(!h)return;$('holdingTitle').textContent='編輯持股';$('editHoldingId').value=t;$('hCode').value=h.t;$('hShares').value=h.s;$('hCost').value=h.c;if($('hDividend'))$('hDividend').value=ETF.includes(t)?dividendStats(t,h).received:Number(h.dividendReceived||0);$('holdingModal').classList.add('on')}
-function saveHoldingForm(){const old=$('editHoldingId').value,t=$('hCode').value.trim().toUpperCase(),s=Number($('hShares').value),c=Number($('hCost').value),d=Math.max(0,Number($('hDividend')?.value||0));if(!t||!(s>0)||!(c>0))return alert('請輸入正確代號、股數、成本');H=H.filter(x=>x.t!==old&&x.t!==t);H.push(normalizeHoldingRecord({t,s,c,dividendReceived:d,dividendAsOf:dayKey()}));saveHoldings();closeHolding();renderHoldings();loadMarket()}
+function editHolding(t){const h=H.find(x=>x.t===t);if(!h)return;$('holdingTitle').textContent='編輯持股';$('editHoldingId').value=t;$('hCode').value=h.t;$('hShares').value=h.s;$('hCost').value=h.c;if($('hDividend'))$('hDividend').value=ETF.includes(t)?dividendStats(t,h).received:Number(h.dividendReceived||0);setDividendEditorMode(t);$('holdingModal').classList.add('on')}
+function saveHoldingForm(){
+ const old=$('editHoldingId').value,t=$('hCode').value.trim().toUpperCase(),s=Number($('hShares').value),c=Number($('hCost').value);if(!t||!(s>0)||!(c>0))return alert('請輸入正確代號、股數、成本');
+ const prev=H.find(x=>x.t===old||x.t===t),manualDividend=Math.max(0,Number($('hDividend')?.value||0)),d=ETF.includes(t)?Number(prev?.dividendReceived??DIVIDEND_SEED[t]??0):manualDividend,dividendAsOf=ETF.includes(t)?String(prev?.dividendAsOf||DIVIDEND_SEED_ASOF):dayKey();
+ H=H.filter(x=>x.t!==old&&x.t!==t);H.push(normalizeHoldingRecord({t,s,c,dividendReceived:d,dividendAsOf}));saveHoldings();closeHolding();renderHoldings();loadMarket()
+}
 function deleteHolding(t){if(confirm('確定刪除 '+t+'？')){H=H.filter(x=>x.t!==t);saveHoldings();renderHoldings()}}
 
 function openDetail(c){selectedETF=c;setPage('etfDetail');renderDetailTabs();renderDetailBuy();loadHealth(c)}
@@ -579,15 +590,31 @@ async function modelSyncFetch(url,opts={}){
   return d;
  }finally{clearTimeout(tm)}
 }
+async function loadDividendAuto(force=false){
+ if(DIVIDEND_AUTO.busy||!MODEL_SYNC.ready)return;
+ if(!force&&DIVIDEND_AUTO.lastAt&&Date.now()-Date.parse(DIVIDEND_AUTO.lastAt)<300000)return;
+ DIVIDEND_AUTO.busy=true;
+ try{
+  const d=await modelSyncFetch('/api/dividend-auto');
+  if(d?.ok){
+   DIVIDEND_AUTO.ready=true;DIVIDEND_AUTO.byCode=d.byCode||{};DIVIDEND_AUTO.snapshotDay=d.snapshotDay||null;DIVIDEND_AUTO.source=d.source||null;DIVIDEND_AUTO.lastAt=d.fetchedAt||new Date().toISOString();
+   DIVIDEND_AUTO.message=`四檔全自動｜持股快照 ${String(d.snapshotDay||'建立中').replaceAll('-','/')}`;
+   renderHoldings();
+  }
+ }catch(e){DIVIDEND_AUTO.ready=false;DIVIDEND_AUTO.message='股息自動同步暫時失敗，先顯示已重建基準值'}
+ finally{DIVIDEND_AUTO.busy=false}
+}
+
 function modelSyncBar(){
  const st=MODEL_SYNC.status,good=MODEL_SYNC.ready,locked=st==='locked',setup=st==='setup',err=st==='error';
  const tag=good?'🟢 已同步':locked?'🔒 未解鎖':setup?'🟡 尚未設定':'🟡 '+(err?'同步異常':'連線中');
  const htag=HOLDINGS_SYNC.ready?'｜持股🟢':'｜持股⚪';
+ const dtag=DIVIDEND_AUTO.ready?'｜股息🟢':'｜股息⚪';
  const at=MODEL_SYNC.lastAt?`｜${new Date(MODEL_SYNC.lastAt).toLocaleTimeString('zh-TW',{hour12:false})}`:'';
  const buttons=good
   ? `<div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn" onclick="syncAllCloud(true)">立即同步</button><button class="btn" onclick="uploadThisHoldingsToCloud()">上傳此裝置持股</button><button class="btn" onclick="downloadCloudHoldings()">下載雲端持股</button></div>`
   : `<button class="btn primary" onclick="connectModelSync()">設定同步碼</button>`;
- return `<div class="notice"><div class="row"><div><b>模型實戰雲端：${tag}${htag}</b><div class="note">${MODEL_SYNC.message||''}${HOLDINGS_SYNC.message?'｜'+HOLDINGS_SYNC.message:''}${at}</div></div>${buttons}</div></div>`;
+ return `<div class="notice"><div class="row"><div><b>模型實戰雲端：${tag}${htag}${dtag}</b><div class="note">${MODEL_SYNC.message||''}${HOLDINGS_SYNC.message?'｜'+HOLDINGS_SYNC.message:''}${DIVIDEND_AUTO.message?'｜'+DIVIDEND_AUTO.message:''}${at}</div></div>${buttons}</div></div>`;
 }
 
 async function syncHoldingsCloud(force=false){
@@ -605,6 +632,7 @@ async function syncHoldingsCloud(force=false){
    HOLDINGS_SYNC.ready=true;
    const h50=H.find(x=>x.t==='0050');
    HOLDINGS_SYNC.message='持股已從雲端載入'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
+   await loadDividendAuto(force);
   }
   HOLDINGS_SYNC.lastAt=d.fetchedAt||new Date().toISOString();
  }catch(e){
@@ -619,6 +647,7 @@ async function uploadThisHoldingsToCloud(){
  try{
   await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H})});
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='已以上傳的這台裝置持股覆蓋雲端';
+  await loadDividendAuto(true);
   await syncHoldingsCloud(true);renderModelTrades();
   alert('雲端持股已更新。現在可到手機按「下載雲端持股」。');
  }catch(e){alert('上傳失敗：'+(e.message||'未知錯誤'))}
@@ -633,6 +662,7 @@ async function downloadCloudHoldings(){
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();
   const h50=H.find(x=>x.t==='0050');
   HOLDINGS_SYNC.message='已手動下載雲端持股'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
+  await loadDividendAuto(true);
   renderModelTrades();
   alert('雲端持股已載入這台裝置。');
  }catch(e){alert('下載失敗：'+(e.message||'未知錯誤'))}
@@ -643,11 +673,12 @@ async function pushHoldingsCloud(){
  try{
   await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H})});
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='持股已同步';
+  await loadDividendAuto(true);
  }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股同步失敗，本機仍保留'}
 }
 async function syncAllCloud(force=false){
  await syncModelTrades(force);
- if(MODEL_SYNC.ready)await syncHoldingsCloud(force);
+ if(MODEL_SYNC.ready){await syncHoldingsCloud(force);await loadDividendAuto(force)}
  renderModelTrades();
 }
 
