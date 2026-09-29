@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.83-L1-HYSTERESIS-CONFIRM';
+const BUILD='16.8.84-VOLUME-LIVE-FALLBACK';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -272,8 +272,23 @@ async function twseDailyAll(){
  });
 }
 
+function yahooHtmlMarketNumber(html,key){
+ const esc=String(key).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),raw=String(html||''),pats=[
+  new RegExp(`["']${esc}["']\\s*:\\s*\\{?[^}]{0,260}?["'](?:raw|value)["']\\s*:\\s*["']?([0-9.,]+)`,'i'),
+  new RegExp(`["']${esc}["']\\s*:\\s*["']?([0-9.,]+)`,'i'),
+  new RegExp(`data-field=["']${esc}["'][^>]*>\\s*([^<]+?)\\s*<`,'i')
+ ];
+ for(const re of pats){const m=raw.match(re),v=m?n(String(m[1]).replace(/,/g,'')):null;if(v!=null)return v}
+ return null;
+}
+function yahooHtmlTotalVolume(html){
+ let v=yahooHtmlMarketNumber(html,'regularMarketVolume');if(v>0)return v;
+ const text=stripTags(html),pats=[/總量\s*([\d,]+)/,/([\d,]+)\s*成交量/];
+ for(const re of pats){const m=text.match(re),x=m?n(m[1]):null;if(x>0)return x}
+ return null;
+}
 async function yahooTwPageOne(code){
- const url='https://tw.stock.yahoo.com/quote/'+code+'.TW?_='+Date.now();
+ const url='https://tw.stock.yahoo.com/quote/'+code+'?_='+Date.now();
  const html=await getText(url,{
   'Cache-Control':'no-cache',
   'Pragma':'no-cache',
@@ -288,6 +303,8 @@ async function yahooTwPageOne(code){
 
  const last=n(String(m[1]).replace(/,/g,''));
  if(!(last>0))throw Error('Yahoo台股頁面現價無效 '+code);
+ const volume=yahooHtmlTotalVolume(html),prevClose=yahooHtmlMarketNumber(html,'regularMarketPreviousClose')??yahooHtmlMarketNumber(html,'previousClose'),
+       open=yahooHtmlMarketNumber(html,'regularMarketOpen'),high=yahooHtmlMarketNumber(html,'regularMarketDayHigh'),low=yahooHtmlMarketNumber(html,'regularMarketDayLow');
 
  let tm=null;
  const mt=html.match(/["']regularMarketTime["']\s*:\s*([0-9]{10,13})/i);
@@ -301,11 +318,12 @@ async function yahooTwPageOne(code){
   ticker:code,
   name:META[code]?.name||code,
   last,
-  prevClose:null,
-  open:null,high:null,low:null,volume:null,
+  prevClose:prevClose>0?prevClose:null,
+  open:open>0?open:null,high:high>0?high:null,low:low>0?low:null,volume:volume>0?volume:null,
+  volumeSource:volume>0?'Yahoo台股報價頁總量':null,
   time:tm||new Date().toISOString(),
-  date:new Date().toISOString().slice(0,10),
-  source:'Yahoo台股報價頁 '+code+'.TW',
+  date:ymdTaipei(),
+  source:'Yahoo台股報價頁 '+code,
   realtime:true
  };
 }
@@ -899,18 +917,39 @@ function normalizeLiveVolumeUnit(live,avg,frac){
  cands.forEach(x=>x.pace=x.value/target);cands.sort((a,b)=>Math.abs(Math.log10(Math.max(.001,a.pace)))-Math.abs(Math.log10(Math.max(.001,b.pace))));return cands[0];
 }
 async function ensureEtfQuoteVolumes(etfLd){
- const quotes=etfLd?.quotes||{},missing=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(!missing.length)return etfLd;
- // ETF four-pack is listed on TWSE. One MIS batch is enough to fill volume even when the
- // price itself came from Yahoo/last-good because Anue temporarily omitted or throttled volume.
+ const quotes=etfLd?.quotes||{};
+ const put=(c,v,source,extra={})=>{const q=quotes[c];if(!q||!(Number(v)>0))return false;q.volume=Number(v);q.volumeSource=source;for(const k of ['open','high','low'])if(!(Number(q[k])>0)&&Number(extra?.[k])>0)q[k]=Number(extra[k]);return true};
+ let missing=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(!missing.length)return etfLd;
+
+ // 0) Reuse the low-frequency Yahoo page pump first. This costs no extra request and the
+ // Yahoo quote page exposes "總量 / 成交量" even when the price provider omitted volume.
+ for(const c of [...missing]){const y=ETF_TW_LIVE.quotes?.[c];if(y?.volume>0)put(c,y.volume,y.volumeSource||'Yahoo台股報價頁總量',y)}
+ missing=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(!missing.length)return etfLd;
+
+ // 1) Official TWSE MIS accumulated volume (v).
  try{
   const ex=missing.map(c=>'tse_'+c+'.tw').join('|'),rows=(await deadline(mis(ex),4000,{msgArray:[]}))?.msgArray||[];
-  for(const x of rows){const z=parseMis(x),q=quotes[z.ticker];if(q&&z.volume>0){q.volume=z.volume;q.volumeSource='TWSE MIS';if(!(q.open>0)&&z.open>0)q.open=z.open;if(!(q.high>0)&&z.high>0)q.high=z.high;if(!(q.low>0)&&z.low>0)q.low=z.low}}
+  for(const x of rows){const z=parseMis(x);put(z.ticker,z.volume,'TWSE MIS 累積成交量',z)}
  }catch(_){}
+ missing=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(!missing.length)return etfLd;
+
+ // 2) Yahoo Finance chart meta has regularMarketVolume. Fetch only symbols that are still
+ // missing, at concurrency 2, so a TWSE cookie/throttle issue does not blank all four ETFs.
+ const yf=await mapLimit(missing,2,async c=>{try{return await deadline(yahooTwOne(c,false),3500,null)}catch(_){return null}});
+ yf.forEach((y,i)=>{const c=missing[i];if(y?.volume>0)put(c,y.volume,'Yahoo Finance regularMarketVolume',y)});
+ missing=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(!missing.length)return etfLd;
+
+ // 3) Final live fallback: Yahoo Taiwan quote page. It is server-rendered with current
+ // 成交量/總量 and is independent from query1.finance.yahoo.com.
+ const yp=await mapLimit(missing,2,async c=>{try{return await deadline(yahooTwPageOne(c),4000,null)}catch(_){return null}});
+ yp.forEach((y,i)=>{const c=missing[i];if(y?.volume>0)put(c,y.volume,y.volumeSource||'Yahoo台股報價頁總量',y)});
+
  // After the cash session, STOCK_DAY_ALL is an acceptable official volume fallback. During
  // the session we deliberately avoid treating yesterday's completed volume as today's pace.
  if(!twMarketOpenNow()){
-  const still=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(still.length)try{const d=await twseDailyAll();for(const c of still){const z=d.map?.[c];if(z?.volume>0){quotes[c].volume=z.volume;quotes[c].volumeSource='TWSE STOCK_DAY_ALL'}}}catch(_){}
+  const still=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(still.length)try{const d=await twseDailyAll();for(const c of still){const z=d.map?.[c];if(z?.volume>0)put(c,z.volume,'TWSE STOCK_DAY_ALL',z)}}catch(_){}
  }
+ etfLd.volumeStatus=Object.fromEntries(ETF.map(c=>[c,{ok:Number(quotes[c]?.volume)>0,volume:Number(quotes[c]?.volume)||null,source:quotes[c]?.volumeSource||null}]));
  return etfLd;
 }
 function volumeShadowSignal(code,quote,hist,volumeFallback){
@@ -2181,7 +2220,7 @@ async function buyModel(){
  // Recent completed exchange dates let the browser advance no-signal streaks by real trading sessions instead of calendar days.
  const calendarHist=ETF.map(c=>hs[c]).find(h=>Array.isArray(h?.rows)&&h.rows.length);
  const tradingDates=[...new Set((calendarHist?.rows||[]).map(x=>x?.date).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)))].sort().slice(-180);
- return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'},shadowData:{yahooChips:Object.fromEntries(ETF.map(c=>[c,{ok:!!yc[c]?.ok,days:yc[c]?.days||0,asOf:yc[c]?.asOf||null,reason:yc[c]?.reason||null}])),volumeWindows:Object.fromEntries(ETF.map(c=>[c,{ok:!!vh[c]?.ok,days:vh[c]?.days||0,asOf:vh[c]?.asOf||null,reason:vh[c]?.reason||null}]))}};
+ return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'},shadowData:{yahooChips:Object.fromEntries(ETF.map(c=>[c,{ok:!!yc[c]?.ok,days:yc[c]?.days||0,asOf:yc[c]?.asOf||null,reason:yc[c]?.reason||null}])),volumeWindows:Object.fromEntries(ETF.map(c=>[c,{ok:!!vh[c]?.ok,days:vh[c]?.days||0,asOf:vh[c]?.asOf||null,reason:vh[c]?.reason||null}])),liveVolumes:etfLd?.volumeStatus||Object.fromEntries(ETF.map(c=>[c,{ok:Number(etfLd?.quotes?.[c]?.volume)>0,volume:Number(etfLd?.quotes?.[c]?.volume)||null,source:etfLd?.quotes?.[c]?.volumeSource||null}]))}};
 }
 
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
