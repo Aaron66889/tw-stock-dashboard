@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.78-SHADOW-DATA-FIX',CONFIRM_RULE_VERSION='layer-confirm-v3-distinct-observation',SHADOW_CONFIRM_VERSION='shadow-confirm-v1-time-drift-critical-gate';
+const CLIENT_BUILD='16.8.81-L1-STABILITY-CONFIRM',CONFIRM_RULE_VERSION='layer-confirm-v5-20s-3obs-rebound',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
@@ -308,12 +308,17 @@ function handlePreopen(){
  if(m>=540&&!PREOPEN.locked&&PREOPEN.draft)PREOPEN.locked=PREOPEN.draft;saveJSON('v124_preopen',PREOPEN)
 }
 // L2/L3 confirmation floors offset the existing below-L1 priceFit penalty by 4/8 points; the displayed model score and all three price zones remain unchanged.
-const LAYER_CONFIRM_RULES=[0,1,2].map(i=>({name:['L1止跌確認','L2深回檔確認','L3極端回檔確認'][i],minScore:50-i*4,cycles:2,mode:i===0?'rebound':'deep'}));
+const LAYER_CONFIRM_RULES=[
+ {name:'L1止跌確認',minScore:50,cycles:3,mode:'rebound',minStableMs:20000,minReboundAtr:.04,minReboundAbs:.02},
+ {name:'L2深回檔確認',minScore:46,cycles:2,mode:'deep'},
+ {name:'L3極端回檔確認',minScore:42,cycles:2,mode:'deep'}
+];
 function normalizeLayerRuntime(L){
  if(!Array.isArray(L.samples))L.samples=[];
  if(!Array.isArray(L.priceSamples))L.priceSamples=[];
  if(!('touchedAt' in L))L.touchedAt=null;
  if(!('touchMin' in L))L.touchMin=null;
+ if(!('touchMinAt' in L))L.touchMinAt=null;
  if(!('confirmationReason' in L))L.confirmationReason=null;
  if(!('confirmedZone' in L))L.confirmedZone=null;
  if(!('confirmedAt' in L))L.confirmedAt=null;
@@ -322,11 +327,21 @@ function normalizeLayerRuntime(L){
  return L;
 }
 function initModel(code,r){
- const mk=z=>({zone:JSON.parse(JSON.stringify(z)),samples:[],priceSamples:[],confirmed:false,forming:false,fastPass:false,invalid:false,confirmCount:0,badCount:0,triggeredAt:null,touchedAt:null,touchMin:null,confirmationReason:null,confirmedZone:null,confirmedAt:null,confirmedPrice:null,confirmedObservationKey:null});
+ const mk=z=>({zone:JSON.parse(JSON.stringify(z)),samples:[],priceSamples:[],confirmed:false,forming:false,fastPass:false,invalid:false,confirmCount:0,badCount:0,triggeredAt:null,touchedAt:null,touchMin:null,touchMinAt:null,confirmationReason:null,confirmedZone:null,confirmedAt:null,confirmedPrice:null,confirmedObservationKey:null});
  return{layers:[mk(r.raw.first),mk(r.raw.second),mk(r.raw.third)],calibrationVersion:r.firstLayerCalibration?.version||'legacy',confirmationVersion:CONFIRM_RULE_VERSION,prevEnv:r.environmentScore,prevHealth:r.health?.score??null,lastPrice:r.price,lastObservationKey:null,lastAt:new Date().toISOString()}
 }
+function liveObservationKey(code,r,px){
+ const q=lastLive?.quotes?.[code];
+ if(q&&Number(q.last)>0){
+  const v=x=>Number.isFinite(Number(x))?Number(x):'';
+  // Use the actual fast live quote for confirmation. Do not use fetchTime, otherwise a browser refresh would fake a new market observation.
+  // Same price can still become a distinct observation when exchange time/high/low/cumulative volume changes.
+  return ['LIVE',q.date||'',q.time||'',v(px),v(q.high),v(q.low),v(q.volume)].join('|');
+ }
+ return String(r?.quoteObservationKey||[px,r?.reachability?.todayHigh??'',r?.reachability?.todayLow??''].join('|'));
+}
 function updateOne(code,r){
- if(r.error)return;const calibrationVersion=r.firstLayerCalibration?.version||'legacy';let m=STATE.models[code];if(!m||m.calibrationVersion!==calibrationVersion)m=initModel(code,r);m.confirmationVersion=CONFIRM_RULE_VERSION;m.layers.forEach(normalizeLayerRuntime);let atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
+ if(r.error)return;const calibrationVersion=r.firstLayerCalibration?.version||'legacy';let m=STATE.models[code];if(!m||m.calibrationVersion!==calibrationVersion||m.confirmationVersion!==CONFIRM_RULE_VERSION)m=initModel(code,r);m.confirmationVersion=CONFIRM_RULE_VERSION;m.layers.forEach(normalizeLayerRuntime);let atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
  // Participation protection after long no-signal streak in a confirmed bull structure.
  let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);
  if(days>=15&&r.history.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}
@@ -336,23 +351,38 @@ function updateOne(code,r){
  m.layers.forEach((L,i)=>{L.zone=moveZone(L.zone,targets[i],downCap,layerUpCap,allowDown)});
  const cappedNow=enforceCashOpenCeiling(code,m.layers.map(L=>L.zone),atr);m.layers.forEach((L,i)=>{L.zone=cappedNow[i];L.samples.push(center(L.zone));L.samples=L.samples.slice(-6)});
  const px=Number(lastLive?.quotes?.[code]?.last??r.price),rapid=m.lastPrice&&px<m.lastPrice-atr*.75&&px<m.layers[0].zone.low,nowIso=new Date().toISOString();
- const observationKey=String(r.quoteObservationKey||[px,r.reachability?.todayHigh??'',r.reachability?.todayLow??''].join('|')),newObservation=!!observationKey&&observationKey!==m.lastObservationKey;
+ const observationKey=liveObservationKey(code,r,px),newObservation=!!observationKey&&observationKey!==m.lastObservationKey;
  m.layers.forEach((L,i)=>{const z=L.zone,priceReached=px<=z.high,sd=L.samples.length>=4?Math.sqrt(L.samples.reduce((s,v)=>s+(v-L.samples.reduce((a,b)=>a+b,0)/L.samples.length)**2,0)/L.samples.length):999,zoneStable=sd<=atr*.08,rule=LAYER_CONFIRM_RULES[i]||LAYER_CONFIRM_RULES[0];
-  if(priceReached){L.touchedAt=L.touchedAt||nowIso;L.touchMin=Number.isFinite(L.touchMin)?Math.min(L.touchMin,px):px;if(newObservation){L.priceSamples.push(px);L.priceSamples=L.priceSamples.slice(-6)}}
+  let madeNewLow=false;
+  if(priceReached){
+   L.touchedAt=L.touchedAt||nowIso;
+   if(!Number.isFinite(L.touchMin)||px<L.touchMin-1e-9){L.touchMin=px;L.touchMinAt=nowIso;L.confirmCount=0;madeNewLow=true}
+   else if(!L.touchMinAt)L.touchMinAt=L.touchedAt||nowIso;
+   if(newObservation){L.priceSamples.push(px);L.priceSamples=L.priceSamples.slice(-8)}
+  }
   if(r.hardVeto){L.invalid=true;L.forming=false;L.fastPass=false;L.confirmCount=0;return}
   L.invalid=false;
   if(L.confirmed){return}
   if(rapid&&i===0){L.fastPass=true;L.forming=false;L.confirmCount=0;return}else L.fastPass=false;
   const ps=L.priceSamples,prevPx=ps.length>=2?ps[ps.length-2]:null,rebound=Number.isFinite(L.touchMin)?px-L.touchMin:0;
-  // L1 must show actual price stabilization/rebound. L2/L3 use lower score floors because deep pullbacks naturally damage environment/health scores,
-  // but still require two distinct market observations and no hard/soft veto. Buy-point prices themselves are unchanged.
-  const l1Hold=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx;
-  const l1Rebound=ps.length>=2&&rebound>=Math.max(.01,atr*.025);
-  const deepNotAccelerating=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx-atr*(i===1?.08:.10);
-  const priceConfirm=i===0?(l1Hold||l1Rebound):deepNotAccelerating;
-  const gatePass=!r.noBuyToday&&r.score>=rule.minScore,confirmable=priceReached&&zoneStable&&priceConfirm&&gatePass;
-  if(confirmable){L.forming=true;L.confirmationReason=`${rule.name}｜分數≥${rule.minScore}｜${i===0?'價格止跌/反彈':'深回檔未持續加速'}｜Gate PASS`;if(newObservation)L.confirmCount++}
-  else if((priceReached||L.touchedAt||Math.abs(px-center(z))<=atr*.28)&&zoneStable){L.forming=true;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1);L.confirmationReason=priceReached?`${rule.name}等待中｜需分數≥${rule.minScore}${i===0?'＋價格止跌':'＋連續深回檔確認'}${newObservation?'':'｜等待下一筆市場觀測'}`:L.confirmationReason}
+  const gatePass=!r.noBuyToday&&r.score>=rule.minScore;
+  if(i===0){
+   const stableMs=L.touchMinAt?Math.max(0,Date.now()-Date.parse(L.touchMinAt)):0;
+   const stableSec=Math.floor(stableMs/1000),needSec=Math.ceil((rule.minStableMs||0)/1000),reboundNeed=Math.max(Number(rule.minReboundAbs||.02),atr*Number(rule.minReboundAtr||.04));
+   const nonDeclining=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx;
+   if(newObservation&&!madeNewLow){if(nonDeclining)L.confirmCount=Math.min(rule.cycles,L.confirmCount+1);else L.confirmCount=0}
+   const confirmable=priceReached&&zoneStable&&gatePass&&stableMs>=Number(rule.minStableMs||0)&&rebound>=reboundNeed&&L.confirmCount>=rule.cycles;
+   if(priceReached||L.touchedAt||Math.abs(px-center(z))<=atr*.28){
+    L.forming=zoneStable;
+    L.confirmationReason=`${rule.name}｜穩定 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}筆｜低點後 ${stableSec}/${needSec}秒｜反彈 ${rebound.toFixed(2)}/${reboundNeed.toFixed(2)}｜${gatePass?'Gate PASS':`需分數≥${rule.minScore}/Gate PASS`}`;
+   }else L.forming=false;
+   if(confirmable){L.confirmed=true;L.triggeredAt=L.triggeredAt||nowIso;if(!L.confirmedZone){L.confirmedZone=JSON.parse(JSON.stringify(z));L.confirmedAt=nowIso;L.confirmedPrice=px;L.confirmedObservationKey=observationKey}addEvent(`${code} 第1層正式確認：${ztxt(z)}，現價${px.toFixed(2)}｜${L.confirmationReason}`,'buy')}
+   return;
+  }
+  // L2/L3 keep the existing deep-pullback confirmation. A lower layer is only touched when price actually reaches that layer's high edge.
+  const deepNotAccelerating=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx-atr*(i===1?.08:.10),confirmable=priceReached&&zoneStable&&deepNotAccelerating&&gatePass;
+  if(confirmable){L.forming=true;if(newObservation)L.confirmCount++;L.confirmationReason=`${rule.name}｜分數≥${rule.minScore}｜深回檔未持續加速｜確認 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}｜Gate PASS`}
+  else if((priceReached||L.touchedAt||Math.abs(px-center(z))<=atr*.28)&&zoneStable){L.forming=true;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1);L.confirmationReason=priceReached?`${rule.name}等待中｜需分數≥${rule.minScore}＋連續深回檔確認｜目前 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}${newObservation?'':'｜等待下一筆市場觀測'}`:L.confirmationReason}
   else{L.forming=false;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1)}
   if(L.confirmCount>=rule.cycles){L.confirmed=true;L.triggeredAt=L.triggeredAt||nowIso;if(!L.confirmedZone){L.confirmedZone=JSON.parse(JSON.stringify(z));L.confirmedAt=nowIso;L.confirmedPrice=px;L.confirmedObservationKey=observationKey}addEvent(`${code} 第${i+1}層正式確認：${ztxt(z)}，現價${px.toFixed(2)}｜${L.confirmationReason}`,'buy')}
  });
@@ -366,11 +396,11 @@ function updateShadowOne(code,r){
  const nowIso=new Date().toISOString(),elapsedSec=Math.max(1,Math.min(120,(Date.now()-Date.parse(m.lastAt||nowIso))/1000||30)),atr=r.history?.atr14||r.price*.012,healthNow=r.health?.score,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
  let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);if(days>=15&&r.history?.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}targets=enforceCashOpenCeiling(code,targets,atr);
  const downCap30=Math.max(.018,atr*.055),upCap30=Math.max(.018,atr*.055);m.layers.forEach((L,i)=>{L.zone=moveZoneTimed(L.zone,targets[i],downCap30,upCap30,allowDown,elapsedSec)});const cappedNow=enforceCashOpenCeiling(code,m.layers.map(L=>L.zone),atr);m.layers.forEach((L,i)=>{L.zone=cappedNow[i];L.samples.push(center(L.zone));L.samples=L.samples.slice(-8)});
- const px=Number(lastLive?.quotes?.[code]?.last??r.price),rapid=m.lastPrice&&px<m.lastPrice-atr*.75&&px<m.layers[0].zone.low,observationKey=String(r.quoteObservationKey||[px,r.reachability?.todayHigh??'',r.reachability?.todayLow??''].join('|')),newObservation=!!observationKey&&observationKey!==m.lastObservationKey,criticalPass=r?.criticalGate?.pass===true;
+ const px=Number(lastLive?.quotes?.[code]?.last??r.price),rapid=m.lastPrice&&px<m.lastPrice-atr*.75&&px<m.layers[0].zone.low,observationKey=liveObservationKey(code,r,px),newObservation=!!observationKey&&observationKey!==m.lastObservationKey,criticalPass=r?.criticalGate?.pass===true;
  m.layers.forEach((L,i)=>{const z=L.zone,priceReached=px<=z.high,sd=L.samples.length>=4?Math.sqrt(L.samples.reduce((s,v)=>s+(v-L.samples.reduce((a,b)=>a+b,0)/L.samples.length)**2,0)/L.samples.length):999,zoneStable=sd<=atr*.08,rule=rules[i];if(priceReached){L.touchedAt=L.touchedAt||nowIso;L.touchMin=Number.isFinite(L.touchMin)?Math.min(L.touchMin,px):px;if(newObservation){L.priceSamples.push(px);L.priceSamples=L.priceSamples.slice(-8)}}
   if(r.hardVeto||!criticalPass){L.invalid=true;L.forming=false;L.fastPass=false;L.confirmCount=0;L.confirmationReason=!criticalPass?`Critical Gate BLOCKED：${(r?.criticalGate?.failed||[]).join('/')}`:(r.hardVetoReason||'Hard Gate');return}L.invalid=false;if(L.confirmed)return;if(rapid&&i===0){L.fastPass=true;L.forming=false;L.confirmCount=0;return}else L.fastPass=false;
   const ps=L.priceSamples,prevPx=ps.length>=2?ps[ps.length-2]:null,rebound=Number.isFinite(L.touchMin)?px-L.touchMin:0,l1Hold=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx,l1Rebound=ps.length>=2&&rebound>=Math.max(.01,atr*.025),deepNotAccelerating=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx-atr*(i===1?.08:.10),priceConfirm=i===0?(l1Hold||l1Rebound):deepNotAccelerating,gatePass=!r.noBuyToday&&r.score>=rule.minScore&&criticalPass,confirmable=priceReached&&zoneStable&&priceConfirm&&gatePass;
-  if(confirmable){L.forming=true;L.confirmationReason=`${rule.name}｜分數≥${rule.minScore}｜${rule.cycles}筆確認｜Critical PASS`;if(newObservation)L.confirmCount++}else if((priceReached||L.touchedAt||Math.abs(px-center(z))<=atr*.28)&&zoneStable){L.forming=true;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1);L.confirmationReason=priceReached?`${rule.name}等待中｜分數≥${rule.minScore}｜需${rule.cycles}筆市場觀測${newObservation?'':'｜等待新行情'}`:L.confirmationReason}else{L.forming=false;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1)}
+  if(confirmable){L.forming=true;if(newObservation)L.confirmCount++;L.confirmationReason=`${rule.name}｜分數≥${rule.minScore}｜確認 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}｜Critical PASS`}else if((priceReached||L.touchedAt||Math.abs(px-center(z))<=atr*.28)&&zoneStable){L.forming=true;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1);L.confirmationReason=priceReached?`${rule.name}等待中｜分數≥${rule.minScore}｜目前 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}${newObservation?'':'｜等待新行情'}`:L.confirmationReason}else{L.forming=false;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1)}
   if(L.confirmCount>=rule.cycles){L.confirmed=true;L.triggeredAt=L.triggeredAt||nowIso;if(!L.confirmedZone){L.confirmedZone=JSON.parse(JSON.stringify(z));L.confirmedAt=nowIso;L.confirmedPrice=px;L.confirmedObservationKey=observationKey}}
  });
  m.prevEnv=r.environmentScore;m.prevHealth=healthNow;m.lastPrice=px;m.criticalStatus=r?.criticalGate?.status||'BLOCKED';m.policyId=r?.shadowPolicy?.selectedId||'baseline';m.policyQ=r?.shadowPolicy?.q||null;if(observationKey)m.lastObservationKey=observationKey;m.lastAt=nowIso;SHADOW_STATE.models[code]=m;
