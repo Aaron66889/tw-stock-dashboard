@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.78-SHADOW-DATA-FIX';
+const BUILD='16.8.79-SHADOW-YAHOO-CHIP';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -776,6 +776,45 @@ function parseInstitutionalReport(d,requestedDay){
  }
  return{ok:Object.keys(map).length>0,date:reportDateFromTwse(d,requestedDay),map,source:'TWSE T86 三大法人買賣超日報'};
 }
+
+function parseYahooInstitutionalPage(html,code){
+ const text=stripTags(html),anchor=text.indexOf('法人逐日買賣超'),body=anchor>=0?text.slice(anchor,anchor+18000):text;
+ const rows=[],seen=new Set();
+ // Yahoo's server-rendered daily table is: date, foreign, trust, dealer, total, foreign-chip%, change%, volume.
+ // Keep this parser intentionally strict so unrelated numbers elsewhere on the page cannot become chip data.
+ const re=/(20\d{2}[\/.-]\d{1,2}[\/.-]\d{1,2})\s+([+\-]?\d[\d,]*)\s+([+\-]?\d[\d,]*)\s+([+\-]?\d[\d,]*)\s+([+\-]?\d[\d,]*)\s+([+\-]?\d+(?:\.\d+)?)%\s+([+\-]?\d+(?:\.\d+)?)%\s+([\d,]+)/g;
+ let m;while((m=re.exec(body))){const date=parseISODate(m[1]);if(!date||seen.has(date))continue;seen.add(date);rows.push({date,foreignNet:n(m[2]),trustNet:n(m[3]),dealerNet:n(m[4]),totalNet:n(m[5]),foreignChipPct:n(m[6]),changePct:n(m[7]),volume:n(m[8])})}
+ rows.sort((a,b)=>a.date.localeCompare(b.date));
+ return{ok:rows.length>=3,code,rows:rows.slice(-20),asOf:rows.at(-1)?.date||null,days:rows.length,source:'Yahoo股市 ETF法人逐日買賣超',reason:rows.length>=3?null:`Yahoo法人逐日表僅解析到 ${rows.length} 日`};
+}
+async function yahooInstitutionalDirect(code){
+ return cached('ychip:r357:'+code,10*60*1000,async()=>{
+  let html=null,lastErr=null;
+  for(const url of [`https://tw.stock.yahoo.com/quote/${code}/institutional-trading`,`https://tw.stock.yahoo.com/quote/${code}.TW/institutional-trading`]){
+   try{html=await getText(url,{'Referer':'https://tw.stock.yahoo.com/'});if(html)break}catch(e){lastErr=e}
+  }
+  if(!html)return{ok:false,code,rows:[],asOf:null,days:0,source:'Yahoo股市 ETF法人逐日買賣超',reason:lastErr?.message||'Yahoo法人頁無回應'};
+  return parseYahooInstitutionalPage(html,code);
+ });
+}
+function yahooChipSignal(code,d){
+ const rows=(d?.rows||[]).filter(x=>x?.date&&Number(x.volume)>0).slice(-5);
+ if(rows.length<3)return{usable:false,score:null,effect:0,label:'資料不足',reason:d?.reason||`Yahoo法人有效日不足（${rows.length}/3）`,asOf:d?.asOf||null,days:rows.length,source:d?.source||'Yahoo股市'};
+ const ratio=(net,vol)=>vol>0&&Number.isFinite(Number(net))?clamp(Number(net)/vol,-1,1):0;
+ const vals=rows.map(x=>{const vol=Number(x.volume),f=ratio(x.foreignNet,vol),t=ratio(x.trustNet,vol),de=ratio(x.dealerNet,vol);return{...x,f,t,de,blend:.50*f+.30*t+.20*de}});
+ const f=mean(vals.map(x=>x.f)),t=mean(vals.map(x=>x.t)),de=mean(vals.map(x=>x.de)),blend=mean(vals.map(x=>x.blend));
+ // ETF-level institutional flow includes market-making/arbitrage, so keep the Shadow effect capped at +/-2.5.
+ const score=clamp(Math.round(50+(blend||0)*80),0,100),effect=clamp((score-50)*.08,-2.5,2.5),label=score>=60?'ETF籌碼偏多':score<=40?'ETF籌碼偏空':'ETF籌碼中性';
+ return{usable:true,score,effect,label,asOf:d?.asOf||rows.at(-1)?.date||null,days:rows.length,foreignBreadth:(f||0)*100,trustBreadth:(t||0)*100,dealerBreadth:(de||0)*100,directImbalance:(blend||0)*100,coverage:100,source:d?.source||'Yahoo股市 ETF法人逐日買賣超',fallback:false,note:'以Yahoo最近5個已公布交易日的ETF外資/投信/自營商買賣超，除以當日成交量標準化；盤中使用最近可得盤後資料，僅進Shadow。'};
+}
+async function yahooVolumeWindow(code){
+ return cached('yvol:r357:'+code,30*60*1000,async()=>{
+  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(code+'.TW')}?range=6mo&interval=1d&includePrePost=false&events=div%2Csplits`;
+  const d=await getJSON(url,{'Referer':'https://finance.yahoo.com/'}),r=d?.chart?.result?.[0],ts=r?.timestamp||[],q=r?.indicators?.quote?.[0]||{},rows=[];
+  for(let i=0;i<ts.length;i++){const volume=Number(q.volume?.[i]);if(volume>0)rows.push({date:new Date(ts[i]*1000).toISOString().slice(0,10),volume})}
+  return{ok:rows.length>=20,code,rows:rows.slice(-90),days:rows.length,asOf:rows.at(-1)?.date||null,source:'Yahoo Finance 6M日成交量',reason:rows.length>=20?null:`Yahoo成交量僅 ${rows.length} 日`};
+ });
+}
 async function institutionalReport(day){
  const key='t86day:r356:'+day;
  return cached(key,6*60*60*1000,async()=>{
@@ -826,8 +865,9 @@ function weightedFlow(items,report,type){
  }
  return{value:den?num/den:null,coverage:total?covered/total:0};
 }
-function chipShadowSignal(code,health,win){
- if(!win?.ok)return{usable:false,score:null,effect:0,label:'資料不足',reason:win?.reason||`T86有效日不足（${win?.days||0}/5）`,asOf:win?.asOf||null,days:win?.days||0,source:win?.source||'TWSE T86'};
+function chipShadowSignal(code,health,win,yahooDirect){
+ const ys=yahooChipSignal(code,yahooDirect);if(ys.usable)return ys;
+ if(!win?.ok)return{usable:false,score:null,effect:0,label:'資料不足',reason:`Yahoo：${ys.reason||'不可用'}；TWSE：${win?.reason||`T86有效日不足（${win?.days||0}/5）`}`,asOf:yahooDirect?.asOf||win?.asOf||null,days:Math.max(yahooDirect?.days||0,win?.days||0),source:'Yahoo/TWSE'};
  const directRows=(win.reports||[]).map(r=>({date:r.date,x:r.map?.[code]||null})).filter(z=>z.x);
  const directSignal=()=>{
   const good=directRows.filter(z=>z.x).slice(-5);if(good.length<3)return null;
@@ -873,9 +913,12 @@ async function ensureEtfQuoteVolumes(etfLd){
  }
  return etfLd;
 }
-function volumeShadowSignal(code,quote,hist){
- const rows=(hist?.rows||[]).filter(x=>Number(x.volume)>0),v20=mean(rows.slice(-20).map(x=>Number(x.volume))),v60=mean(rows.slice(-60).map(x=>Number(x.volume))),frac=expectedSessionVolumeFraction(),raw=Number(quote?.volume);
- if(!(v20>0))return{usable:false,score:null,effect:0,label:'量能資料不足',reason:`歷史成交量不足20日（可用 ${rows.length} 日）`,avg20:v20||null,avg60:v60||null,source:quote?.source||null};
+function volumeShadowSignal(code,quote,hist,volumeFallback){
+ const primary=(hist?.rows||[]).filter(x=>Number(x.volume)>0),fallback=(volumeFallback?.rows||[]).filter(x=>Number(x.volume)>0),byDate=new Map();
+ for(const x of fallback)if(x?.date&&Number(x.volume)>0)byDate.set(x.date,{date:x.date,volume:Number(x.volume),source:volumeFallback?.source});
+ for(const x of primary)if(x?.date&&Number(x.volume)>0)byDate.set(x.date,{date:x.date,volume:Number(x.volume),source:hist?.source});
+ const rows=[...byDate.values()].sort((a,b)=>a.date.localeCompare(b.date)),v20=mean(rows.slice(-20).map(x=>Number(x.volume))),v60=mean(rows.slice(-60).map(x=>Number(x.volume))),frac=expectedSessionVolumeFraction(),raw=Number(quote?.volume);
+ if(!(v20>0))return{usable:false,score:null,effect:0,label:'量能資料不足',reason:`歷史成交量不足20日（正式歷史 ${primary.length} 日；Yahoo備援 ${fallback.length} 日；合併 ${rows.length} 日）`,avg20:v20||null,avg60:v60||null,source:volumeFallback?.source||hist?.source||quote?.source||null};
  if(!(raw>0))return{usable:false,score:null,effect:0,label:'量能資料不足',reason:'即時成交量未取得',avg20:v20||null,avg60:v60||null,source:quote?.source||null};
  if(!(frac>0))return{usable:false,score:null,effect:0,label:'量能資料不足',reason:'目前不在可估算盤中量速的時段',avg20:v20||null,avg60:v60||null,source:quote?.source||null};
  const norm=normalizeLiveVolumeUnit(raw,v20,frac),pace=norm.pace,px=Number(quote?.last),prev=Number(quote?.prevClose),high=Number(quote?.high),low=Number(quote?.low),chg=px>0&&prev>0?(px/prev-1)*100:null,rangePos=high>low&&px>0?clamp((px-low)/(high-low),0,1):.5;
@@ -887,7 +930,7 @@ function volumeShadowSignal(code,quote,hist){
  }
  score=clamp(Math.round(score),0,100);const effect=clamp((score-50)*.10,-4,4);
  let label='量價中性';if(Number.isFinite(chg)&&chg<-.3&&pace>=1.4&&rangePos<.55)label='放量走弱';else if(Number.isFinite(chg)&&chg<-.3&&pace<.85)label='縮量回檔';else if(pace>=1.15&&rangePos>=.65)label='放量承接';else if(score>=60)label='量價偏多';else if(score<=40)label='量價偏弱';
- return{usable:true,score,effect,label,pace,expectedFraction:frac,currentVolume:norm.value,rawVolume:raw,unitFactor:norm.factor,avg20:v20,avg60:v60,changePct:chg,rangePosition:rangePos*100,source:quote?.volumeSource||quote?.source||null,note:'盤中量速以20日均量×時段期望比例估算；僅供Shadow，不改正式買點。'};
+ return{usable:true,score,effect,label,pace,expectedFraction:frac,currentVolume:norm.value,rawVolume:raw,unitFactor:norm.factor,avg20:v20,avg60:v60,changePct:chg,rangePosition:rangePos*100,source:`${quote?.volumeSource||quote?.source||'即時行情'} + ${primary.length>=20?(hist?.source||'歷史量'):(volumeFallback?.source||'Yahoo量能備援')}`,note:'盤中量速以20日均量×時段期望比例估算；歷史量不足時以Yahoo 6M日量補足；僅供Shadow，不改正式買點。'};
 }
 function applyShadowExperimentalFactors(sr,volumeSignal,chipSignal){
  const base=Number(sr?.score);if(!Number.isFinite(base))return sr;
@@ -2102,7 +2145,7 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
  const healthTimeout=c=>({ok:true,code:c,usable:false,score:null,divergence:'官方成分來源逾時，暫不計分',sourceCoverage:0,quoteCoverage:0,items:[],reason:'constituent deadline exceeded',source:'timeout'});
- const [ld,etfLd,ctx,ovs,nf,harr,hhealth,instWin]=await Promise.all([
+ const [ld,etfLd,ctx,ovs,nf,harr,hhealth,instWin,volWindows,yahooChips]=await Promise.all([
   deadline(liveStable().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),8000,{ok:false,quotes:{},market:null,tsmc:null,error:'market deadline exceeded',fetchedAt:null}),
   deadline(liveEtf4().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),9000,{ok:false,quotes:{},error:'ETF live deadline exceeded',fetchedAt:null}),
   deadline(cached('ctx',30000,context).catch(()=>null),6000,null),
@@ -2110,10 +2153,12 @@ async function buyModel(){
   deadline(nightFuture().catch(()=>null),6000,null),
   Promise.all(ETF.map(async c=>[c,await deadline(etfHistory(c).catch(e=>({ok:false,rows:[],source:'history error',validation:{fullHistoryPass:false},error:e.message})),7000,historyTimeout(c))])),
   Promise.all(ETF.map(async c=>[c,await deadline(constituentHealth(c).catch(e=>({ok:false,code:c,usable:false,score:null,divergence:'成分來源錯誤',sourceCoverage:0,quoteCoverage:0,reason:e.message})),6000,healthTimeout(c))])),
-  deadline(institutionalRecentWindow(5).catch(e=>({ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:e.message,reason:e.message})),7800,{ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:'institutional window deadline exceeded',reason:'T86視窗建立逾時'})
+  deadline(institutionalRecentWindow(5).catch(e=>({ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:e.message,reason:e.message})),7800,{ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:'institutional window deadline exceeded',reason:'T86視窗建立逾時'}),
+  Promise.all(ETF.map(async c=>[c,await deadline(yahooVolumeWindow(c).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:e.message})),5500,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:'Yahoo量能視窗逾時'})])),
+  Promise.all(ETF.map(async c=>[c,await deadline(yahooInstitutionalDirect(c).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:e.message})),5500,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:'Yahoo法人頁逾時'})]))
  ]);
  await ensureEtfQuoteVolumes(etfLd).catch(()=>{});
- const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),models={},shadowModels={};
+ const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),vh=Object.fromEntries(volWindows||[]),yc=Object.fromEntries(yahooChips||[]),models={},shadowModels={};
  const marketAt=ld.fetchedAt?Date.parse(ld.fetchedAt):0,etfAt=etfLd?.fetchedAt?Date.parse(etfLd.fetchedAt):0,openRequired=twMarketOpenNow();
  const marketAgeMs=ld.lastGoodFallback
   ? Number(ld.fallbackAgeMs)
@@ -2132,11 +2177,11 @@ async function buyModel(){
  // Shadow is computed in parallel and can never overwrite the official models object.
  // To keep /api/buy-model responsive, at most ONE uncached OOS calibration is computed per request; the others temporarily use baseline and warm on later cycles.
  let shadowCalibratedThisRequest=false;
- for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy&&!shadowCalibratedThisRequest){policy=shadowPolicyCalibration(c,rows);shadowCalibratedThisRequest=true}if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);const volumeSignal=volumeShadowSignal(c,etfLd?.quotes?.[c],hs[c]),chipSignal=chipShadowSignal(c,hh[c],instWin);applyShadowExperimentalFactors(sr,volumeSignal,chipSignal);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
+ for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy&&!shadowCalibratedThisRequest){policy=shadowPolicyCalibration(c,rows);shadowCalibratedThisRequest=true}if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);const volumeSignal=volumeShadowSignal(c,etfLd?.quotes?.[c],hs[c],vh[c]),chipSignal=chipShadowSignal(c,hh[c],instWin,yc[c]);applyShadowExperimentalFactors(sr,volumeSignal,chipSignal);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
  // Recent completed exchange dates let the browser advance no-signal streaks by real trading sessions instead of calendar days.
  const calendarHist=ETF.map(c=>hs[c]).find(h=>Array.isArray(h?.rows)&&h.rows.length);
  const tradingDates=[...new Set((calendarHist?.rows||[]).map(x=>x?.date).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)))].sort().slice(-180);
- return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'}};
+ return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'},shadowData:{yahooChips:Object.fromEntries(ETF.map(c=>[c,{ok:!!yc[c]?.ok,days:yc[c]?.days||0,asOf:yc[c]?.asOf||null,reason:yc[c]?.reason||null}])),volumeWindows:Object.fromEntries(ETF.map(c=>[c,{ok:!!vh[c]?.ok,days:vh[c]?.days||0,asOf:vh[c]?.asOf||null,reason:vh[c]?.reason||null}]))}};
 }
 
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
