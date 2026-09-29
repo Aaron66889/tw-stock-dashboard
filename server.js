@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.76-DIVIDEND-AUTO-00919-COST-FIX';
+const BUILD='16.8.77-SHADOW-VOLUME-CHIP';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -741,6 +741,132 @@ async function marketBreadthRealtime(){
  const v=await refreshBreadthRuntime(false);
  return v;
 }
+function reportDateFromTwse(d,fallback){
+ const raw=String(d?.date||d?.stat||d?.title||'');
+ const iso=parseISODate(raw);if(iso)return iso;
+ const roc=parseROCDate(raw);if(roc)return roc;
+ const m=raw.match(/(20\d{2})(\d{2})(\d{2})/);if(m)return `${m[1]}-${m[2]}-${m[3]}`;
+ return fallback||null;
+}
+function parseInstitutionalReport(d,requestedDay){
+ const fields=d?.fields||[],data=Array.isArray(d?.data)?d.data:[];
+ const idx={
+  code:twseFieldIndex(fields,[/證券代號/]),
+  fBuy:twseFieldIndex(fields,[/外.*買進股數.*不含外資自營商/]),
+  fSell:twseFieldIndex(fields,[/外.*賣出股數.*不含外資自營商/]),
+  fNet:twseFieldIndex(fields,[/外.*買賣超股數.*不含外資自營商/]),
+  tBuy:twseFieldIndex(fields,[/投信買進股數/]),
+  tSell:twseFieldIndex(fields,[/投信賣出股數/]),
+  tNet:twseFieldIndex(fields,[/投信買賣超股數/]),
+  dNet:twseFieldIndex(fields,[/^自營商買賣超股數$/]),
+  dSelfBuy:twseFieldIndex(fields,[/自營商買進股數\(自行買賣\)/]),
+  dSelfSell:twseFieldIndex(fields,[/自營商賣出股數\(自行買賣\)/]),
+  dHedgeBuy:twseFieldIndex(fields,[/自營商買進股數\(避險\)/]),
+  dHedgeSell:twseFieldIndex(fields,[/自營商賣出股數\(避險\)/]),
+  totalNet:twseFieldIndex(fields,[/三大法人買賣超股數/])
+ };
+ if(idx.code<0||!data.length)return{ok:false,date:reportDateFromTwse(d,requestedDay),map:{},reason:'T86 no data'};
+ const map={};
+ for(const r of data){
+  const code=String(r[idx.code]??'').trim();if(!/^\d{4,6}[A-Z]?$/.test(code))continue;
+  const val=k=>idx[k]>=0?n(r[idx[k]]):null;
+  const dsb=val('dSelfBuy'),dss=val('dSelfSell'),dhb=val('dHedgeBuy'),dhs=val('dHedgeSell');
+  map[code]={
+   foreignBuy:val('fBuy'),foreignSell:val('fSell'),foreignNet:val('fNet'),
+   trustBuy:val('tBuy'),trustSell:val('tSell'),trustNet:val('tNet'),
+   dealerBuy:(Number.isFinite(dsb)?dsb:0)+(Number.isFinite(dhb)?dhb:0),
+   dealerSell:(Number.isFinite(dss)?dss:0)+(Number.isFinite(dhs)?dhs:0),
+   dealerNet:val('dNet'),totalNet:val('totalNet')
+  };
+ }
+ return{ok:Object.keys(map).length>0,date:reportDateFromTwse(d,requestedDay),map,source:'TWSE T86 三大法人買賣超日報'};
+}
+async function institutionalReport(day){
+ const key='t86day:'+day;
+ return cached(key,6*60*60*1000,async()=>{
+  const q=String(day).replaceAll('-','');
+  const d=await getJSON(`https://www.twse.com.tw/rwd/zh/fund/T86?date=${q}&response=json&selectType=ALLBUT0999&_=${Date.now()}`,{'Referer':'https://www.twse.com.tw/'});
+  return parseInstitutionalReport(d,day);
+ });
+}
+function recentWeekdays(max=8){
+ const base=new Date(ymdTaipei()+'T12:00:00+08:00'),out=[],df=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}),wf=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',weekday:'short'});
+ for(let k=0;k<18&&out.length<max;k++){
+  const d=new Date(base.getTime()-k*86400000),wd=wf.format(d);
+  if(wd==='Sat'||wd==='Sun')continue;
+  out.push(df.format(d));
+ }
+ return out;
+}
+async function institutionalRecentWindow(days=5){
+ const cands=recentWeekdays(8),rows=await Promise.all(cands.map(day=>deadline(institutionalReport(day).catch(()=>null),4500,null)));
+ const seen=new Set(),reports=[];
+ for(const r of rows){if(!r?.ok||!r.date||seen.has(r.date))continue;seen.add(r.date);reports.push(r)}
+ reports.sort((a,b)=>a.date.localeCompare(b.date));
+ const last=reports.slice(-days);
+ return{ok:last.length>=3,days:last.length,reports:last,asOf:last.at(-1)?.date||null,source:'TWSE T86 三大法人買賣超日報'};
+}
+function flowImbalance(buy,sell,net){
+ const b=Number(buy),s=Number(sell),n0=Number(net),den=(Number.isFinite(b)?Math.abs(b):0)+(Number.isFinite(s)?Math.abs(s):0);
+ if(den>0&&Number.isFinite(n0))return clamp(n0/den,-1,1);
+ if(Number.isFinite(n0)&&n0!==0)return Math.sign(n0);
+ return 0;
+}
+function weightedFlow(items,report,type){
+ let num=0,den=0,covered=0,total=0;
+ for(const it of (items||[])){
+  const w=Number(it.weight);if(!(w>0))continue;total+=w;
+  const x=report?.map?.[String(it.code||'').trim()];if(!x)continue;
+  const im=type==='foreign'?flowImbalance(x.foreignBuy,x.foreignSell,x.foreignNet):type==='trust'?flowImbalance(x.trustBuy,x.trustSell,x.trustNet):flowImbalance(x.dealerBuy,x.dealerSell,x.dealerNet);
+  num+=im*w;den+=w;covered+=w;
+ }
+ return{value:den?num/den:null,coverage:total?covered/total:0};
+}
+function chipShadowSignal(code,health,win){
+ if(!win?.ok||!health?.items?.length)return{usable:false,score:null,effect:0,label:'資料不足',asOf:win?.asOf||null,days:win?.days||0,source:win?.source||'TWSE T86'};
+ const daily=[];
+ for(const r of win.reports||[]){
+  const f=weightedFlow(health.items,r,'foreign'),t=weightedFlow(health.items,r,'trust'),d=weightedFlow(health.items,r,'dealer'),own=r.map?.[code]||null;
+  daily.push({date:r.date,foreign:f.value,trust:t.value,dealer:d.value,coverage:Math.min(f.coverage,t.coverage),direct:own?(.65*flowImbalance(own.foreignBuy,own.foreignSell,own.foreignNet)+.35*flowImbalance(own.trustBuy,own.trustSell,own.trustNet)):null});
+ }
+ const good=daily.filter(x=>Number.isFinite(x.foreign)&&Number.isFinite(x.trust)&&x.coverage>=.60);
+ if(good.length<3)return{usable:false,score:null,effect:0,label:'覆蓋不足',asOf:win.asOf,days:good.length,source:win.source};
+ const f=mean(good.map(x=>x.foreign)),t=mean(good.map(x=>x.trust)),d=mean(good.map(x=>x.dealer)),direct=mean(good.map(x=>x.direct));
+ const score=clamp(Math.round(50+(f||0)*22+(t||0)*18+(d||0)*5+(direct||0)*5),0,100),effect=clamp((score-50)*.10,-4,4);
+ const label=score>=62?'籌碼偏多':score<=38?'籌碼偏空':'籌碼中性';
+ return{usable:true,score,effect,label,asOf:win.asOf,days:good.length,foreignBreadth:(f||0)*100,trustBreadth:(t||0)*100,dealerBreadth:(d||0)*100,directImbalance:(direct||0)*100,coverage:mean(good.map(x=>x.coverage))*100,source:win.source,note:'以ETF成分權重彙總近5個交易日外資/投信/自營商買賣不平衡；ETF本身法人僅低權重輔助，自營商避險不作主要方向判斷。'};
+}
+function expectedSessionVolumeFraction(){
+ const t=taipeiClock(),mins=t.h*60+t.m,weekday=['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday);
+ if(!weekday||mins>=810)return 1;if(mins<540)return null;
+ const p=clamp((mins-540)/270,0,1);return clamp(.12+.88*p,.12,1);
+}
+function normalizeLiveVolumeUnit(live,avg,frac){
+ if(!(live>0&&avg>0&&frac>0))return{value:null,factor:null,pace:null};
+ const target=avg*frac,cands=[{value:live,factor:1},{value:live*1000,factor:1000}];
+ cands.forEach(x=>x.pace=x.value/target);cands.sort((a,b)=>Math.abs(Math.log10(Math.max(.001,a.pace)))-Math.abs(Math.log10(Math.max(.001,b.pace))));return cands[0];
+}
+function volumeShadowSignal(code,quote,hist){
+ const rows=(hist?.rows||[]).filter(x=>Number(x.volume)>0),v20=mean(rows.slice(-20).map(x=>Number(x.volume))),v60=mean(rows.slice(-60).map(x=>Number(x.volume))),frac=expectedSessionVolumeFraction(),raw=Number(quote?.volume);
+ if(!(v20>0&&raw>0&&frac>0))return{usable:false,score:null,effect:0,label:'量能資料不足',avg20:v20||null,avg60:v60||null,source:quote?.source||null};
+ const norm=normalizeLiveVolumeUnit(raw,v20,frac),pace=norm.pace,px=Number(quote?.last),prev=Number(quote?.prevClose),high=Number(quote?.high),low=Number(quote?.low),chg=px>0&&prev>0?(px/prev-1)*100:null,rangePos=high>low&&px>0?clamp((px-low)/(high-low),0,1):.5;
+ let score=50;
+ if(Number.isFinite(chg)){
+  if(chg<=-.30){score+=pace<.80?10:pace>=1.60?-20:pace>=1.20?-10:0;if(pace>=1.15&&rangePos>=.65)score+=12;if(rangePos<=.25)score-=8}
+  else if(chg>=.30){score+=pace>=1.20?12:pace<.70?-5:5;if(rangePos>=.65)score+=4}
+  else{if(pace>=1.55&&rangePos<.40)score-=8;else if(pace<.80)score+=3}
+ }
+ score=clamp(Math.round(score),0,100);const effect=clamp((score-50)*.10,-4,4);
+ let label='量價中性';if(Number.isFinite(chg)&&chg<-.3&&pace>=1.4&&rangePos<.55)label='放量走弱';else if(Number.isFinite(chg)&&chg<-.3&&pace<.85)label='縮量回檔';else if(pace>=1.15&&rangePos>=.65)label='放量承接';else if(score>=60)label='量價偏多';else if(score<=40)label='量價偏弱';
+ return{usable:true,score,effect,label,pace,expectedFraction:frac,currentVolume:norm.value,rawVolume:raw,unitFactor:norm.factor,avg20:v20,avg60:v60,changePct:chg,rangePosition:rangePos*100,source:quote?.source||null,note:'盤中量速以20日均量×時段期望比例估算；僅供Shadow，不改正式買點。'};
+}
+function applyShadowExperimentalFactors(sr,volumeSignal,chipSignal){
+ const base=Number(sr?.score);if(!Number.isFinite(base))return sr;
+ const ve=volumeSignal?.usable?Number(volumeSignal.effect)||0:0,ce=chipSignal?.usable?Number(chipSignal.effect)||0:0,final=clamp(Math.round(base+ve+ce),0,100);
+ sr.officialBaseScore=base;sr.experimentalFactors={volume:volumeSignal,chips:chipSignal,volumeEffect:ve,chipEffect:ce,totalEffect:ve+ce,baseShadowScore:base,finalShadowScore:final,mode:'SHADOW_ONLY'};
+ sr.score=final;if(sr.scoreBreakdown)sr.scoreBreakdown={...sr.scoreBreakdown,shadowVolume:ve,shadowChips:ce,shadowFinal:final};sr.method=(sr.method||'')+' + SHADOW-only volume/chip overlay';return sr;
+}
+
 async function context(){
  const errors=[];let breadth=null,turnover=null,institutional=null;
  try{breadth=await marketBreadthRealtime()}catch(e){errors.push('breadth:'+e.message)}
@@ -1945,14 +2071,15 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
  const healthTimeout=c=>({ok:true,code:c,usable:false,score:null,divergence:'官方成分來源逾時，暫不計分',sourceCoverage:0,quoteCoverage:0,items:[],reason:'constituent deadline exceeded',source:'timeout'});
- const [ld,etfLd,ctx,ovs,nf,harr,hhealth]=await Promise.all([
+ const [ld,etfLd,ctx,ovs,nf,harr,hhealth,instWin]=await Promise.all([
   deadline(liveStable().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),8000,{ok:false,quotes:{},market:null,tsmc:null,error:'market deadline exceeded',fetchedAt:null}),
   deadline(liveEtf4().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),9000,{ok:false,quotes:{},error:'ETF live deadline exceeded',fetchedAt:null}),
   deadline(cached('ctx',30000,context).catch(()=>null),6000,null),
   deadline(cached('ovs',45000,overseas).catch(()=>null),6000,null),
   deadline(nightFuture().catch(()=>null),6000,null),
   Promise.all(ETF.map(async c=>[c,await deadline(etfHistory(c).catch(e=>({ok:false,rows:[],source:'history error',validation:{fullHistoryPass:false},error:e.message})),7000,historyTimeout(c))])),
-  Promise.all(ETF.map(async c=>[c,await deadline(constituentHealth(c).catch(e=>({ok:false,code:c,usable:false,score:null,divergence:'成分來源錯誤',sourceCoverage:0,quoteCoverage:0,reason:e.message})),6000,healthTimeout(c))]))
+  Promise.all(ETF.map(async c=>[c,await deadline(constituentHealth(c).catch(e=>({ok:false,code:c,usable:false,score:null,divergence:'成分來源錯誤',sourceCoverage:0,quoteCoverage:0,reason:e.message})),6000,healthTimeout(c))])),
+  deadline(institutionalRecentWindow(5).catch(e=>({ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:e.message})),6500,{ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:'institutional window deadline exceeded'})
  ]);
  const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),models={},shadowModels={};
  const marketAt=ld.fetchedAt?Date.parse(ld.fetchedAt):0,etfAt=etfLd?.fetchedAt?Date.parse(etfLd.fetchedAt):0,openRequired=twMarketOpenNow();
@@ -1973,11 +2100,11 @@ async function buyModel(){
  // Shadow is computed in parallel and can never overwrite the official models object.
  // To keep /api/buy-model responsive, at most ONE uncached OOS calibration is computed per request; the others temporarily use baseline and warm on later cycles.
  let shadowCalibratedThisRequest=false;
- for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy&&!shadowCalibratedThisRequest){policy=shadowPolicyCalibration(c,rows);shadowCalibratedThisRequest=true}if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
+ for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy&&!shadowCalibratedThisRequest){policy=shadowPolicyCalibration(c,rows);shadowCalibratedThisRequest=true}if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);const volumeSignal=volumeShadowSignal(c,etfLd?.quotes?.[c],hs[c]),chipSignal=chipShadowSignal(c,hh[c],instWin);applyShadowExperimentalFactors(sr,volumeSignal,chipSignal);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
  // Recent completed exchange dates let the browser advance no-signal streaks by real trading sessions instead of calendar days.
  const calendarHist=ETF.map(c=>hs[c]).find(h=>Array.isArray(h?.rows)&&h.rows.length);
  const tradingDates=[...new Set((calendarHist?.rows||[]).map(x=>x?.date).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)))].sort().slice(-180);
- return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}]))};
+ return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'}};
 }
 
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
