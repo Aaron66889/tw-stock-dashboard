@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.77-SHADOW-VOLUME-CHIP';
+const BUILD='16.8.78-SHADOW-DATA-FIX';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -48,6 +48,11 @@ const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':
 let WARM_ACTIVE=false;
 const RUNTIME={live:null,ctx:null,nf:null,ovs:null,bm:null,refreshing:false,lastRefresh:null,errors:[]};
 const ETF_TW_LIVE={quotes:{},errors:{},running:false,index:0,lastCycleAt:null};
+// R3.56: constituent pages and the buy-model can request the same symbols within seconds.
+// Keep a short per-symbol quote cache so Render/Anue/TWSE are not hammered by duplicate bursts.
+const CONSTITUENT_QUOTE_CACHE=new Map();
+const CONSTITUENT_QUOTE_TTL=20000;
+
 
 async function refreshOneYahooTwETF(){
  if(ETF_TW_LIVE.running)return;
@@ -204,68 +209,54 @@ function parseMis(x){
  };
 }
 async function quoteCodes(codes){
- const uniq=[...new Set(codes.filter(x=>/^\d{4,6}$/.test(String(x))))],out={};
- // 16.8.22: constituent intraday quotes use the same proven Anue source as ETF live prices.
- // Holdings lists and weights are untouched; this function changes quote transport only.
- try{
-  for(let i=0;i<uniq.length;i+=40){
-   const chunk=uniq.slice(i,i+40);
-   const syms=chunk.map(c=>'TWS:'+c+':STOCK').join(',');
-   const url='https://ws.api.cnyes.com/ws/api/v1/quote/quotes/'+syms+
-             '?column=FORMAT&_='+(Date.now()+'_'+Math.random().toString(36).slice(2));
-   const d=await getJSONQuick(url,{
-    'User-Agent':'Mozilla/5.0',
-    'Referer':'https://www.cnyes.com/',
-    'Cache-Control':'no-cache, no-store, max-age=0',
-    'Pragma':'no-cache',
-    'Accept-Encoding':'identity'
-   },4500);
-   for(const x of (d?.data||[])){
-    const code=String(x?.['200010']||'').trim();
-    if(!chunk.includes(code))continue;
-    const last=n(x?.['200026']),prev=n(x?.['200031']);
-    if(last>0&&prev>0){
-     out[code]={
-      ticker:code,
-      name:x?.['200009']||code,
-      last,
-      prevClose:prev,
-      change:n(x?.['200027']),
-      changePct:n(x?.['200044']),
-      source:'Anue 鉅亨',
-      realtime:true
-     };
-    }
-   }
-  }
- }catch(_){}
+ const uniq=[...new Set(codes.filter(x=>/^\d{4,6}$/.test(String(x))))],out={},now=Date.now();
+ // Reuse recent per-symbol quotes first. This dramatically reduces duplicate requests when
+ // the 0050/0056/00878/00919 constituent lists overlap or the page refreshes repeatedly.
+ for(const c of uniq){const hit=CONSTITUENT_QUOTE_CACHE.get(c);if(hit&&now-hit.at<CONSTITUENT_QUOTE_TTL&&hit.q?.last>0)out[c]={...hit.q,cached:true}}
+ let need=uniq.filter(c=>!out[c]?.last);
 
- // Fill only missing symbols with the existing TWSE path; never overwrite a good Anue quote.
- const missing=uniq.filter(c=>!out[c]?.last);
- if(missing.length){
+ // Primary: existing Anue batch endpoint, but only for symbols not already cached.
+ if(need.length){
   try{
-   for(let i=0;i<missing.length;i+=22){
-    const chunk=missing.slice(i,i+22),
-          ex=chunk.flatMap(c=>['tse_'+c+'.tw','otc_'+c+'.tw']).join('|'),
-          rows=(await mis(ex)).msgArray||[];
-    for(const x of rows){
-     const z=parseMis(x);
-     if(z.ticker&&z.last>0&&!out[z.ticker]){
-      z.source='TWSE MIS fallback';z.realtime=true;out[z.ticker]=z;
-     }
+   for(let i=0;i<need.length;i+=30){
+    const chunk=need.slice(i,i+30);
+    const syms=chunk.map(c=>'TWS:'+c+':STOCK').join(',');
+    const url='https://ws.api.cnyes.com/ws/api/v1/quote/quotes/'+syms+
+              '?column=FORMAT&_='+(Date.now()+'_'+Math.random().toString(36).slice(2));
+    const d=await getJSONQuick(url,{
+     'User-Agent':'Mozilla/5.0','Referer':'https://www.cnyes.com/',
+     'Cache-Control':'no-cache, no-store, max-age=0','Pragma':'no-cache','Accept-Encoding':'identity'
+    },4500);
+    for(const x of (d?.data||[])){
+     const code=String(x?.['200010']||'').trim();if(!chunk.includes(code))continue;
+     const last=n(x?.['200026']),prev=n(x?.['200031']);
+     if(last>0&&prev>0)out[code]={ticker:code,name:x?.['200009']||code,last,prevClose:prev,change:n(x?.['200027']),changePct:n(x?.['200044']),volume:n(x?.['200036']),source:'Anue 鉅亨',realtime:true};
     }
+    if(i+30<need.length)await sleep(120);
+   }
+  }catch(_){}
+ }
+
+ // Fill missing symbols with TWSE MIS. Do not overwrite a good Anue quote.
+ need=uniq.filter(c=>!out[c]?.last);
+ if(need.length){
+  try{
+   for(let i=0;i<need.length;i+=22){
+    const chunk=need.slice(i,i+22),ex=chunk.flatMap(c=>['tse_'+c+'.tw','otc_'+c+'.tw']).join('|'),rows=(await mis(ex)).msgArray||[];
+    for(const x of rows){const z=parseMis(x);if(z.ticker&&z.last>0&&!out[z.ticker]){z.source='TWSE MIS fallback';z.realtime=true;out[z.ticker]=z}}
+    if(i+22<need.length)await sleep(100);
    }
   }catch(_){}
  }
 
  // Last fallback remains official daily data for quote gaps only.
- const stillMissing=uniq.filter(c=>!out[c]?.last);
- if(stillMissing.length){
-  try{
-   const day=await twseDailyAll();
-   for(const c of stillMissing)if(!out[c]&&day.map[c])out[c]=day.map[c];
-  }catch(_){}
+ need=uniq.filter(c=>!out[c]?.last);
+ if(need.length){
+  try{const day=await twseDailyAll();for(const c of need)if(!out[c]&&day.map[c])out[c]=day.map[c]}catch(_){}
  }
+ for(const [c,q] of Object.entries(out))if(q?.last>0)CONSTITUENT_QUOTE_CACHE.set(c,{at:Date.now(),q:{...q,cached:false}});
+ // Prevent an unbounded map if holdings change over time.
+ if(CONSTITUENT_QUOTE_CACHE.size>500){for(const [k,v] of CONSTITUENT_QUOTE_CACHE)if(Date.now()-v.at>120000)CONSTITUENT_QUOTE_CACHE.delete(k)}
  return out;
 }
 async function twseDailyAll(){
@@ -742,14 +733,18 @@ async function marketBreadthRealtime(){
  return v;
 }
 function reportDateFromTwse(d,fallback){
- const raw=String(d?.date||d?.stat||d?.title||'');
+ const table=Array.isArray(d?.tables)?d.tables.find(x=>Array.isArray(x?.data)&&x.data.length)||d.tables[0]:null;
+ const raw=String(d?.date||d?.stat||d?.title||table?.date||table?.stat||table?.title||'');
  const iso=parseISODate(raw);if(iso)return iso;
  const roc=parseROCDate(raw);if(roc)return roc;
+ const rocZh=raw.match(/(\d{3})年(\d{1,2})月(\d{1,2})日/);if(rocZh)return `${Number(rocZh[1])+1911}-${String(rocZh[2]).padStart(2,'0')}-${String(rocZh[3]).padStart(2,'0')}`;
+ const isoZh=raw.match(/(20\d{2})年(\d{1,2})月(\d{1,2})日/);if(isoZh)return `${isoZh[1]}-${String(isoZh[2]).padStart(2,'0')}-${String(isoZh[3]).padStart(2,'0')}`;
  const m=raw.match(/(20\d{2})(\d{2})(\d{2})/);if(m)return `${m[1]}-${m[2]}-${m[3]}`;
  return fallback||null;
 }
 function parseInstitutionalReport(d,requestedDay){
- const fields=d?.fields||[],data=Array.isArray(d?.data)?d.data:[];
+ const table=Array.isArray(d?.tables)?d.tables.find(x=>Array.isArray(x?.data)&&x.data.length)||d.tables[0]:null;
+ const fields=d?.fields||table?.fields||[],data=Array.isArray(d?.data)?d.data:(Array.isArray(table?.data)?table.data:[]);
  const idx={
   code:twseFieldIndex(fields,[/證券代號/]),
   fBuy:twseFieldIndex(fields,[/外.*買進股數.*不含外資自營商/]),
@@ -782,29 +777,38 @@ function parseInstitutionalReport(d,requestedDay){
  return{ok:Object.keys(map).length>0,date:reportDateFromTwse(d,requestedDay),map,source:'TWSE T86 三大法人買賣超日報'};
 }
 async function institutionalReport(day){
- const key='t86day:'+day;
+ const key='t86day:r356:'+day;
  return cached(key,6*60*60*1000,async()=>{
   const q=String(day).replaceAll('-','');
-  const d=await getJSON(`https://www.twse.com.tw/rwd/zh/fund/T86?date=${q}&response=json&selectType=ALLBUT0999&_=${Date.now()}`,{'Referer':'https://www.twse.com.tw/'});
+  const d=await getJSON(`https://www.twse.com.tw/rwd/zh/fund/T86?date=${q}&response=json&selectType=ALLBUT0999`,{'Referer':'https://www.twse.com.tw/'},1);
   return parseInstitutionalReport(d,day);
  });
 }
-function recentWeekdays(max=8){
+async function institutionalLatestReport(){
+ return cached('t86latest:r356',10*60*1000,async()=>{
+  const d=await getJSON('https://www.twse.com.tw/rwd/zh/fund/T86?response=json&selectType=ALLBUT0999',{'Referer':'https://www.twse.com.tw/'},1);
+  return parseInstitutionalReport(d,null);
+ });
+}
+function recentWeekdays(max=12){
  const base=new Date(ymdTaipei()+'T12:00:00+08:00'),out=[],df=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}),wf=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',weekday:'short'});
- for(let k=0;k<18&&out.length<max;k++){
-  const d=new Date(base.getTime()-k*86400000),wd=wf.format(d);
-  if(wd==='Sat'||wd==='Sun')continue;
-  out.push(df.format(d));
- }
+ for(let k=0;k<24&&out.length<max;k++){const d=new Date(base.getTime()-k*86400000),wd=wf.format(d);if(wd==='Sat'||wd==='Sun')continue;out.push(df.format(d))}
  return out;
 }
 async function institutionalRecentWindow(days=5){
- const cands=recentWeekdays(8),rows=await Promise.all(cands.map(day=>deadline(institutionalReport(day).catch(()=>null),4500,null)));
- const seen=new Set(),reports=[];
+ // R3.55 fired eight dated T86 requests at once. TWSE can throttle that burst, leaving the
+ // Shadow chip box permanently "資料不足". R3.56 starts with the latest report and then
+ // backfills at concurrency 2, reusing six-hour historical caches.
+ let latest=null;try{latest=await deadline(institutionalLatestReport(),3500,null)}catch(_){}
+ const reports=[],seen=new Set();
+ if(latest?.ok&&latest.date){reports.push(latest);seen.add(latest.date)}
+ const latestDate=latest?.date||null;
+ const cands=recentWeekdays(12).filter(d=>(!latestDate||d<latestDate)&&!seen.has(d)).slice(0,9);
+ const rows=await mapLimit(cands,2,async day=>{const r=await deadline(institutionalReport(day).catch(()=>null),3500,null);await sleep(80);return r});
  for(const r of rows){if(!r?.ok||!r.date||seen.has(r.date))continue;seen.add(r.date);reports.push(r)}
  reports.sort((a,b)=>a.date.localeCompare(b.date));
  const last=reports.slice(-days);
- return{ok:last.length>=3,days:last.length,reports:last,asOf:last.at(-1)?.date||null,source:'TWSE T86 三大法人買賣超日報'};
+ return{ok:last.length>=3,days:last.length,reports:last,asOf:last.at(-1)?.date||latestDate||null,source:'TWSE T86 三大法人買賣超日報',reason:last.length>=3?null:`T86僅取得 ${last.length}/${days} 個有效交易日`};
 }
 function flowImbalance(buy,sell,net){
  const b=Number(buy),s=Number(sell),n0=Number(net),den=(Number.isFinite(b)?Math.abs(b):0)+(Number.isFinite(s)?Math.abs(s):0);
@@ -823,18 +827,26 @@ function weightedFlow(items,report,type){
  return{value:den?num/den:null,coverage:total?covered/total:0};
 }
 function chipShadowSignal(code,health,win){
- if(!win?.ok||!health?.items?.length)return{usable:false,score:null,effect:0,label:'資料不足',asOf:win?.asOf||null,days:win?.days||0,source:win?.source||'TWSE T86'};
+ if(!win?.ok)return{usable:false,score:null,effect:0,label:'資料不足',reason:win?.reason||`T86有效日不足（${win?.days||0}/5）`,asOf:win?.asOf||null,days:win?.days||0,source:win?.source||'TWSE T86'};
+ const directRows=(win.reports||[]).map(r=>({date:r.date,x:r.map?.[code]||null})).filter(z=>z.x);
+ const directSignal=()=>{
+  const good=directRows.filter(z=>z.x).slice(-5);if(good.length<3)return null;
+  const vals=good.map(z=>.65*flowImbalance(z.x.foreignBuy,z.x.foreignSell,z.x.foreignNet)+.35*flowImbalance(z.x.trustBuy,z.x.trustSell,z.x.trustNet));
+  const v=mean(vals),score=clamp(Math.round(50+(v||0)*22),0,100),effect=clamp((score-50)*.06,-1.5,1.5);
+  return{usable:true,score,effect,label:score>=60?'ETF籌碼偏多':score<=40?'ETF籌碼偏空':'ETF籌碼中性',asOf:win.asOf,days:good.length,foreignBreadth:null,trustBreadth:null,dealerBreadth:null,directImbalance:(v||0)*100,coverage:0,source:win.source,fallback:true,note:'成分加權籌碼暫不可用，改用ETF本身近5日外資/投信不平衡作低權重備援；效果上限僅±1.5分。'};
+ };
+ if(!health?.items?.length){const fb=directSignal();return fb||{usable:false,score:null,effect:0,label:'資料不足',reason:'成分權重尚未取得，且ETF直接籌碼不足3日',asOf:win.asOf,days:directRows.length,source:win.source}}
  const daily=[];
  for(const r of win.reports||[]){
   const f=weightedFlow(health.items,r,'foreign'),t=weightedFlow(health.items,r,'trust'),d=weightedFlow(health.items,r,'dealer'),own=r.map?.[code]||null;
   daily.push({date:r.date,foreign:f.value,trust:t.value,dealer:d.value,coverage:Math.min(f.coverage,t.coverage),direct:own?(.65*flowImbalance(own.foreignBuy,own.foreignSell,own.foreignNet)+.35*flowImbalance(own.trustBuy,own.trustSell,own.trustNet)):null});
  }
- const good=daily.filter(x=>Number.isFinite(x.foreign)&&Number.isFinite(x.trust)&&x.coverage>=.60);
- if(good.length<3)return{usable:false,score:null,effect:0,label:'覆蓋不足',asOf:win.asOf,days:good.length,source:win.source};
+ const good=daily.filter(x=>Number.isFinite(x.foreign)&&Number.isFinite(x.trust)&&x.coverage>=.55);
+ if(good.length<3){const fb=directSignal();return fb||{usable:false,score:null,effect:0,label:'覆蓋不足',reason:`成分T86覆蓋有效日 ${good.length}/3`,asOf:win.asOf,days:good.length,source:win.source}}
  const f=mean(good.map(x=>x.foreign)),t=mean(good.map(x=>x.trust)),d=mean(good.map(x=>x.dealer)),direct=mean(good.map(x=>x.direct));
  const score=clamp(Math.round(50+(f||0)*22+(t||0)*18+(d||0)*5+(direct||0)*5),0,100),effect=clamp((score-50)*.10,-4,4);
  const label=score>=62?'籌碼偏多':score<=38?'籌碼偏空':'籌碼中性';
- return{usable:true,score,effect,label,asOf:win.asOf,days:good.length,foreignBreadth:(f||0)*100,trustBreadth:(t||0)*100,dealerBreadth:(d||0)*100,directImbalance:(direct||0)*100,coverage:mean(good.map(x=>x.coverage))*100,source:win.source,note:'以ETF成分權重彙總近5個交易日外資/投信/自營商買賣不平衡；ETF本身法人僅低權重輔助，自營商避險不作主要方向判斷。'};
+ return{usable:true,score,effect,label,asOf:win.asOf,days:good.length,foreignBreadth:(f||0)*100,trustBreadth:(t||0)*100,dealerBreadth:(d||0)*100,directImbalance:(direct||0)*100,coverage:mean(good.map(x=>x.coverage))*100,source:win.source,note:'以ETF成分權重彙總近5個交易日外資/投信/自營商買賣不平衡；ETF本身法人僅低權重輔助。'};
 }
 function expectedSessionVolumeFraction(){
  const t=taipeiClock(),mins=t.h*60+t.m,weekday=['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday);
@@ -846,9 +858,26 @@ function normalizeLiveVolumeUnit(live,avg,frac){
  const target=avg*frac,cands=[{value:live,factor:1},{value:live*1000,factor:1000}];
  cands.forEach(x=>x.pace=x.value/target);cands.sort((a,b)=>Math.abs(Math.log10(Math.max(.001,a.pace)))-Math.abs(Math.log10(Math.max(.001,b.pace))));return cands[0];
 }
+async function ensureEtfQuoteVolumes(etfLd){
+ const quotes=etfLd?.quotes||{},missing=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(!missing.length)return etfLd;
+ // ETF four-pack is listed on TWSE. One MIS batch is enough to fill volume even when the
+ // price itself came from Yahoo/last-good because Anue temporarily omitted or throttled volume.
+ try{
+  const ex=missing.map(c=>'tse_'+c+'.tw').join('|'),rows=(await deadline(mis(ex),4000,{msgArray:[]}))?.msgArray||[];
+  for(const x of rows){const z=parseMis(x),q=quotes[z.ticker];if(q&&z.volume>0){q.volume=z.volume;q.volumeSource='TWSE MIS';if(!(q.open>0)&&z.open>0)q.open=z.open;if(!(q.high>0)&&z.high>0)q.high=z.high;if(!(q.low>0)&&z.low>0)q.low=z.low}}
+ }catch(_){}
+ // After the cash session, STOCK_DAY_ALL is an acceptable official volume fallback. During
+ // the session we deliberately avoid treating yesterday's completed volume as today's pace.
+ if(!twMarketOpenNow()){
+  const still=ETF.filter(c=>!(Number(quotes[c]?.volume)>0));if(still.length)try{const d=await twseDailyAll();for(const c of still){const z=d.map?.[c];if(z?.volume>0){quotes[c].volume=z.volume;quotes[c].volumeSource='TWSE STOCK_DAY_ALL'}}}catch(_){}
+ }
+ return etfLd;
+}
 function volumeShadowSignal(code,quote,hist){
  const rows=(hist?.rows||[]).filter(x=>Number(x.volume)>0),v20=mean(rows.slice(-20).map(x=>Number(x.volume))),v60=mean(rows.slice(-60).map(x=>Number(x.volume))),frac=expectedSessionVolumeFraction(),raw=Number(quote?.volume);
- if(!(v20>0&&raw>0&&frac>0))return{usable:false,score:null,effect:0,label:'量能資料不足',avg20:v20||null,avg60:v60||null,source:quote?.source||null};
+ if(!(v20>0))return{usable:false,score:null,effect:0,label:'量能資料不足',reason:`歷史成交量不足20日（可用 ${rows.length} 日）`,avg20:v20||null,avg60:v60||null,source:quote?.source||null};
+ if(!(raw>0))return{usable:false,score:null,effect:0,label:'量能資料不足',reason:'即時成交量未取得',avg20:v20||null,avg60:v60||null,source:quote?.source||null};
+ if(!(frac>0))return{usable:false,score:null,effect:0,label:'量能資料不足',reason:'目前不在可估算盤中量速的時段',avg20:v20||null,avg60:v60||null,source:quote?.source||null};
  const norm=normalizeLiveVolumeUnit(raw,v20,frac),pace=norm.pace,px=Number(quote?.last),prev=Number(quote?.prevClose),high=Number(quote?.high),low=Number(quote?.low),chg=px>0&&prev>0?(px/prev-1)*100:null,rangePos=high>low&&px>0?clamp((px-low)/(high-low),0,1):.5;
  let score=50;
  if(Number.isFinite(chg)){
@@ -858,7 +887,7 @@ function volumeShadowSignal(code,quote,hist){
  }
  score=clamp(Math.round(score),0,100);const effect=clamp((score-50)*.10,-4,4);
  let label='量價中性';if(Number.isFinite(chg)&&chg<-.3&&pace>=1.4&&rangePos<.55)label='放量走弱';else if(Number.isFinite(chg)&&chg<-.3&&pace<.85)label='縮量回檔';else if(pace>=1.15&&rangePos>=.65)label='放量承接';else if(score>=60)label='量價偏多';else if(score<=40)label='量價偏弱';
- return{usable:true,score,effect,label,pace,expectedFraction:frac,currentVolume:norm.value,rawVolume:raw,unitFactor:norm.factor,avg20:v20,avg60:v60,changePct:chg,rangePosition:rangePos*100,source:quote?.source||null,note:'盤中量速以20日均量×時段期望比例估算；僅供Shadow，不改正式買點。'};
+ return{usable:true,score,effect,label,pace,expectedFraction:frac,currentVolume:norm.value,rawVolume:raw,unitFactor:norm.factor,avg20:v20,avg60:v60,changePct:chg,rangePosition:rangePos*100,source:quote?.volumeSource||quote?.source||null,note:'盤中量速以20日均量×時段期望比例估算；僅供Shadow，不改正式買點。'};
 }
 function applyShadowExperimentalFactors(sr,volumeSignal,chipSignal){
  const base=Number(sr?.score);if(!Number.isFinite(base))return sr;
@@ -1970,7 +1999,7 @@ async function constituents(code,date=null){
  });
 }
 async function constituentHealth(code){
- return cached('health:r339:'+code,8000,async()=>{
+ return cached('health:r356:'+code,25000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
   const expected=c.stockExpected||c.expected||META[code].expected;if(!c.items?.length)return{ok:true,code,usable:false,score:null,divergence:'資料不足',sourceCoverage:0,quoteCoverage:0,items:[],source:c.source,note:c.note};
   const q=await quoteCodes(c.items.map(x=>x.code)).catch(()=>({})),rows=[];let totalW=0,quotedW=0,bullW=0,weakW=0,neutralW=0,weighted=0,weightedCount=0;
@@ -1986,14 +2015,16 @@ async function constituentHealth(code){
 
 
 async function constituentDashboard(code='0050'){
- const h=await constituentHealth(code), items=h.items||[], quoted=items.filter(x=>Number.isFinite(x.changePct));
- const up=quoted.filter(x=>x.changePct>0.3), down=quoted.filter(x=>x.changePct<-0.3), flat=quoted.filter(x=>Math.abs(x.changePct)<=0.3);
- const sum=a=>a.reduce((z,x)=>z+(Number.isFinite(x.weight)?x.weight:0),0);
- const top10=[...items].sort((a,b)=>(b.weight||0)-(a.weight||0)).slice(0,10);
- const weightedMove=quoted.length?quoted.reduce((z,x)=>z+x.changePct*(x.weight||0),0)/Math.max(0.0001,sum(quoted)):null;
- const equalBreadth=quoted.length?(up.length-down.length)/quoted.length*100:null;
- const weightedBreadth=quoted.length?(sum(up)-sum(down))/Math.max(0.0001,sum(quoted))*100:null;
- return{ok:true,build:BUILD,code,name:META[code]?.name,asOf:h.asOf,source:h.source,sourceUrl:h.sourceUrl,complete:h.complete,usable:h.usable,expected:h.expected||META[code]?.expected,portfolioExpected:h.portfolioExpected||null,portfolioPositions:h.portfolioPositions||null,portfolioWeight:h.portfolioWeight??null,nonStockPositions:h.nonStockPositions||[],actual:items.length,quoted:quoted.length,sourceCoverage:h.sourceCoverage,quoteCoverage:h.quoteCoverage,healthScore:h.score,divergence:h.divergence,bullWeight:h.bullWeight,weakWeight:h.weakWeight,neutralWeight:h.neutralWeight,note:h.note||null,diagnostics:h.diagnostics||null,attempts:h.attempts||null,errors:h.errors||null,summary:{upCount:up.length,downCount:down.length,flatCount:flat.length,upWeight:sum(up),downWeight:sum(down),flatWeight:sum(flat),equalBreadth,weightedBreadth,weightedMove,top10Weight:sum(top10),tsmcWeight:items.find(x=>x.code==='2330')?.weight??null},items};
+ return cached('const-dashboard:r356:'+code,25000,async()=>{
+  const h=await constituentHealth(code), items=h.items||[], quoted=items.filter(x=>Number.isFinite(x.changePct));
+  const up=quoted.filter(x=>x.changePct>0.3), down=quoted.filter(x=>x.changePct<-0.3), flat=quoted.filter(x=>Math.abs(x.changePct)<=0.3);
+  const sum=a=>a.reduce((z,x)=>z+(Number.isFinite(x.weight)?x.weight:0),0);
+  const top10=[...items].sort((a,b)=>(b.weight||0)-(a.weight||0)).slice(0,10);
+  const weightedMove=quoted.length?quoted.reduce((z,x)=>z+x.changePct*(x.weight||0),0)/Math.max(0.0001,sum(quoted)):null;
+  const equalBreadth=quoted.length?(up.length-down.length)/quoted.length*100:null;
+  const weightedBreadth=quoted.length?(sum(up)-sum(down))/Math.max(0.0001,sum(quoted))*100:null;
+  return{ok:true,build:BUILD,code,name:META[code]?.name,asOf:h.asOf,source:h.source,sourceUrl:h.sourceUrl,complete:h.complete,usable:h.usable,expected:h.expected||META[code]?.expected,portfolioExpected:h.portfolioExpected||null,portfolioPositions:h.portfolioPositions||null,portfolioWeight:h.portfolioWeight??null,nonStockPositions:h.nonStockPositions||[],actual:items.length,quoted:quoted.length,sourceCoverage:h.sourceCoverage,quoteCoverage:h.quoteCoverage,healthScore:h.score,divergence:h.divergence,bullWeight:h.bullWeight,weakWeight:h.weakWeight,neutralWeight:h.neutralWeight,note:h.note||null,diagnostics:h.diagnostics||null,attempts:h.attempts||null,errors:h.errors||null,summary:{upCount:up.length,downCount:down.length,flatCount:flat.length,upWeight:sum(up),downWeight:sum(down),flatWeight:sum(flat),equalBreadth,weightedBreadth,weightedMove,top10Weight:sum(top10),tsmcWeight:items.find(x=>x.code==='2330')?.weight??null},items};
+ });
 }
 function buildEnvironment(code,ld,ctx,ovs,nf,health){
  const parts=[];function add(name,v,w){if(Number.isFinite(v))parts.push({name,v:clamp(v,-1,1),w})}
@@ -2079,8 +2110,9 @@ async function buyModel(){
   deadline(nightFuture().catch(()=>null),6000,null),
   Promise.all(ETF.map(async c=>[c,await deadline(etfHistory(c).catch(e=>({ok:false,rows:[],source:'history error',validation:{fullHistoryPass:false},error:e.message})),7000,historyTimeout(c))])),
   Promise.all(ETF.map(async c=>[c,await deadline(constituentHealth(c).catch(e=>({ok:false,code:c,usable:false,score:null,divergence:'成分來源錯誤',sourceCoverage:0,quoteCoverage:0,reason:e.message})),6000,healthTimeout(c))])),
-  deadline(institutionalRecentWindow(5).catch(e=>({ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:e.message})),6500,{ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:'institutional window deadline exceeded'})
+  deadline(institutionalRecentWindow(5).catch(e=>({ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:e.message,reason:e.message})),7800,{ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:'institutional window deadline exceeded',reason:'T86視窗建立逾時'})
  ]);
+ await ensureEtfQuoteVolumes(etfLd).catch(()=>{});
  const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),models={},shadowModels={};
  const marketAt=ld.fetchedAt?Date.parse(ld.fetchedAt):0,etfAt=etfLd?.fetchedAt?Date.parse(etfLd.fetchedAt):0,openRequired=twMarketOpenNow();
  const marketAgeMs=ld.lastGoodFallback
