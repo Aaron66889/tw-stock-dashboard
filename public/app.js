@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.81-L1-STABILITY-CONFIRM',CONFIRM_RULE_VERSION='layer-confirm-v5-20s-3obs-rebound',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.82-EXECUTION-STATE-MACHINE',CONFIRM_RULE_VERSION='layer-confirm-v6-latched-execution-band',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
@@ -119,14 +119,22 @@ function resetDaily(){
 function resetShadowDaily(){const d=dayKey();if(SHADOW_STATE.day===d)return;SHADOW_STATE={day:d,models:{}};saveJSON('v124_shadow_state',SHADOW_STATE);SHADOW_LOG=(SHADOW_LOG||[]).filter(x=>x?.day&&x.day>=d).slice(-2000);saveJSON('v124_shadow_replay',SHADOW_LOG)}
 function ztxt(z){return z&&Number.isFinite(z.low)&&Number.isFinite(z.high)?`${z.low.toFixed(2)}–${z.high.toFixed(2)}`:'—'}
 function hmTaipei(ts){if(!ts)return'';try{return new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(ts))}catch{return''}}
-function confirmSnapshotText(L){return L?.confirmedZone&&L?.confirmedAt?`首次確認：${ztxt(L.confirmedZone)}｜${hmTaipei(L.confirmedAt)}`:''}
+function confirmSnapshotText(L){return L?.confirmedZone&&L?.confirmedAt?`首次確認：${ztxt(L.confirmedZone)}｜${hmTaipei(L.confirmedAt)}${Number.isFinite(L.executionHigh)?`｜執行上限 ${Number(L.executionHigh).toFixed(2)}`:''}`:''}
 function center(z){return z?(z.low+z.high)/2:null}
 function moveZone(cur,target,maxDown,maxUp,allowDown=true){if(!cur)return JSON.parse(JSON.stringify(target));const c=center(cur),t=center(target),half=(cur.high-cur.low)/2;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
 function moveZoneTimed(cur,target,maxDown30,maxUp30,allowDown=true,elapsedSec=30){if(!cur)return JSON.parse(JSON.stringify(target));const scale=Math.max(.15,Math.min(4,Number(elapsedSec||30)/30)),c=center(cur),t=center(target),half=(cur.high-cur.low)/2,maxDown=maxDown30*scale,maxUp=maxUp30*scale;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
 function cashSessionOpen(code){const d=taipeiNow(),wd=d.getDay(),m=d.getHours()*60+d.getMinutes(),o=Number(lastLive?.quotes?.[code]?.open);return wd>=1&&wd<=5&&m>=540&&o>0?o:null}
 function shiftZoneCenter(z,c){const half=(z.high-z.low)/2;return{low:c-half,high:c+half,center:c}}
 function enforceCashOpenCeiling(code,zones,atr){const o=cashSessionOpen(code);if(!(o>0)||!Array.isArray(zones)||zones.length<3)return zones;const out=zones.map(z=>JSON.parse(JSON.stringify(z)));if(out[0].high>o){const w=out[0].high-out[0].low;out[0]={low:o-w,high:o,center:o-w/2}}const prev=Number(lastLive?.quotes?.[code]?.prevClose)||o,g12=Math.max(atr*.35,prev*.004),g23=Math.max(atr*.45,prev*.006);let c0=center(out[0]),c1=center(out[1]),c2=center(out[2]);if(c1>c0-g12){c1=c0-g12;out[1]=shiftZoneCenter(out[1],c1)}if(c2>c1-g23){c2=c1-g23;out[2]=shiftZoneCenter(out[2],c2)}return out}
-function layerView(L,px){if(!L)return'WAIT';if(L.invalid)return'INVALID';if(L.confirmed){if(px>L.zone.high)return'CONFIRMED_ABOVE';if(px<L.zone.low)return'CONFIRMED_BELOW';return'CONFIRMED_IN'}if(L.fastPass)return'FAST_PASS';if(L.forming)return'FORMING';return'WAIT'}
+function executionUpAllowance(atr,i=0){return Math.max(.03,Number(atr||0)*([.10,.08,.06][i]??.08))}
+function executionDownAllowance(atr,i=0){return Math.max(.02,Number(atr||0)*([.08,.07,.06][i]??.07))}
+function ensureExecutionEnvelope(L,atr,i=0){
+ const z=L?.confirmedZone||L?.zone;if(!z)return null;
+ if(!Number.isFinite(L.executionHigh))L.executionHigh=z.high+executionUpAllowance(atr,i);
+ if(!Number.isFinite(L.executionLow))L.executionLow=z.low;
+ return{low:L.executionLow,high:L.executionHigh};
+}
+function layerView(L,px){if(!L)return'WAIT';if(L.confirmed){if(L.gateBlocked)return'CONFIRMED_BLOCKED';const z=L.confirmedZone||L.zone,hi=Number.isFinite(L.executionHigh)?L.executionHigh:z.high,lo=Number.isFinite(L.executionLow)?L.executionLow:z.low;if(px>hi)return'CONFIRMED_ABOVE';if(px<lo)return'CONFIRMED_BELOW';return'CONFIRMED_IN'}if(L.invalid)return'INVALID';if(L.fastPass)return'FAST_PASS';if(L.forming)return'FORMING';return'WAIT'}
 function flashLivePrices(){
  for(const c of ETF){
   const dir=ETF_PRICE_FLASH[c];if(!dir)continue;
@@ -151,9 +159,9 @@ function layerTouchState(L,px){
  return'IDLE';
 }
 function layerBoxClass(L,px,base=''){const st=layerTouchState(L,px);return(base?base+' ':'')+(st==='CONFIRMED'?'layer-confirmed':st==='TOUCHED'?'layer-touched':'')}
-function layerBoxLabel(label,L,px){const st=layerTouchState(L,px);return label+(st==='CONFIRMED'?'｜已確認':st==='TOUCHED'?'｜已觸價':'')}
-function stageText(s,i=1){return{CONFIRMED_IN:`🔴 第${i}層已確認／可分批`,CONFIRMED_ABOVE:`🟡 第${i}層已確認但離開／不追`,CONFIRMED_BELOW:`🟠 第${i}層已確認且已穿越`,FAST_PASS:'🟠 快速穿透保護',FORMING:'🟠 觸價觀察／形成中',INVALID:'🟢 失效／重新定價',WAIT:'等待'}[s]||'等待'}
-function rank(s){return{CONFIRMED_IN:6,FORMING:5,CONFIRMED_ABOVE:4,CONFIRMED_BELOW:3,WAIT:2,INVALID:1,FAST_PASS:0}[s]||0}
+function layerBoxLabel(label,L,px){const st=layerTouchState(L,px);if(st==='CONFIRMED'){const v=layerView(L,px);return label+(v==='CONFIRMED_IN'?'｜已確認／可分批':v==='CONFIRMED_BLOCKED'?'｜已確認／暫停':v==='CONFIRMED_ABOVE'?'｜已確認／不追':'｜已確認')}return label+(st==='TOUCHED'?'｜已觸價':'')}
+function stageText(s,i=1){return{CONFIRMED_IN:`🔴 第${i}層已確認／可分批`,CONFIRMED_BLOCKED:`⏸️ 第${i}層價格已確認／Gate暫停`,CONFIRMED_ABOVE:`🟡 第${i}層已確認但超過執行上限／不追`,CONFIRMED_BELOW:`🟠 第${i}層已確認但跌破確認區／觀察下一層`,FAST_PASS:'🟠 快速穿透保護',FORMING:'🟠 觸價觀察／形成中',INVALID:'🟢 失效／重新定價',WAIT:'等待'}[s]||'等待'}
+function rank(s){return{CONFIRMED_IN:7,FORMING:6,CONFIRMED_BLOCKED:5,CONFIRMED_ABOVE:4,CONFIRMED_BELOW:3,WAIT:2,INVALID:1,FAST_PASS:0}[s]||0}
 function deepestTouchedLayer(x){
  if(!x?.m?.layers)return-1;
  for(let i=x.m.layers.length-1;i>=0;i--)if(layerTouchState(x.m.layers[i],x.px)!=='IDLE')return i;
@@ -324,10 +332,14 @@ function normalizeLayerRuntime(L){
  if(!('confirmedAt' in L))L.confirmedAt=null;
  if(!('confirmedPrice' in L))L.confirmedPrice=null;
  if(!('confirmedObservationKey' in L))L.confirmedObservationKey=null;
+ if(!('executionHigh' in L))L.executionHigh=null;
+ if(!('executionLow' in L))L.executionLow=null;
+ if(!('gateBlocked' in L))L.gateBlocked=false;
+ if(!('gateBlockedReason' in L))L.gateBlockedReason=null;
  return L;
 }
 function initModel(code,r){
- const mk=z=>({zone:JSON.parse(JSON.stringify(z)),samples:[],priceSamples:[],confirmed:false,forming:false,fastPass:false,invalid:false,confirmCount:0,badCount:0,triggeredAt:null,touchedAt:null,touchMin:null,touchMinAt:null,confirmationReason:null,confirmedZone:null,confirmedAt:null,confirmedPrice:null,confirmedObservationKey:null});
+ const mk=z=>({zone:JSON.parse(JSON.stringify(z)),samples:[],priceSamples:[],confirmed:false,forming:false,fastPass:false,invalid:false,confirmCount:0,badCount:0,triggeredAt:null,touchedAt:null,touchMin:null,touchMinAt:null,confirmationReason:null,confirmedZone:null,confirmedAt:null,confirmedPrice:null,confirmedObservationKey:null,executionHigh:null,executionLow:null,gateBlocked:false,gateBlockedReason:null});
  return{layers:[mk(r.raw.first),mk(r.raw.second),mk(r.raw.third)],calibrationVersion:r.firstLayerCalibration?.version||'legacy',confirmationVersion:CONFIRM_RULE_VERSION,prevEnv:r.environmentScore,prevHealth:r.health?.score??null,lastPrice:r.price,lastObservationKey:null,lastAt:new Date().toISOString()}
 }
 function liveObservationKey(code,r,px){
@@ -340,53 +352,61 @@ function liveObservationKey(code,r,px){
  }
  return String(r?.quoteObservationKey||[px,r?.reachability?.todayHigh??'',r?.reachability?.todayLow??''].join('|'));
 }
+function markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,reason){
+ L.confirmed=true;L.invalid=false;L.forming=false;L.gateBlocked=false;L.gateBlockedReason=null;L.triggeredAt=L.triggeredAt||nowIso;
+ if(!L.confirmedZone)L.confirmedZone=JSON.parse(JSON.stringify(z));
+ if(!L.confirmedAt)L.confirmedAt=nowIso;
+ if(!Number.isFinite(L.confirmedPrice))L.confirmedPrice=px;
+ if(!L.confirmedObservationKey)L.confirmedObservationKey=observationKey;
+ const cz=L.confirmedZone||z;L.executionLow=cz.low;L.executionHigh=cz.high+executionUpAllowance(atr,i);
+ L.confirmationReason=`${reason}｜可接受成交上限 ${L.executionHigh.toFixed(2)}`;
+ STATE.noSignalDays=STATE.noSignalDays||{};STATE.noSignalDays[code]=0;
+ addEvent(`${code} 第${i+1}層正式確認：${ztxt(cz)}，現價${px.toFixed(2)}｜${L.confirmationReason}`,'buy');
+}
 function updateOne(code,r){
- if(r.error)return;const calibrationVersion=r.firstLayerCalibration?.version||'legacy';let m=STATE.models[code];if(!m||m.calibrationVersion!==calibrationVersion||m.confirmationVersion!==CONFIRM_RULE_VERSION)m=initModel(code,r);m.confirmationVersion=CONFIRM_RULE_VERSION;m.layers.forEach(normalizeLayerRuntime);let atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
- // Participation protection after long no-signal streak in a confirmed bull structure.
+ if(r.error)return;
+ const calibrationVersion=r.firstLayerCalibration?.version||'legacy';let m=STATE.models[code];
+ if(!m||m.calibrationVersion!==calibrationVersion||m.confirmationVersion!==CONFIRM_RULE_VERSION)m=initModel(code,r);
+ m.confirmationVersion=CONFIRM_RULE_VERSION;m.layers.forEach(normalizeLayerRuntime);
+ let atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
  let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);
  if(days>=15&&r.history.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}
- // The participation/re-anchor layer is not allowed to undo the server's post-open anti-chase ceiling.
  targets=enforceCashOpenCeiling(code,targets,atr);
  const downCap=Math.max(.018,atr*.055),layerUpCap=Math.max(.018,atr*.055);
  m.layers.forEach((L,i)=>{L.zone=moveZone(L.zone,targets[i],downCap,layerUpCap,allowDown)});
  const cappedNow=enforceCashOpenCeiling(code,m.layers.map(L=>L.zone),atr);m.layers.forEach((L,i)=>{L.zone=cappedNow[i];L.samples.push(center(L.zone));L.samples=L.samples.slice(-6)});
  const px=Number(lastLive?.quotes?.[code]?.last??r.price),rapid=m.lastPrice&&px<m.lastPrice-atr*.75&&px<m.layers[0].zone.low,nowIso=new Date().toISOString();
  const observationKey=liveObservationKey(code,r,px),newObservation=!!observationKey&&observationKey!==m.lastObservationKey;
- m.layers.forEach((L,i)=>{const z=L.zone,priceReached=px<=z.high,sd=L.samples.length>=4?Math.sqrt(L.samples.reduce((s,v)=>s+(v-L.samples.reduce((a,b)=>a+b,0)/L.samples.length)**2,0)/L.samples.length):999,zoneStable=sd<=atr*.08,rule=LAYER_CONFIRM_RULES[i]||LAYER_CONFIRM_RULES[0];
-  let madeNewLow=false;
-  if(priceReached){
-   L.touchedAt=L.touchedAt||nowIso;
-   if(!Number.isFinite(L.touchMin)||px<L.touchMin-1e-9){L.touchMin=px;L.touchMinAt=nowIso;L.confirmCount=0;madeNewLow=true}
-   else if(!L.touchMinAt)L.touchMinAt=L.touchedAt||nowIso;
-   if(newObservation){L.priceSamples.push(px);L.priceSamples=L.priceSamples.slice(-8)}
-  }
-  if(r.hardVeto){L.invalid=true;L.forming=false;L.fastPass=false;L.confirmCount=0;return}
-  L.invalid=false;
-  if(L.confirmed){return}
-  if(rapid&&i===0){L.fastPass=true;L.forming=false;L.confirmCount=0;return}else L.fastPass=false;
-  const ps=L.priceSamples,prevPx=ps.length>=2?ps[ps.length-2]:null,rebound=Number.isFinite(L.touchMin)?px-L.touchMin:0;
-  const gatePass=!r.noBuyToday&&r.score>=rule.minScore;
-  if(i===0){
-   const stableMs=L.touchMinAt?Math.max(0,Date.now()-Date.parse(L.touchMinAt)):0;
-   const stableSec=Math.floor(stableMs/1000),needSec=Math.ceil((rule.minStableMs||0)/1000),reboundNeed=Math.max(Number(rule.minReboundAbs||.02),atr*Number(rule.minReboundAtr||.04));
-   const nonDeclining=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx;
-   if(newObservation&&!madeNewLow){if(nonDeclining)L.confirmCount=Math.min(rule.cycles,L.confirmCount+1);else L.confirmCount=0}
-   const confirmable=priceReached&&zoneStable&&gatePass&&stableMs>=Number(rule.minStableMs||0)&&rebound>=reboundNeed&&L.confirmCount>=rule.cycles;
-   if(priceReached||L.touchedAt||Math.abs(px-center(z))<=atr*.28){
-    L.forming=zoneStable;
-    L.confirmationReason=`${rule.name}｜穩定 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}筆｜低點後 ${stableSec}/${needSec}秒｜反彈 ${rebound.toFixed(2)}/${reboundNeed.toFixed(2)}｜${gatePass?'Gate PASS':`需分數≥${rule.minScore}/Gate PASS`}`;
-   }else L.forming=false;
-   if(confirmable){L.confirmed=true;L.triggeredAt=L.triggeredAt||nowIso;if(!L.confirmedZone){L.confirmedZone=JSON.parse(JSON.stringify(z));L.confirmedAt=nowIso;L.confirmedPrice=px;L.confirmedObservationKey=observationKey}addEvent(`${code} 第1層正式確認：${ztxt(z)}，現價${px.toFixed(2)}｜${L.confirmationReason}`,'buy')}
+ m.layers.forEach((L,i)=>{
+  const z=L.zone,priceReached=px<=z.high,sd=L.samples.length>=4?Math.sqrt(L.samples.reduce((s,v)=>s+(v-L.samples.reduce((a,b)=>a+b,0)/L.samples.length)**2,0)/L.samples.length):999,zoneStable=sd<=atr*.08,rule=LAYER_CONFIRM_RULES[i]||LAYER_CONFIRM_RULES[0];
+  if(priceReached){L.touchedAt=L.touchedAt||nowIso;if(!Number.isFinite(L.touchMin)||px<L.touchMin-1e-9){L.touchMin=px;L.touchMinAt=nowIso;L.confirmCount=0}else if(!L.touchMinAt)L.touchMinAt=L.touchedAt||nowIso}
+  const upAllow=executionUpAllowance(atr,i),downAllow=executionDownAllowance(atr,i),wasTouched=!!L.touchedAt,inConfirmEnvelope=wasTouched&&px<=z.high+upAllow&&px>=z.low-downAllow;
+  if(wasTouched&&newObservation){L.priceSamples.push(px);L.priceSamples=L.priceSamples.slice(-10)}
+  const gatePass=!r.hardVeto&&!r.noBuyToday&&r.score>=rule.minScore;
+  // Confirmation is latched for the day. Gate/score changes pause execution but never erase the historical confirmation snapshot.
+  if(L.confirmed){
+   ensureExecutionEnvelope(L,atr,i);L.invalid=false;L.gateBlocked=!gatePass;L.gateBlockedReason=!gatePass?(r.hardVetoReason||r.noBuyReason||`分數低於 ${rule.minScore}`):null;
    return;
   }
-  // L2/L3 keep the existing deep-pullback confirmation. A lower layer is only touched when price actually reaches that layer's high edge.
-  const deepNotAccelerating=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx-atr*(i===1?.08:.10),confirmable=priceReached&&zoneStable&&deepNotAccelerating&&gatePass;
-  if(confirmable){L.forming=true;if(newObservation)L.confirmCount++;L.confirmationReason=`${rule.name}｜分數≥${rule.minScore}｜深回檔未持續加速｜確認 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}｜Gate PASS`}
-  else if((priceReached||L.touchedAt||Math.abs(px-center(z))<=atr*.28)&&zoneStable){L.forming=true;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1);L.confirmationReason=priceReached?`${rule.name}等待中｜需分數≥${rule.minScore}＋連續深回檔確認｜目前 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}${newObservation?'':'｜等待下一筆市場觀測'}`:L.confirmationReason}
+  if(r.hardVeto){L.invalid=true;L.forming=false;L.fastPass=false;L.confirmCount=0;L.gateBlocked=true;L.gateBlockedReason=r.hardVetoReason||'Hard Gate';return}
+  L.invalid=false;L.gateBlocked=false;L.gateBlockedReason=null;
+  if(rapid&&i===0){L.fastPass=true;L.forming=false;L.confirmCount=0;return}else L.fastPass=false;
+  const ps=L.priceSamples,prevPx=ps.length>=2?ps[ps.length-2]:null,rebound=Number.isFinite(L.touchMin)?px-L.touchMin:0;
+  if(i===0){
+   const stableMs=L.touchMinAt?Math.max(0,Date.now()-Date.parse(L.touchMinAt)):0,stableSec=Math.floor(stableMs/1000),needSec=Math.ceil((rule.minStableMs||0)/1000),reboundNeed=Math.max(Number(rule.minReboundAbs||.02),atr*Number(rule.minReboundAtr||.04));
+   const nonDeclining=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx;
+   if(newObservation&&wasTouched){if(nonDeclining&&inConfirmEnvelope)L.confirmCount=Math.min(rule.cycles,L.confirmCount+1);else if(!inConfirmEnvelope||px<prevPx)L.confirmCount=0}
+   const confirmable=inConfirmEnvelope&&zoneStable&&gatePass&&stableMs>=Number(rule.minStableMs||0)&&rebound>=reboundNeed&&L.confirmCount>=rule.cycles;
+   if(wasTouched||Math.abs(px-center(z))<=atr*.28){L.forming=zoneStable&&inConfirmEnvelope;L.confirmationReason=`${rule.name}｜穩定 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}筆｜低點後 ${stableSec}/${needSec}秒｜反彈 ${rebound.toFixed(2)}/${reboundNeed.toFixed(2)}｜確認容許至 ${(z.high+upAllow).toFixed(2)}｜${gatePass?'Gate PASS':`需分數≥${rule.minScore}/Gate PASS`}`;}else L.forming=false;
+   if(confirmable)markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
+   return;
+  }
+  const deepNotAccelerating=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx-atr*(i===1?.08:.10),confirmable=inConfirmEnvelope&&zoneStable&&deepNotAccelerating&&gatePass;
+  if(confirmable){L.forming=true;if(newObservation)L.confirmCount++;L.confirmationReason=`${rule.name}｜分數≥${rule.minScore}｜深回檔未持續加速｜確認 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}｜容許反彈至 ${(z.high+upAllow).toFixed(2)}｜Gate PASS`}
+  else if((wasTouched||Math.abs(px-center(z))<=atr*.28)&&zoneStable){L.forming=inConfirmEnvelope;if(newObservation&&(!inConfirmEnvelope||!deepNotAccelerating))L.confirmCount=Math.max(0,L.confirmCount-1);L.confirmationReason=wasTouched?`${rule.name}等待中｜需分數≥${rule.minScore}＋連續深回檔確認｜目前 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}${newObservation?'':'｜等待下一筆市場觀測'}`:L.confirmationReason}
   else{L.forming=false;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1)}
-  if(L.confirmCount>=rule.cycles){L.confirmed=true;L.triggeredAt=L.triggeredAt||nowIso;if(!L.confirmedZone){L.confirmedZone=JSON.parse(JSON.stringify(z));L.confirmedAt=nowIso;L.confirmedPrice=px;L.confirmedObservationKey=observationKey}addEvent(`${code} 第${i+1}層正式確認：${ztxt(z)}，現價${px.toFixed(2)}｜${L.confirmationReason}`,'buy')}
+  if(L.confirmCount>=rule.cycles&&inConfirmEnvelope&&gatePass)markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
  });
- if(r.hardVeto&&m.layers.some(L=>L.confirmed)){m.layers.forEach(L=>{L.badCount=(L.badCount||0)+1;if(L.badCount>=3){L.confirmed=false;L.invalid=true}})}
  m.prevEnv=r.environmentScore;m.prevHealth=healthNow;m.lastPrice=px;if(observationKey)m.lastObservationKey=observationKey;m.lastAt=nowIso;STATE.models[code]=m;appendHistory(code,r,m,px)
 }
 function shadowRules(r){const raw=r?.shadowPolicy?.confirmRules||[];return [0,1,2].map(i=>({name:['Shadow L1','Shadow L2','Shadow L3'][i],minScore:Number(raw[i]?.minScore??(50-i*4)),cycles:Number(raw[i]?.cycles??2),mode:i===0?'rebound':'deep'}))}
@@ -423,7 +443,7 @@ function renderHomeRanking(){
  $('homeBuyRanking').innerHTML=a.map(([c,x])=>`<div class="card buycard"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div><div class="score">${x.r.score}<small>/100</small></div></div>${noBuyWithoutTouch(x)?`<div class="notice"><b>今日暫無合理買點：</b>${x.r.noBuyReason}<br>參考合理區仍保留：① ${ztxt(x.m.layers[0].zone)} ② ${ztxt(x.m.layers[1].zone)} ③ ${ztxt(x.m.layers[2].zone)}</div>`:`<div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(c)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一買點',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b>${confirmSnapshotText(x.m.layers[0])?`<small>${confirmSnapshotText(x.m.layers[0])}</small>`:''}</div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想買點',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力買點',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div>`}${x.r.noBuyToday&&deepestTouchedLayer(x)>=0?`<div class="notice"><b>已觸價但尚未確認：</b>${x.r.noBuyReason||'目前 Gate 尚未通過。'}</div>`:''}${shadowPanel(c)}<button class="btn" onclick="openDetail('${c}')">成分股／歷史買點</button> <button class="btn primary" onclick="openModelTrade('${c}',${x.activeLayer+1})">記錄模型買入</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div>`).join('')||'模型載入中';
  const ev=EVENTS.at(-1);$('homeModelEvent').innerHTML='<b>戰情：</b>'+(ev?ev.text:'尚無重大模型事件。')
 }
-function explain(c,x){const touched=deepestTouchedLayer(x),activeL=x.m?.layers?.[x.activeLayer];if(x.r.hardVeto)return touched>=0?`第${touched+1}層價格已觸及，但硬Gate啟動：${x.r.hardVetoReason}。目前不確認買進。`:`硬Gate啟動：${x.r.hardVetoReason}。資料／急殺條件解除前不確認買點。`;if(x.activeStatus==='FORMING'&&activeL?.confirmationReason)return`第${x.activeLayer+1}層已觸價，${activeL.confirmationReason}。`;if(x.statuses[0]==='CONFIRMED_IN')return`第一筆分批條件成立；不代表最低點。`;if(touched>=0&&x.r.noBuyToday)return`第${touched+1}層價格已觸及，但目前尚未確認：${x.r.noBuyReason}`;if(x.r.noBuyToday)return x.r.noBuyReason;if(x.statuses[0]==='CONFIRMED_ABOVE')return`第一層先前已確認，但現價離開買區；不要追價，等回測。`;if(x.statuses[0]==='CONFIRMED_BELOW')return`第一層已確認且被穿越；即時買點仍可隨盤勢漂移，但首次確認快照會保留，開始觀察第二層。`;if(x.statuses[0]==='FAST_PASS')return`快速穿透保護：不一次打滿三層，先等重新收斂。`;if(x.statuses[0]==='FORMING')return`價格已接近／進入第一層，但需連續收斂才正式確認。`;if(x.px<=x.m.layers[0].zone.high)return`價格已達第一層門檻；正在等待穩定度／分數確認，跌穿區間不會被當成「沒碰到」。`;return`尚未達第一層；即時買點可隨盤勢漂移，但盤中第一層上緣不會高於今日開盤價。`}
+function explain(c,x){const touched=deepestTouchedLayer(x),activeL=x.m?.layers?.[x.activeLayer];if(x.activeStatus==='CONFIRMED_BLOCKED')return`第${x.activeLayer+1}層價格確認快照已保留，但目前 ${activeL?.gateBlockedReason||'Gate/分數條件'} 暫停執行；條件恢復後若仍在執行區可再分批。`;if(x.activeStatus==='FORMING'&&activeL?.confirmationReason)return`第${x.activeLayer+1}層已觸價，${activeL.confirmationReason}。`;if(x.statuses[0]==='CONFIRMED_IN')return`第一筆分批條件成立；確認後允許小幅反彈成交，但仍有執行上限，不代表最低點。`;if(touched>=0&&x.r.noBuyToday&&!activeL?.confirmed)return`第${touched+1}層價格已觸及，但目前尚未確認：${x.r.noBuyReason}`;if(x.r.noBuyToday&&!activeL?.confirmed)return x.r.noBuyReason;if(x.statuses[0]==='CONFIRMED_ABOVE')return`第一層先前已確認，但現價已超過確認後執行上限；不追價，等回測。`;if(x.statuses[0]==='CONFIRMED_BELOW')return`第一層確認快照保留，但價格已跌破確認區；暫停第一層執行並開始觀察第二層。`;if(x.statuses[0]==='FAST_PASS')return`快速穿透保護：不一次打滿三層，先等重新收斂。`;if(x.statuses[0]==='FORMING')return`價格已觸及第一層；現在等待20秒＋3筆穩定觀測與最低反彈幅度，且允許小幅反彈到執行帶內再確認。`;if(x.px<=x.m.layers[0].zone.high)return`價格已達第一層門檻；正在等待穩定度／分數確認，跌穿區間不會被當成「沒碰到」。`;return`尚未達第一層；即時買點可隨盤勢漂移，但盤中第一層上緣不會高於今日開盤價。`}
 
 function decisionTransparency(x){const b=x?.r?.scoreBreakdown||{},g=x?.r?.decisionGate||{};const parts=[];if(Number.isFinite(b.base))parts.push(`基礎 ${fmt(b.base)}`);if(Number.isFinite(b.priceFit))parts.push(`價格 ${b.priceFit>=0?'+':''}${fmt(b.priceFit)}`);if(Number.isFinite(b.chase))parts.push(`追高 ${b.chase>=0?'+':''}${fmt(b.chase)}`);if(Number.isFinite(b.environment))parts.push(`環境 ${b.environment>=0?'+':''}${fmt(b.environment)}`);if(Number.isFinite(b.health))parts.push(`健康 ${b.health>=0?'+':''}${fmt(b.health)}`);const gate=g.status==='FAIL'?`硬Gate FAIL：${g.reason||x.r.hardVetoReason||'—'}`:g.status==='WAIT'?`暫不確認：${g.reason||x.r.noBuyReason||'—'}`:'Gate PASS';return `${parts.join('｜')} → <b>${x.r.score}/100</b>｜${gate}`}
 function reachabilityText(x){const q=x?.r?.reachability;if(!q)return'尚無可觸及性資料';if(q.touchedToday)return`<b>已觸及</b>｜今日低點 ${fmt(q.todayLow)} 已到目前第一層上緣 ${fmt(q.firstZoneHigh)}`;const need=Number.isFinite(q.dropNeededPct)?q.dropNeededPct:null,au=Number.isFinite(q.atrUnits)?q.atrUnits:null;return `<b>${q.label||'—'}</b>｜距第一層還需回檔 ${need==null?'—':fmt(need)+'%'}${au==null?'':`｜約 ${fmt(au)} ATR`}｜ATR ${Number.isFinite(q.atrPct)?fmt(q.atrPct)+'%':'—'}`}
@@ -895,7 +915,7 @@ function renderModelTrades(){
  const modelWins=modelRets.filter(x=>x>0).length,manualWins=manualRets.filter(x=>x>0).length;
  $('liveTradeSummary').innerHTML=`<div class="box"><span class="k">模型買入</span><b>${modelTrades.length}筆</b><small>${modelRets.length?`獲利 ${modelWins}/${modelRets.length}｜平均 ${pct(mean(modelRets))}`:'尚無完整績效'}</small></div><div class="box"><span class="k">自主買入</span><b>${manualTrades.length}筆</b><small>${manualRets.length?`獲利 ${manualWins}/${manualRets.length}｜平均 ${pct(mean(manualRets))}`:'尚無完整績效'}</small></div><div class="box"><span class="k">全部追蹤中</span><b>${open.length}筆</b></div><div class="box"><span class="k">全部合計淨損益</span><b class="${cls(allPnl)}">${allPnls.length?Math.round(allPnl).toLocaleString():'—'}</b></div><div class="box"><span class="k">績效分類</span><b>分開統計</b><small>自主買入不污染模型績效</small></div>`;
  const layerDiag=performanceDiagnosticPayload().summary.byLayer;
- const oldDiag=document.getElementById('tradeLayerDiagnostic');if(oldDiag)oldDiag.remove();$('liveTradeSummary').insertAdjacentHTML('afterend',`<div id="tradeLayerDiagnostic" class="reading" style="margin:8px 0 12px"><b>分層診斷：</b>L1 ${layerDiag[1].trades}筆｜平均MAE ${fmt(layerDiag[1].avgMAEPct)}%｜後續到L2 ${layerDiag[1].reachedNextLayer??0}筆；L2 ${layerDiag[2].trades}筆｜平均MAE ${fmt(layerDiag[2].avgMAEPct)}%；L3 ${layerDiag[3].trades}筆。<br><span class="note">確認規則：L1需價格止跌/反彈＋分數≥50；L2深回檔≥46；L3極端回檔≥42；三層皆保留Gate。</span></div>`);
+ const oldDiag=document.getElementById('tradeLayerDiagnostic');if(oldDiag)oldDiag.remove();$('liveTradeSummary').insertAdjacentHTML('afterend',`<div id="tradeLayerDiagnostic" class="reading" style="margin:8px 0 12px"><b>分層診斷：</b>L1 ${layerDiag[1].trades}筆｜平均MAE ${fmt(layerDiag[1].avgMAEPct)}%｜後續到L2 ${layerDiag[1].reachedNextLayer??0}筆；L2 ${layerDiag[2].trades}筆｜平均MAE ${fmt(layerDiag[2].avgMAEPct)}%；L3 ${layerDiag[3].trades}筆。<br><span class="note">確認規則：L1需20秒＋3筆止跌/反彈＋分數≥50；確認後鎖定快照並給ATR自適應執行帶；L2深回檔≥46；L3極端回檔≥42；Gate只暫停執行，不刪除已確認快照。</span></div>`);
  $('modelTradeList').innerHTML=modelSyncBar()+(MODEL_TRADES.length?MODEL_TRADES.slice().reverse().map(t=>{const p=t.perf,m=modelNetMetrics(t),ret=m.ret,pnl=m.net,h=p?.horizon||{},manual=t.tradeType==='manual',label=manual?'自主買入':`模型第${t.layer}層`,gap=Number(t.snapshot?.priceVsFirstHighPct);return`<div class="card"><div class="row"><div><b>${t.code}｜${label}</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束淨損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b><small>${Number.isFinite(m.gross)&&Number.isFinite(m.cost)?`毛損益 ${Math.round(m.gross).toLocaleString()}｜估計成本 ${Math.round(m.cost)}元`:''}</small></div><div class="box"><span class="k">5日</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">MAE / MFE</span><b>${Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—'} / ${Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'}</b></div></div><div class="reading">${manual?'<b>交易來源：自主買入（未觸發模型）</b><br>':'進場快照：'}分數 ${t.snapshot.score}｜防追高 ${t.snapshot.chaseRisk}｜環境 ${fmt(t.snapshot.environmentScore)}｜歷史 ${p?.officialHistory?'TWSE官方':'備援/建立中'}。${manual?`<br>當下模型：${t.snapshot?.modelStatusText||'未記錄'}${Number.isFinite(gap)?`｜成交價較當時第一買點上緣 ${gap>=0?'+':''}${gap.toFixed(2)}%`:''}`:''}${p?`<br>第2層曾到：${p.reachedLayer2?'是':'否'}｜第3層曾到：${p.reachedLayer3?'是':'否'}｜進場追高：${p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—'}${Number.isFinite(p.benchmarkDeltaCurrentPct)?`<br>相對「同日開盤直接買」：${p.benchmarkDeltaCurrentPct>=0?'+':''}${p.benchmarkDeltaCurrentPct.toFixed(2)} 個百分點`:''}<br><b>診斷：</b>${tradeDiagnosticLabel(t)}`:''}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`}).join(''):'<div class="notice">尚無實戰紀錄。可在ETF買點旁選「記錄模型買入」或「記錄自主買入」。</div>')
 }
 async function loadHistoryStatus(){
