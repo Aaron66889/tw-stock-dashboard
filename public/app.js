@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.91-R362-CORE-SYNC-ONLY',CONFIRM_RULE_VERSION='layer-confirm-v7-time-rebound-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.92-L23-HYSTERESIS-CONSTITUENT-RECOVERY',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
@@ -317,9 +317,9 @@ function handlePreopen(){
 }
 // L2/L3 confirmation floors offset the existing below-L1 priceFit penalty by 4/8 points; the displayed model score and all three price zones remain unchanged.
 const LAYER_CONFIRM_RULES=[
- {name:'L1止跌確認',minScore:50,cycles:0,mode:'rebound',minStableMs:20000,minReboundAtr:.04,minReboundAbs:.02,breakToleranceAtr:.035,breakToleranceAbs:.02},
- {name:'L2深回檔確認',minScore:46,cycles:2,mode:'deep'},
- {name:'L3極端回檔確認',minScore:42,cycles:2,mode:'deep'}
+ {name:'L1止跌確認',minScore:50,cycles:0,mode:'rebound',minStableMs:20000,minReboundAtr:.04,minReboundAbs:.02,breakToleranceAtr:.035,breakToleranceAbs:.02,confirmDownAtr:.08,confirmDownAbs:.02},
+ {name:'L2深回檔止跌確認',minScore:46,cycles:0,mode:'deep-hysteresis',minStableMs:12000,minReboundAtr:.025,minReboundAbs:.01,breakToleranceAtr:.06,breakToleranceAbs:.02,confirmDownAtr:.15,confirmDownAbs:.03},
+ {name:'L3極端回檔止跌確認',minScore:42,cycles:0,mode:'deep-hysteresis',minStableMs:10000,minReboundAtr:.02,minReboundAbs:.01,breakToleranceAtr:.08,breakToleranceAbs:.02,confirmDownAtr:.18,confirmDownAbs:.03}
 ];
 function normalizeLayerRuntime(L){
  if(!Array.isArray(L.samples))L.samples=[];
@@ -387,13 +387,13 @@ function updateOne(code,r){
     const breakTol=Math.max(Number(rule.breakToleranceAbs||.02),atr*Number(rule.breakToleranceAtr||.035));
     if(!Number.isFinite(L.stableLowAnchor))L.stableLowAnchor=L.touchMin;
     if(px<L.touchMin)L.touchMin=px;
-    // Only a meaningful break of the stabilized low restarts the L1 clock. Small tick noise does not wash the setup away.
-    if(i===0&&px<L.stableLowAnchor-breakTol){L.stableLowAnchor=px;L.touchMinAt=nowIso;}
-    else if(i!==0&&px<L.stableLowAnchor-1e-9){L.stableLowAnchor=px;L.touchMinAt=nowIso;L.confirmCount=0;}
+    // All three layers use hysteresis: only a meaningful break of the stabilized low restarts the clock.
+    // Normal 1~2 tick noise must not wash L2/L3 confirmation back to zero.
+    if(px<L.stableLowAnchor-breakTol){L.stableLowAnchor=px;L.touchMinAt=nowIso;L.confirmCount=0;}
     else if(!L.touchMinAt)L.touchMinAt=L.touchedAt||nowIso;
    }
   }
-  const upAllow=executionUpAllowance(atr,i),downAllow=executionDownAllowance(atr,i),wasTouched=!!L.touchedAt,inConfirmEnvelope=wasTouched&&px<=z.high+upAllow&&px>=z.low-downAllow;
+  const upAllow=executionUpAllowance(atr,i),downAllow=executionDownAllowance(atr,i),confirmDownAllow=Math.max(Number(rule.confirmDownAbs||downAllow),atr*Number(rule.confirmDownAtr||([.08,.15,.18][i]??.10))),wasTouched=!!L.touchedAt,inConfirmEnvelope=wasTouched&&px<=z.high+upAllow&&px>=z.low-confirmDownAllow;
   if(wasTouched&&newObservation){L.priceSamples.push(px);L.priceSamples=L.priceSamples.slice(-10)}
   const gatePass=!r.hardVeto&&!r.noBuyToday&&r.score>=rule.minScore;
   // Confirmation is latched for the day. Gate/score changes pause execution but never erase the historical confirmation snapshot.
@@ -417,11 +417,15 @@ function updateOne(code,r){
    if(confirmable)markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
    return;
   }
-  const deepNotAccelerating=ps.length>=2&&Number.isFinite(prevPx)&&px>=prevPx-atr*(i===1?.08:.10),confirmable=inConfirmEnvelope&&zoneStable&&deepNotAccelerating&&gatePass;
-  if(confirmable){L.forming=true;if(newObservation)L.confirmCount++;L.confirmationReason=`${rule.name}｜分數≥${rule.minScore}｜深回檔未持續加速｜確認 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}｜容許反彈至 ${(z.high+upAllow).toFixed(2)}｜Gate PASS`}
-  else if((wasTouched||Math.abs(px-center(z))<=atr*.28)&&zoneStable){L.forming=inConfirmEnvelope;if(newObservation&&(!inConfirmEnvelope||!deepNotAccelerating))L.confirmCount=Math.max(0,L.confirmCount-1);L.confirmationReason=wasTouched?`${rule.name}等待中｜需分數≥${rule.minScore}＋連續深回檔確認｜目前 ${Math.min(L.confirmCount,rule.cycles)}/${rule.cycles}${newObservation?'':'｜等待下一筆市場觀測'}`:L.confirmationReason}
-  else{L.forming=false;if(newObservation)L.confirmCount=Math.max(0,L.confirmCount-1)}
-  if(L.confirmCount>=rule.cycles&&inConfirmEnvelope&&gatePass)markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
+  // L2/L3 no longer depend on two consecutive browser samples or a razor-thin envelope.
+  // Confirm from market structure: time since last meaningful low break + a small rebound + Gate/score.
+  const stableMs=L.touchMinAt?Math.max(0,Date.now()-Date.parse(L.touchMinAt)):0,stableSec=Math.floor(stableMs/1000),needSec=Math.ceil(Number(rule.minStableMs||0)/1000),reboundNeed=Math.max(Number(rule.minReboundAbs||.01),atr*Number(rule.minReboundAtr||.025)),breakTol=Math.max(Number(rule.breakToleranceAbs||.02),atr*Number(rule.breakToleranceAtr||.06));
+  const confirmable=inConfirmEnvelope&&zoneStable&&gatePass&&stableMs>=Number(rule.minStableMs||0)&&rebound>=reboundNeed;
+  if(wasTouched||Math.abs(px-center(z))<=atr*.35){
+   L.forming=zoneStable&&inConfirmEnvelope;
+   L.confirmationReason=`${rule.name}｜低點後 ${stableSec}/${needSec}秒｜反彈 ${rebound.toFixed(2)}/${reboundNeed.toFixed(2)}｜有效破低容忍 ${breakTol.toFixed(2)}｜下穿容忍 ${confirmDownAllow.toFixed(2)}｜${gatePass?'Gate PASS':`需分數≥${rule.minScore}/Gate PASS`}`;
+  }else L.forming=false;
+  if(confirmable)markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
  });
  m.prevEnv=r.environmentScore;m.prevHealth=healthNow;m.lastPrice=px;if(observationKey)m.lastObservationKey=observationKey;m.lastAt=nowIso;STATE.models[code]=m;appendHistory(code,r,m,px)
 }
