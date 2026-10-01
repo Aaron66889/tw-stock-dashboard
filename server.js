@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.88-BUYMODEL-RESILIENCE-SYNC-BACKOFF';
+const BUILD='16.8.89-SYNC-FIX-BUYMODEL-RESTORE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -2242,28 +2242,6 @@ async function buyModel(){
 }
 
 
-let BUYMODEL_INFLIGHT=null,BUYMODEL_LAST_GOOD=null,BUYMODEL_LAST_GOOD_AT=0;
-async function buyModelResilient(){
- const now=Date.now(),c=cache.get('buymodel');
- if(c&&now-c.at<15000){BUYMODEL_LAST_GOOD=c.v;BUYMODEL_LAST_GOOD_AT=c.at;return {...c.v,cached:true}}
- if(BUYMODEL_INFLIGHT)return BUYMODEL_INFLIGHT;
- BUYMODEL_INFLIGHT=(async()=>{
-  try{
-   const v=await buyModel();
-   cache.set('buymodel',{at:Date.now(),v});BUYMODEL_LAST_GOOD=v;BUYMODEL_LAST_GOOD_AT=Date.now();
-   return {...v,cached:false};
-  }finally{BUYMODEL_INFLIGHT=null}
- })();
- return BUYMODEL_INFLIGHT;
-}
-function buyModelServerFallback(reason){
- if(BUYMODEL_LAST_GOOD){
-  const ageMs=Math.max(0,Date.now()-BUYMODEL_LAST_GOOD_AT);
-  return {...BUYMODEL_LAST_GOOD,ok:true,dataFresh:false,serverLastGoodFallback:true,serverFallbackAgeMs:ageMs,serverFallbackReason:reason||'模型重算逾時，沿用伺服器最後成功結果',fetchedAt:new Date().toISOString()};
- }
- return{ok:false,status:'TIMEOUT',source:'buy-model',error:reason||'模型外部資料逾時；前端將沿用最後成功資料並重試',fetchedAt:new Date().toISOString()};
-}
-
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
 function prefix(a){const p=[0];for(const x of a)p.push(p.at(-1)+(Number.isFinite(x)?x:0));return p}
 function avgP(p,i,k){return i+1>=k?(p[i+1]-p[i+1-k])/k:null}
@@ -2942,7 +2920,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/taiex-history')return safeApi(res,'taiex-history',async()=>{const h=await taiexHistory();return{...h,ret5:periodReturn(h.rows,5),ret20:periodReturn(h.rows,20)}});
  if(u.pathname==='/api/overseas')return safeApi(res,'overseas',()=>cached('ovs',45000,overseas));
  if(u.pathname==='/api/night-future')return safeApi(res,'night-future',()=>nightFuture());
- if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(buyModelResilient(),16000,null);return d||buyModelServerFallback('模型重算超過16秒；已優先沿用最後成功模型')});
+ if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(cached('buymodel',8000,buyModel),9500,null);return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'模型外部資料逾時；不阻塞頁面，30秒後自動重試',fetchedAt:new Date().toISOString()}});
  if(u.pathname==='/api/etf-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'etf-history',()=>ETF.includes(code)?etfHistory(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituent-dashboard'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'constituent-dashboard',()=>ETF.includes(code)?constituentDashboard(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituents'){const code=u.searchParams.get('code')||'0050',date=u.searchParams.get('date')||null;return safeApi(res,'constituents',()=>ETF.includes(code)?constituents(code,date):Promise.resolve({ok:false,error:'unsupported code'}))}
