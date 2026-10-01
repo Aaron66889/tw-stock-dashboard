@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.87-CLOUD-SYNC-SLIM',CONFIRM_RULE_VERSION='layer-confirm-v7-time-rebound-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.88-BUYMODEL-RESILIENCE-SYNC-BACKOFF',CONFIRM_RULE_VERSION='layer-confirm-v7-time-rebound-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
@@ -298,7 +298,7 @@ function modelUnavailableCard(c){
  const raw=lastBuy?.models?.[c],reason=MODEL_LOAD_ERRORS[c]||raw?.error||lastBuy?.error||'狀態機尚未建立';
  return`<section class="card"><div class="row"><div><b>${c} ${NAME[c]}</b><div class="downc">⚠️ 模型暫時無法更新</div><small>${String(reason)}</small><br><small>不再假裝「載入中」；30秒後自動重試。</small></div><button class="btn" onclick="loadBuy()">立即重試</button></div></section>`;
 }
-async function loadBuy(){clearTimeout(buyTimer);try{let d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);d=hydrateModelPerCodeFallback(d);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){const bad=ETF.filter(c=>d.modelFreshByCode&&d.modelFreshByCode[c]===false);$('freshPill').textContent=bad.length?`● 部分模型資料降級：${bad.join('/')}`:'● 模型資料降級';$('freshPill').className='pill warn'}updateState();renderAllModel();loadServerPreopen();if(VALIDATION)renderSpecs()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=hydrateModelPerCodeFallback(c.data);renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{lastBuy={ok:false,error:e.message,models:{},shadowModels:{}};renderAllModel()}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
+async function loadBuy(){clearTimeout(buyTimer);try{let d=await get('/api/buy-model',18000);if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);d=hydrateModelPerCodeFallback(d);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){const bad=ETF.filter(c=>d.modelFreshByCode&&d.modelFreshByCode[c]===false);$('freshPill').textContent=bad.length?`● 部分模型資料降級：${bad.join('/')}`:'● 模型資料降級';$('freshPill').className='pill warn'}updateState();renderAllModel();loadServerPreopen();if(VALIDATION)renderSpecs()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=hydrateModelPerCodeFallback(c.data);/* last-good payload is saved before browser state mutation, so rebuild the state machine before rendering it. */updateState();renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{lastBuy={ok:false,error:e.message,models:{},shadowModels:{}};renderAllModel()}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
 
 function renderMarket(){
  if(lastLive?.market){const q=lastLive.market,ch=(q.last-q.prevClose)/q.prevClose*100;$('idx').textContent=q.last.toLocaleString('zh-TW',{maximumFractionDigits:2});$('idxchg').textContent=(ch>=0?'▲ ':'▼ ')+Math.abs(q.last-q.prevClose).toFixed(2)+'點　'+pct(ch);$('idxchg').className='change '+cls(ch);$('open').textContent=fmt(q.open);$('high').textContent=fmt(q.high);$('low').textContent=fmt(q.low);$('offHigh').textContent=q.high?pct((q.last-q.high)/q.high*100):'—';let text='目前多空震盪。';if(ch>0)text='大盤現貨高於昨收；仍要搭配市場廣度與台積電判斷是不是全面上漲。';if(ch<0)text='大盤現貨低於昨收；先看低點承接與市場廣度是否繼續惡化。';$('plain').innerHTML='<b>白話：</b>'+text}
@@ -668,20 +668,20 @@ function modelSyncSaveLocal(){saveJSON('v124_model_trades',MODEL_TRADES);saveJSO
 function modelTradeClean(t){const x=JSON.parse(JSON.stringify(t));delete x._syncDirty;delete x._cloudUpdatedAt;return x}
 function markModelTradeDirty(t){if(!t)return;t._syncDirty=true;t._syncUpdatedAt=new Date().toISOString()}
 async function modelSyncFetch(url,opts={}){
- const {timeoutMs=20000,retries=1,...fetchOpts}=opts;let lastErr=null;
+ const {timeoutMs=20000,retries=2,...fetchOpts}=opts;let lastErr=null;
  for(let attempt=0;attempt<=retries;attempt++){
   const c=new AbortController(),tm=setTimeout(()=>c.abort(),timeoutMs);
   try{
    const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(fetchOpts.headers||{})},...fetchOpts,signal:c.signal});
    let d={};try{d=await r.json()}catch(_){}
-   if(!r.ok){const e=Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}
+   if(!r.ok){const e=Error(d.error||('HTTP '+r.status));e.status=r.status;const ra=Number(r.headers.get('retry-after'));if(Number.isFinite(ra)&&ra>0)e.retryAfterMs=ra*1000;throw e}
    if(d&&d.ok===false){const e=Error(d.error||d.reason||'雲端API暫時失敗');e.status=502;throw e}
    return d;
   }catch(e){
    const aborted=e?.name==='AbortError'||/abort/i.test(String(e?.message||''));
    lastErr=aborted?Object.assign(Error('雲端回應逾時，將自動重試'),{status:504}):e;
-   const transient=!lastErr.status||lastErr.status>=500;if(!transient||attempt>=retries)throw lastErr;
-   await new Promise(r=>setTimeout(r,700*(attempt+1)));
+   const transient=!lastErr.status||lastErr.status===429||lastErr.status>=500;if(!transient||attempt>=retries)throw lastErr;
+   const wait=Math.min(12000,Number(lastErr.retryAfterMs)||1500*(attempt+1));await new Promise(r=>setTimeout(r,wait));
   }finally{clearTimeout(tm)}
  }
  throw lastErr||Error('雲端同步失敗');
@@ -777,8 +777,9 @@ let CLOUD_SYNC_ALL_BUSY=false;
 async function syncAllCloud(force=false){
  if(CLOUD_SYNC_ALL_BUSY)return;CLOUD_SYNC_ALL_BUSY=true;
  try{
-  await syncModelTrades(force);
-  if(MODEL_SYNC.ready){await syncHoldingsCloud(force);await loadDividendAuto(force)}
+  const modelOk=await syncModelTrades(force);
+  // If Supabase is rate-limiting the trade sync, do not immediately pile holdings/dividend requests on top of it.
+  if(modelOk&&MODEL_SYNC.ready){await syncHoldingsCloud(force);await loadDividendAuto(force)}
   renderModelTrades();
  }finally{CLOUD_SYNC_ALL_BUSY=false}
 }
@@ -803,31 +804,34 @@ async function syncDirtyModelTrades(){
  dirty.forEach(t=>t._syncDirty=false);modelSyncSaveLocal();
 }
 async function syncModelTrades(force=false){
- if(MODEL_SYNC.busy)return;MODEL_SYNC.busy=true;
+ if(MODEL_SYNC.busy)return false;MODEL_SYNC.busy=true;
  try{
   let d=await modelSyncFetch('/api/model-trades');
   MODEL_SYNC.ready=true;MODEL_SYNC.knownUnlocked=true;MODEL_SYNC.status='ready';MODEL_SYNC.message='Supabase 為正式來源；本機 localStorage 為離線備援。';saveJSON('v124_model_sync_known_unlocked',true);
+  let needRefetch=false;
   if(!d.initialized&&MODEL_TRADES.length){
    MODEL_TRADES.forEach(markModelTradeDirty);modelSyncSaveLocal();
-   await syncDirtyModelTrades();
-   d=await modelSyncFetch('/api/model-trades');
+   await syncDirtyModelTrades();needRefetch=true;
   }else{
-   // 雲端已有資料時，先把「只存在本機」且未被雲端刪除的交易重新排入上傳，避免跨裝置漏單。
+   // 雲端已有資料時，只把「只存在本機」且未被雲端刪除的交易重新排入上傳。
    const cloudIds=new Set((d.trades||[]).map(t=>t.id)),deleted=new Set(d.deletedIds||[]);
    let repaired=0;for(const t of MODEL_TRADES){if(t?.id&&!cloudIds.has(t.id)&&!deleted.has(t.id)&&!t._syncDirty){markModelTradeDirty(t);repaired++}}
    if(repaired)modelSyncSaveLocal();
-   await syncDirtyModelTrades();
-   d=await modelSyncFetch('/api/model-trades');
+   const hadWrites=MODEL_PENDING_DELETES.length>0||MODEL_TRADES.some(t=>t._syncDirty);
+   if(hadWrites){await syncDirtyModelTrades();needRefetch=true}
   }
+  // A clean device now uses the first GET directly instead of doing a second identical Supabase GET every cycle.
+  if(needRefetch)d=await modelSyncFetch('/api/model-trades');
   MODEL_TRADES=(Array.isArray(d.trades)?d.trades:[]).map(t=>({...t,_syncDirty:false}));
   const deleted=new Set(d.deletedIds||[]);MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(id=>!deleted.has(id));
   modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();MODEL_SYNC.status='ready';MODEL_SYNC.message='雲端同步完成；手機／電腦以 trade ID 雙向合併。';renderModelTrades();
+  return true;
  }catch(e){
   if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.knownUnlocked=false;saveJSON('v124_model_sync_known_unlocked',false);MODEL_SYNC.status='locked';MODEL_SYNC.message='這台裝置尚未輸入同步碼。'}
   else if(e.status===503){MODEL_SYNC.ready=false;MODEL_SYNC.status='setup';MODEL_SYNC.message='Render 尚缺 MODEL_SYNC_KEY / Supabase 環境設定。'}
-  else if(MODEL_SYNC.knownUnlocked){MODEL_SYNC.ready=true;MODEL_SYNC.status='degraded';MODEL_SYNC.message='雲端暫時不穩；本機紀錄保留並每15秒自動重試：'+(e.message||'未知錯誤')}
+  else if(MODEL_SYNC.knownUnlocked){MODEL_SYNC.ready=true;MODEL_SYNC.status='degraded';MODEL_SYNC.message='雲端暫時不穩；本機紀錄保留並每60秒自動重試：'+(e.message||'未知錯誤')}
   else{MODEL_SYNC.ready=false;MODEL_SYNC.status='error';MODEL_SYNC.message='雲端暫時連不上，本機紀錄仍保留：'+(e.message||'未知錯誤')}
-  renderModelTrades();
+  renderModelTrades();return false;
  }finally{MODEL_SYNC.busy=false}
 }
 
@@ -998,7 +1002,7 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),15000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();loadValidation(false)}
+function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();loadValidation(false)}
 migrate1689Existing0050Trade();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();syncAllCloud(false)}})
 setInterval(()=>{
