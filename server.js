@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.91-R363-BUYMODEL-SYNC-FIX';
+const BUILD='16.8.92-QUOTE-RECOVERY-SYNC-KEEP';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -415,6 +415,31 @@ async function liveEtf4(){
    }
   }catch(e){errors.push('TWSE MIS field fill: '+(e.message||String(e)))}
  }
+ // R3.70 targeted quote recovery: if the Anue batch/TWSE MIS path returns only part of the four ETFs,
+ // recover ONLY the missing fields per code from Yahoo Finance. This is deliberately isolated from
+ // Supabase/sync logic and never overwrites a healthy primary quote.
+ const needYahooQuote=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(twMarketOpenNow()&&!(Number(quotes[c]?.open)>0)));
+ if(needYahooQuote.length){
+  try{
+   const ys=await Promise.all(needYahooQuote.map(async c=>{
+    try{return[c,await deadline(yahooTwOne(c,false),3600,null)]}catch(e){errors.push('Yahoo quote '+c+': '+(e.message||String(e)));return[c,null]}
+   }));
+   for(const [c,y] of ys){
+    if(!y||!(Number(y.last)>0))continue;
+    if(!quotes[c]){
+     quotes[c]={...y,source:'Yahoo Finance ETF quote fallback',realtime:true,serverFetchedAt:new Date().toISOString()};
+     continue;
+    }
+    const z=quotes[c];
+    for(const k of ['last','prevClose','open','high','low','volume','time','date']){
+     if((!(Number(z[k])>0)&&z[k]!==0)&&y[k]!=null)z[k]=y[k];
+    }
+    z.source=(z.source||'ETF live')+'＋Yahoo缺欄補全';
+    z.serverFetchedAt=z.serverFetchedAt||new Date().toISOString();
+   }
+  }catch(e){errors.push('Yahoo ETF quote recovery: '+(e.message||String(e)))}
+ }
+
  // Cash-session open is required by the existing anti-chase ceiling.
  // Some ETF transports return fresh last/prev but leave open blank.
  // Fill ONLY missing session fields from the already-existing Yahoo 1m/meta path.
