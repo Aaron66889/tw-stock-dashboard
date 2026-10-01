@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.92-L23-HYSTERESIS-CONSTITUENT-RECOVERY';
+const BUILD='16.8.93-LIVE-CONSTITUENTS-FAST';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1713,49 +1713,64 @@ function parseOfficialHoldingText(html){
  const dates=[...text.matchAll(/(?:交易日期|資料日期|查詢日期)\s*[:：]?\s*(20\d{2}[\/.\-]\d{1,2}[\/.\-]\d{1,2})/g)].map(x=>parseISODate(x[1])).filter(Boolean);
  return{date:dates[0]||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
 }
-async function yuantaOfficialConstituents(code){
- const expected=META[code].expected,fundid=META[code].fundId,errs=[],attempts=[];
- const apiFor=d=>`https://www.yuantaetfs.com/api/StkWeights?date=${encodeURIComponent(d||'')}&fundid=${fundid}`;
- let bestApi={items:[],date:null,url:apiFor('')};
- async function tryApi(dateLabel){
-  const url=apiFor(dateLabel);
-  try{
-   const d=await deadline(getJSONQuick(url,{'Accept':'application/json, text/plain, */*','Referer':META[code].url,'Origin':'https://www.yuantaetfs.com','X-Requested-With':'XMLHttpRequest'},5200),5600,null);
-   if(!d){attempts.push({source:'Yuanta StkWeights',ok:false,count:0,error:'timeout',url});return null}
-   const items=jsonHoldingRows(d);attempts.push({source:'Yuanta StkWeights',ok:items.length>=expected,count:items.length,url,date:dateLabel||'latest'});
-   if(items.length>bestApi.items.length)bestApi={items,date:dateLabel||ymdTaipei(),url};
-   return items;
-  }catch(e){errs.push('StkWeights '+e.message);attempts.push({source:'Yuanta StkWeights',ok:false,count:0,error:e.message,url});return null}
- }
- let items=await tryApi('');
- if(!(items?.length>=expected)){
-  const recent=[0,1,2].map(i=>dateMinus(i).replaceAll('-','/'));
-  const rs=await Promise.all(recent.map(d=>tryApi(d)));
-  items=rs.find(x=>x?.length>=expected)||bestApi.items;
- }
- if(items?.length>=expected)return saveConstituentLastGood({code,asOf:parseISODate(bestApi.date)||ymdTaipei(),effectiveDate:parseISODate(bestApi.date)||ymdTaipei(),items:items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'元大投信官方 StkWeights',sourceUrl:bestApi.url,historicalAvailable:false,note:`元大官方 StkWeights 完整解析 ${items.length}/${expected} 檔。`,attempts});
- if(bestApi.items.length)errs.push(`StkWeights best ${bestApi.items.length}/${expected}`);
-
- // Official ratio page usually exposes only the first few rows server-side. Use it as current-day proof, not as a fake complete list.
- let visible={date:ymdTaipei(),items:[]};
- try{const html=await deadline(getText(META[code].url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),6500,null);if(html)visible=parseOfficialHoldingText(html);attempts.push({source:'Yuanta ratio',ok:visible.items.length>0,count:visible.items.length,url:META[code].url})}catch(e){errs.push('Yuanta ratio '+e.message);attempts.push({source:'Yuanta ratio',ok:false,count:0,error:e.message,url:META[code].url})}
-
- // R3.72: deployment-safe recovery. Complete constituent versions are persisted to Supabase; after a Render redeploy,
- // restore that verified 50-name snapshot and cross-check the issuer-visible rows before using it.
- const stored=latestStoredConstituentSnapshot(code,14),storedProof=overlapProof(visible,stored,.75);
- if(stored?.complete&&(visible.items.length===0||storedProof.pass)){
-  const merged=mergeVisibleConstituentWeights(stored,visible);
-  return{...merged,code,complete:true,expected,verifiedSnapshot:true,source:visible.items.length?`已驗證完整成分雲端快照＋元大官方交叉驗證`:`已驗證完整成分雲端快照（官方本輪暫時不可用）`,sourceUrl:META[code].url,note:visible.items.length?`目前元大頁面只直接回傳前 ${visible.items.length} 檔；已用官方可見持股 ${storedProof.hit}/${storedProof.visible} 交叉驗證雲端保存的完整 ${merged.items.length}/${expected} 檔成分，避免部署後退化成5/50。`:`元大官方本輪未能完整回傳；暫沿用最近已驗證完整 ${merged.items.length}/${expected} 檔雲端版本，並持續重抓。`,officialProof:{source:'Yuanta ratio',visible:storedProof.visible,matched:storedProof.hit,pass:visible.items.length?storedProof.pass:null},errors:errs,attempts:[...attempts,{source:'verified cloud snapshot',ok:true,count:merged.items.length,url:stored.sourceUrl||META[code].url}]};
- }
-
- // Last resort: complete public holding list is accepted only after current Yuanta-visible rows cross-validate it.
- let full=await moneyDJConstituents(code).catch(()=>null);if(!full?.complete)full=await pocketConstituents(code).catch(()=>null);
- const proof=overlapProof(visible,full,.75);
- if(full?.complete&&proof.pass)return saveConstituentLastGood({...full,code,asOf:full.asOf||visible.date,effectiveDate:full.effectiveDate||visible.date,complete:true,expected,officialOnly:false,thirdParty:true,source:`完整持股備援＋元大官方交叉驗證`,sourceUrl:META[code].url,note:`元大官方完整API本輪未成功；完整持股備援 ${full.items.length}/${expected}，與元大官方可見持股交叉驗證 ${proof.hit}/${proof.visible} 通過。`,officialProof:{source:'Yuanta ratio',visible:proof.visible,matched:proof.hit,pass:true},errors:errs,attempts});
- const lg=constituentLastGood(code,14);if(lg)return{...lg,attempts:[...attempts,{source:'local last-good',ok:true,count:lg.items.length}]};
- const best=full?.items?.length>(visible.items?.length||0)?full:visible;
- return{code,asOf:best?.asOf||best?.date||ymdTaipei(),effectiveDate:best?.effectiveDate||best?.date||ymdTaipei(),items:best?.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'元大持股來源未完整',sourceUrl:META[code].url,historicalAvailable:false,note:`本輪僅取得 ${(best?.items||[]).length}/${expected} 檔；不完整時不納入模型。`,errors:errs,officialProof:proof,attempts};
+function constituentDateAgeDays(x){
+ const d=parseISODate(x?.asOf||x?.effectiveDate||'');if(!d)return 999;
+ const t=Date.parse(d+'T12:00:00+08:00');return Number.isFinite(t)?Math.max(0,(Date.now()-t)/86400000):999;
 }
+function sameConstituentMembers(a,b){
+ if(!a?.complete||!b?.complete)return false;
+ return constituentSignature(a.items)===constituentSignature(b.items);
+}
+async function yuantaOfficialConstituents(code){
+ const expected=META[code].expected,fundid=META[code].fundId,attempts=[],errs=[];
+ const headers={'Accept':'application/json, text/plain, */*','Referer':META[code].url,'Origin':'https://www.yuantaetfs.com','X-Requested-With':'XMLHttpRequest'};
+ const dts=[...new Set(['',...recentWeekdays(2).map(x=>x.replaceAll('-','/'))])];
+ const officialP=Promise.all(dts.map(async d=>{
+  const url=`https://www.yuantaetfs.com/api/StkWeights?date=${encodeURIComponent(d)}&fundid=${fundid}`;
+  try{
+   const raw=await deadline(getJSONQuick(url,headers,3800),4200,null),items=raw?jsonHoldingRows(raw):[];
+   attempts.push({source:'Yuanta StkWeights',ok:items.length>=expected,count:items.length,url,date:d||'latest'});
+   return{url,date:d,items};
+  }catch(e){attempts.push({source:'Yuanta StkWeights',ok:false,count:0,url,date:d||'latest',error:e.message});errs.push('StkWeights '+e.message);return{url,date:d,items:[]}}
+ })).then(rows=>rows.sort((a,b)=>b.items.length-a.items.length)[0]||null);
+ const visibleP=(async()=>{
+  try{
+   const html=await deadline(getText(META[code].url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),4200,null),v=html?parseOfficialHoldingText(html):{date:ymdTaipei(),items:[]};
+   attempts.push({source:'Yuanta ratio',ok:v.items.length>0,count:v.items.length,url:META[code].url});return v;
+  }catch(e){errs.push('Yuanta ratio '+e.message);attempts.push({source:'Yuanta ratio',ok:false,count:0,url:META[code].url,error:e.message});return{date:ymdTaipei(),items:[]}}
+ })();
+ const moneyP=moneyDJConstituents(code).catch(e=>({complete:false,items:[],errors:[e.message]}));
+ const pocketP=pocketConstituents(code).catch(e=>({complete:false,items:[],errors:[e.message]}));
+
+ // Give the official full API a short head start. If it succeeds, return immediately.
+ const early=await deadline(officialP,2600,null);
+ if(early?.items?.length>=expected){
+  const asOf=parseISODate(early.date)||ymdTaipei();
+  return saveConstituentLastGood({code,asOf,effectiveDate:asOf,items:early.items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'元大投信官方 StkWeights 即時完整清單',sourceUrl:early.url,historicalAvailable:false,note:`元大官方 StkWeights 即時完整解析 ${early.items.length}/${expected} 檔。`,attempts});
+ }
+ const [official,visible,money,pocket]=await Promise.all([officialP,visibleP,moneyP,pocketP]);
+ if(official?.items?.length>=expected){
+  const asOf=parseISODate(official.date)||ymdTaipei();
+  return saveConstituentLastGood({code,asOf,effectiveDate:asOf,items:official.items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'元大投信官方 StkWeights 即時完整清單',sourceUrl:official.url,historicalAvailable:false,note:`元大官方 StkWeights 即時完整解析 ${official.items.length}/${expected} 檔。`,attempts});
+ }
+
+ // No stale cloud snapshot is admitted here. Use only current live sources.
+ const live=[money,pocket].filter(x=>x?.complete&&x.items?.length>=expected&&constituentDateAgeDays(x)<=5);
+ let full=null,source='';
+ if(live.length>=2&&sameConstituentMembers(live[0],live[1])){
+  full=live.sort((a,b)=>String(b.asOf||'').localeCompare(String(a.asOf||'')))[0];
+  source='MoneyDJ＋口袋證券即時完整持股（雙來源一致）';
+ }else{
+  for(const cand of live){const proof=overlapProof(visible,cand,.75);if(proof.pass){full=cand;source=`${cand.source}＋元大官方即時前段交叉驗證`;break}}
+ }
+ if(full){
+  const proof=overlapProof(visible,full,.75);
+  return saveConstituentLastGood({...full,code,complete:true,expected,officialOnly:false,thirdParty:true,source,sourceUrl:full.sourceUrl||META[code].url,note:`本輪未取得元大完整 API；改用目前即時完整持股來源，資料日 ${full.asOf||full.effectiveDate||'未知'}，${live.length>=2&&sameConstituentMembers(live[0],live[1])?'MoneyDJ 與口袋證券完整成分一致':`並與元大官方可見持股交叉驗證 ${proof.hit}/${proof.visible}`}。不使用舊雲端成分快照。`,officialProof:{source:'Yuanta ratio',visible:proof.visible,matched:proof.hit,pass:proof.pass},errors:errs,attempts:[...attempts,...(money?.attempts||[]),...(pocket?.attempts||[])]});
+ }
+ const best=[money,pocket,{asOf:visible.date,effectiveDate:visible.date,items:visible.items,source:'元大官方可見持股'}].sort((a,b)=>(b?.items?.length||0)-(a?.items?.length||0))[0];
+ return{code,asOf:best?.asOf||best?.effectiveDate||ymdTaipei(),effectiveDate:best?.effectiveDate||best?.asOf||ymdTaipei(),items:best?.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'即時成分來源未完整',sourceUrl:best?.sourceUrl||META[code].url,historicalAvailable:false,note:`本輪即時來源僅取得 ${(best?.items||[]).length}/${expected} 檔；不沿用過期完整快照，因此暫不納入正式成分健康分數。`,errors:errs,attempts:[...attempts,...(money?.attempts||[]),...(pocket?.attempts||[])]};
+}
+
 async function capitalOfficialConstituents(code='00919'){
  const expected=META[code].expected,errs=[],urls=[META[code].portfolioUrl,META[code].url].filter(Boolean);let visible={date:ymdTaipei(),items:[]},visibleUrl=urls[0];
  for(const url of urls){try{const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.capitalfund.com.tw/'},1),7000,null);if(!html){errs.push('timeout '+url);continue}const p=parseOfficialHoldingText(html);if(p.items.length>visible.items.length){visible=p;visibleUrl=url}if(p.items.length>=expected)return saveConstituentLastGood({code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'群益投信官方投資組合',sourceUrl:url,historicalAvailable:false,note:`群益官方頁完整解析 ${p.items.length}/${expected} 檔。`})}catch(e){errs.push(e.message)}}
@@ -1787,30 +1802,21 @@ async function moneyDJConstituents(code){
   `https://www.moneydj.com/etf/x/basic/basic0007b.xdjhtm?etfid=${code}.tw`,
   `https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=${code}.tw&topc=`
  ];
- let best={date:ymdTaipei(),items:[]},errors=[];
- for(const url of urls){
+ const rows=await Promise.all(urls.map(async url=>{
   try{
-   const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.moneydj.com/'},1),6500,null);
-   if(!html){errors.push('timeout '+url);continue}
-   const p=parseMoneyDJHoldings(code,html);
-   if(p.items.length>best.items.length)best=p;
-   if(p.items.length>=expected)return{
-    code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),
-    complete:true,expected,officialOnly:false,thirdParty:true,
-    source:'MoneyDJ 完整持股明細',sourceUrl:url,historicalAvailable:false,
-    note:`完整成分與權重由 MoneyDJ 全部持股頁取得；個股即時漲跌由 dashboard 行情模組自行取得。已解析 ${p.items.length}/${expected} 檔。`,
-    attempts:[{source:'MoneyDJ',ok:true,count:p.items.length,url}]
-   };
-   errors.push(`parsed ${p.items.length}/${expected} ${url}`);
-  }catch(e){errors.push(e.message)}
- }
- return{
-  code,asOf:best.date,effectiveDate:best.date,items:best.items,complete:false,expected,
-  officialOnly:false,thirdParty:true,source:'MoneyDJ 持股來源未完整',
-  sourceUrl:urls[0],historicalAvailable:false,
-  note:`只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,
-  errors:errors.slice(-4),attempts:[{source:'MoneyDJ',ok:best.items.length>=expected,count:best.items.length,error:errors.at(-1)||null,url:urls[0]}]
+   const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.moneydj.com/'},1),4200,null);
+   if(!html)return{url,p:{date:null,items:[]},error:'timeout'};
+   return{url,p:parseMoneyDJHoldings(code,html),error:null};
+  }catch(e){return{url,p:{date:null,items:[]},error:e.message}}
+ }));
+ const best=rows.sort((a,b)=>(b.p.items?.length||0)-(a.p.items?.length||0))[0]||{url:urls[0],p:{date:null,items:[]}};
+ if((best.p.items||[]).length>=expected)return{
+  code,asOf:best.p.date||ymdTaipei(),effectiveDate:best.p.date||ymdTaipei(),items:best.p.items.slice(0,expected),
+  complete:true,expected,officialOnly:false,thirdParty:true,source:'MoneyDJ 完整持股明細',sourceUrl:best.url,historicalAvailable:false,
+  note:`完整成分與權重由 MoneyDJ 全部持股頁取得；已解析 ${best.p.items.length}/${expected} 檔。`,
+  attempts:rows.map(x=>({source:'MoneyDJ',ok:(x.p.items||[]).length>=expected,count:(x.p.items||[]).length,url:x.url,error:x.error}))
  };
+ return{code,asOf:best.p.date||ymdTaipei(),effectiveDate:best.p.date||ymdTaipei(),items:best.p.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'MoneyDJ 持股來源未完整',sourceUrl:best.url,historicalAvailable:false,note:`只解析 ${(best.p.items||[]).length}/${expected} 檔；不完整時不納入模型。`,errors:rows.map(x=>x.error).filter(Boolean).slice(-4),attempts:rows.map(x=>({source:'MoneyDJ',ok:false,count:(x.p.items||[]).length,url:x.url,error:x.error}))};
 }
 
 function parsePocketHoldings(code,html){
@@ -1828,18 +1834,17 @@ function parsePocketHoldings(code,html){
 
 async function pocketConstituents(code){
  const expected=META[code].expected,url=`https://www.pocket.tw/etf/tw/${code}/fundholding?page=&parent=&source=`;
- const variants=[url,`https://www.pocket.tw/etf/tw/${code}/fundholding`],lastErr=[];
- let best={date:ymdTaipei(),items:[]};
- for(const u of variants){
+ const variants=[url,`https://www.pocket.tw/etf/tw/${code}/fundholding`];
+ const rows=await Promise.all(variants.map(async u=>{
   try{
-   const html=await deadline(getText(u,{'Accept':'text/html,application/xhtml+xml','Referer':`https://www.pocket.tw/etf/tw/${code}`},1),6500,null);
-   if(!html){lastErr.push('timeout '+u);continue}
-   const p=parsePocketHoldings(code,html);if(p.items.length>best.items.length)best=p;
-   if(p.items.length>=expected)return{code,asOf:p.date,effectiveDate:p.date,items:p.items.slice(0,expected),complete:true,expected,officialOnly:false,thirdParty:true,source:'口袋證券完整持股明細',sourceUrl:u,historicalAvailable:false,note:`持股/權重由口袋證券取得；個股漲跌由儀表板既有市場行情來源自行計算。已解析 ${p.items.length}/${expected} 檔。`};
-   lastErr.push(`parsed ${p.items.length}/${expected} ${u}`);
-  }catch(e){lastErr.push(e.message)}
- }
- return{code,asOf:best.date,effectiveDate:best.date,items:best.items,complete:false,expected,officialOnly:false,thirdParty:true,source:'口袋證券持股來源未完整',sourceUrl:url,historicalAvailable:false,note:`只解析 ${best.items.length}/${expected} 檔；不完整時不納入模型。`,errors:lastErr.slice(-4)};
+   const html=await deadline(getText(u,{'Accept':'text/html,application/xhtml+xml','Referer':`https://www.pocket.tw/etf/tw/${code}`},1),4200,null);
+   if(!html)return{url:u,p:{date:null,items:[]},error:'timeout'};
+   return{url:u,p:parsePocketHoldings(code,html),error:null};
+  }catch(e){return{url:u,p:{date:null,items:[]},error:e.message}}
+ }));
+ const best=rows.sort((a,b)=>(b.p.items?.length||0)-(a.p.items?.length||0))[0]||{url,p:{date:null,items:[]}};
+ if((best.p.items||[]).length>=expected)return{code,asOf:best.p.date||ymdTaipei(),effectiveDate:best.p.date||ymdTaipei(),items:best.p.items.slice(0,expected),complete:true,expected,officialOnly:false,thirdParty:true,source:'口袋證券完整持股明細',sourceUrl:best.url,historicalAvailable:false,note:`持股/權重由口袋證券取得；已解析 ${best.p.items.length}/${expected} 檔。`,attempts:rows.map(x=>({source:'Pocket',ok:(x.p.items||[]).length>=expected,count:(x.p.items||[]).length,url:x.url,error:x.error}))};
+ return{code,asOf:best.p.date||ymdTaipei(),effectiveDate:best.p.date||ymdTaipei(),items:best.p.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'口袋證券持股來源未完整',sourceUrl:best.url,historicalAvailable:false,note:`只解析 ${(best.p.items||[]).length}/${expected} 檔；不完整時不納入模型。`,errors:rows.map(x=>x.error).filter(Boolean).slice(-4),attempts:rows.map(x=>({source:'Pocket',ok:false,count:(x.p.items||[]).length,url:x.url,error:x.error}))};
 }
 
 
@@ -2102,10 +2107,9 @@ async function cathayOfficialExcelConstituents(date=null){
 }
 
 async function constituents(code,date=null){
- const key='const:r372:'+code+':'+(date||'latest'),now=Date.now(),ttl=date?30*60*1000:20*60*1000,cachedRow=cache.get(key);
- // Never pin an incomplete 5/50 response for 20 minutes. Complete data keeps the long cache; incomplete data gets only 8 seconds.
- if(cachedRow){const useTtl=cachedRow?.v?.complete?ttl:8000;if(now-cachedRow.at<useTtl)return{...cachedRow.v,cached:true}}
- if(!date)await deadline(ensureOperationalMetaRestored(),2500,null).catch(()=>null);
+ const key='const:r373-live:'+code+':'+(date||'latest'),now=Date.now(),cachedRow=cache.get(key);
+ const fullTtl=date?30*60*1000:5*60*1000;
+ if(cachedRow){const useTtl=cachedRow?.v?.complete?fullTtl:8000;if(now-cachedRow.at<useTtl)return{...cachedRow.v,cached:true}}
  let v;
  if(date){
   if(code==='00878'){const c=await cathayOfficialExcelConstituents(date).catch(()=>null);if(c?.complete){saveConstituentVersion(c);v=c}}
@@ -2116,6 +2120,7 @@ async function constituents(code,date=null){
  else throw Error('unsupported constituents');
  cache.set(key,{at:Date.now(),v});return{...v,cached:false};
 }
+
 async function constituentHealth(code){
  return cached('health:r356:'+code,25000,async()=>{
   let c;try{c=await constituents(code)}catch(e){return{ok:true,code,usable:false,score:null,divergence:'資料源暫時不可用',bullWeight:0,weakWeight:0,neutralWeight:0,sourceCoverage:0,quoteCoverage:0,items:[],reason:e.message,source:'unavailable'}}
@@ -2124,7 +2129,7 @@ async function constituentHealth(code){
   for(const it of c.items){const z=q[it.code],ch=movePct(z),w=Number.isFinite(it.weight)?it.weight:null;if(w!=null)totalW+=w;if(Number.isFinite(ch)&&w!=null){quotedW+=w;weighted+=clamp(ch/2.5,-1,1)*w;weightedCount++;if(ch>.30)bullW+=w;else if(ch<-.30)weakW+=w;else neutralW+=w}rows.push({...it,changePct:Number.isFinite(ch)?ch:null,last:z?.last??null,quoted:Number.isFinite(ch)})}
   const sourceCoverage=expected?Math.min(1,c.items.length/expected):0,weightCoverage=expected?Math.min(1,c.items.filter(x=>Number.isFinite(x.weight)).length/expected):0,quoteCoverage=totalW?quotedW/totalW:0;
   // R3.27: complete Pocket holdings are accepted for 0050/0056/00919; 00878 remains Cathay official.
-  const trustedHoldingSource=c.officialOnly===true||c.thirdParty===true||c.verifiedSnapshot===true;
+  const trustedHoldingSource=c.officialOnly===true||c.thirdParty===true;
   const usable=!!c.complete&&trustedHoldingSource&&sourceCoverage>=1&&weightCoverage>=1&&quoteCoverage>=.75;
   const score=usable?clamp(Math.round(50+(weighted/quotedW)*38),0,100):null;let divergence='資料不足';if(usable){if(score>=65&&bullW>=weakW*1.5)divergence='健康擴散';else if(score>=52&&weakW<45)divergence='輕度分歧';else if(score<42||weakW>55)divergence='明顯分歧';else divergence='結構背離'}
   return{ok:true,code,score,usable,divergence,bullWeight:bullW,weakWeight:weakW,neutralWeight:neutralW,sourceCoverage:sourceCoverage*100,weightCoverage:weightCoverage*100,quoteCoverage:quoteCoverage*100,asOf:c.asOf,effectiveDate:c.effectiveDate,complete:c.complete,expected,portfolioExpected:c.portfolioExpected||null,portfolioPositions:c.portfolioPositions||null,portfolioWeight:c.portfolioWeight??null,nonStockPositions:c.nonStockPositions||[],items:rows.sort((a,b)=>(b.weight||0)-(a.weight||0)),source:c.source,sourceUrl:c.sourceUrl,historicalAvailable:c.historicalAvailable,note:c.note||null,diagnostics:c.diagnostics||null,attempts:c.attempts||null,errors:c.errors||null};
