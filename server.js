@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.92-QUOTE-RECOVERY-SYNC-KEEP';
+const BUILD='16.8.91-R362-CORE-SYNC-ONLY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -415,31 +415,6 @@ async function liveEtf4(){
    }
   }catch(e){errors.push('TWSE MIS field fill: '+(e.message||String(e)))}
  }
- // R3.70 targeted quote recovery: if the Anue batch/TWSE MIS path returns only part of the four ETFs,
- // recover ONLY the missing fields per code from Yahoo Finance. This is deliberately isolated from
- // Supabase/sync logic and never overwrites a healthy primary quote.
- const needYahooQuote=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(twMarketOpenNow()&&!(Number(quotes[c]?.open)>0)));
- if(needYahooQuote.length){
-  try{
-   const ys=await Promise.all(needYahooQuote.map(async c=>{
-    try{return[c,await deadline(yahooTwOne(c,false),3600,null)]}catch(e){errors.push('Yahoo quote '+c+': '+(e.message||String(e)));return[c,null]}
-   }));
-   for(const [c,y] of ys){
-    if(!y||!(Number(y.last)>0))continue;
-    if(!quotes[c]){
-     quotes[c]={...y,source:'Yahoo Finance ETF quote fallback',realtime:true,serverFetchedAt:new Date().toISOString()};
-     continue;
-    }
-    const z=quotes[c];
-    for(const k of ['last','prevClose','open','high','low','volume','time','date']){
-     if((!(Number(z[k])>0)&&z[k]!==0)&&y[k]!=null)z[k]=y[k];
-    }
-    z.source=(z.source||'ETF live')+'＋Yahoo缺欄補全';
-    z.serverFetchedAt=z.serverFetchedAt||new Date().toISOString();
-   }
-  }catch(e){errors.push('Yahoo ETF quote recovery: '+(e.message||String(e)))}
- }
-
  // Cash-session open is required by the existing anti-chase ceiling.
  // Some ETF transports return fresh last/prev but leave open blank.
  // Fill ONLY missing session fields from the already-existing Yahoo 1m/meta path.
@@ -996,29 +971,11 @@ function volumeShadowSignal(code,quote,hist,volumeFallback){
  let label='量價中性';if(Number.isFinite(chg)&&chg<-.3&&pace>=1.4&&rangePos<.55)label='放量走弱';else if(Number.isFinite(chg)&&chg<-.3&&pace<.85)label='縮量回檔';else if(pace>=1.15&&rangePos>=.65)label='放量承接';else if(score>=60)label='量價偏多';else if(score<=40)label='量價偏弱';
  return{usable:true,score,effect,label,pace,expectedFraction:frac,currentVolume:norm.value,rawVolume:raw,unitFactor:norm.factor,avg20:v20,avg60:v60,changePct:chg,rangePosition:rangePos*100,source:`${quote?.volumeSource||quote?.source||'即時行情'} + ${primary.length>=20?(hist?.source||'歷史量'):(volumeFallback?.source||'Yahoo量能備援')}`,note:'盤中量速以20日均量×時段期望比例估算；歷史量不足時以Yahoo 6M日量補足；僅供Shadow，不改正式買點。'};
 }
-function isoWeekKey(dateStr){
- const d=new Date(String(dateStr||'')+'T12:00:00Z');if(Number.isNaN(d.getTime()))return null;
- const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);
- return d.toISOString().slice(0,10);
-}
-function weeklyTrendShadowSignal(hist){
- const rows=adjustedRows(hist?.rows||[]);if(rows.length<220)return{usable:false,score:null,effect:0,label:'週線資料不足',reason:`有效日線僅 ${rows.length} 日`,source:hist?.source||null};
- const byWeek=new Map();
- for(const r of rows){const key=isoWeekKey(r.date);if(!key)continue;const prev=byWeek.get(key);const hi=r.aHigh??r.aClose,lo=r.aLow??r.aClose;if(!prev)byWeek.set(key,{key,date:r.date,close:r.aClose,high:hi,low:lo});else{prev.date=r.date;prev.close=r.aClose;prev.high=Math.max(prev.high,hi);prev.low=Math.min(prev.low,lo)}}
- const weeks=[...byWeek.values()].sort((a,b)=>a.key.localeCompare(b.key));if(weeks.length<44)return{usable:false,score:null,effect:0,label:'週線資料不足',reason:`僅 ${weeks.length} 週`,source:hist?.source||null};
- const closes=weeks.map(x=>x.close),last=closes.at(-1),s20=sma(closes,20),s40=sma(closes,40),prev20=sma(closes.slice(0,-4),20),r13=closes.length>=14?last/closes.at(-14)-1:null;
- const slope20=s20&&prev20?s20/prev20-1:null,recent13=weeks.slice(-13),supportCandidates=[s20,s40,Math.min(...recent13.map(x=>x.low))].filter(x=>Number.isFinite(x)&&x>0&&x<=last),support=supportCandidates.length?Math.max(...supportCandidates):null,supportDistancePct=support?((last/support)-1)*100:null;
- let score=50;if(s20)score+=last>=s20?8:-8;if(s40)score+=last>=s40?6:-6;if(s20&&s40)score+=s20>=s40?8:-8;if(Number.isFinite(slope20))score+=clamp(slope20*500,-8,8);if(Number.isFinite(r13))score+=clamp(r13*55,-8,8);
- // Near a rising weekly support is constructive; being far below both weekly averages is a warning.
- if(Number.isFinite(supportDistancePct)&&supportDistancePct>=0&&supportDistancePct<=2.5&&Number.isFinite(slope20)&&slope20>=0)score+=4;
- score=clamp(Math.round(score),0,100);const effect=clamp((score-50)*.08,-3,3),label=score>=63?'週線多頭':score<=37?'週線弱勢':'週線中性';
- return{usable:true,score,effect,label,asOf:weeks.at(-1).date,weeks:weeks.length,close:last,sma20w:s20,sma40w:s40,slope20w4Pct:Number.isFinite(slope20)?slope20*100:null,momentum13wPct:Number.isFinite(r13)?r13*100:null,support,supportDistancePct,source:`${hist?.source||'日線歷史'} 聚合週線`,note:'週線趨勢僅進Shadow：20/40週均線、20週線4週斜率、13週動能與週線支撐距離；效果上限±3分。'};
-}
-function applyShadowExperimentalFactors(sr,volumeSignal,chipSignal,weeklySignal){
+function applyShadowExperimentalFactors(sr,volumeSignal,chipSignal){
  const base=Number(sr?.score);if(!Number.isFinite(base))return sr;
- const ve=volumeSignal?.usable?Number(volumeSignal.effect)||0:0,ce=chipSignal?.usable?Number(chipSignal.effect)||0:0,we=weeklySignal?.usable?Number(weeklySignal.effect)||0:0,final=clamp(Math.round(base+ve+ce+we),0,100);
- sr.officialBaseScore=base;sr.experimentalFactors={volume:volumeSignal,chips:chipSignal,weekly:weeklySignal,volumeEffect:ve,chipEffect:ce,weeklyEffect:we,totalEffect:ve+ce+we,baseShadowScore:base,finalShadowScore:final,mode:'SHADOW_ONLY'};
- sr.score=final;if(sr.scoreBreakdown)sr.scoreBreakdown={...sr.scoreBreakdown,shadowVolume:ve,shadowChips:ce,shadowWeekly:we,shadowFinal:final};sr.method=(sr.method||'')+' + SHADOW-only volume/chip/weekly overlay';return sr;
+ const ve=volumeSignal?.usable?Number(volumeSignal.effect)||0:0,ce=chipSignal?.usable?Number(chipSignal.effect)||0:0,final=clamp(Math.round(base+ve+ce),0,100);
+ sr.officialBaseScore=base;sr.experimentalFactors={volume:volumeSignal,chips:chipSignal,volumeEffect:ve,chipEffect:ce,totalEffect:ve+ce,baseShadowScore:base,finalShadowScore:final,mode:'SHADOW_ONLY'};
+ sr.score=final;if(sr.scoreBreakdown)sr.scoreBreakdown={...sr.scoreBreakdown,shadowVolume:ve,shadowChips:ce,shadowFinal:final};sr.method=(sr.method||'')+' + SHADOW-only volume/chip overlay';return sr;
 }
 
 async function context(){
@@ -2259,13 +2216,12 @@ async function buyModel(){
  // Shadow is computed in parallel and can never overwrite the official models object.
  // To keep /api/buy-model responsive, at most ONE uncached OOS calibration is computed per request; the others temporarily use baseline and warm on later cycles.
  let shadowCalibratedThisRequest=false;
- for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy&&!shadowCalibratedThisRequest){policy=shadowPolicyCalibration(c,rows);shadowCalibratedThisRequest=true}if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);const volumeSignal=volumeShadowSignal(c,etfLd?.quotes?.[c],hs[c],vh[c]),chipSignal=chipShadowSignal(c,hh[c],instWin,yc[c]),weeklySignal=weeklyTrendShadowSignal(hs[c]);applyShadowExperimentalFactors(sr,volumeSignal,chipSignal,weeklySignal);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
+ for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy&&!shadowCalibratedThisRequest){policy=shadowPolicyCalibration(c,rows);shadowCalibratedThisRequest=true}if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);const volumeSignal=volumeShadowSignal(c,etfLd?.quotes?.[c],hs[c],vh[c]),chipSignal=chipShadowSignal(c,hh[c],instWin,yc[c]);applyShadowExperimentalFactors(sr,volumeSignal,chipSignal);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
  // Recent completed exchange dates let the browser advance no-signal streaks by real trading sessions instead of calendar days.
  const calendarHist=ETF.map(c=>hs[c]).find(h=>Array.isArray(h?.rows)&&h.rows.length);
  const tradingDates=[...new Set((calendarHist?.rows||[]).map(x=>x?.date).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)))].sort().slice(-180);
  return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'},shadowData:{yahooChips:Object.fromEntries(ETF.map(c=>[c,{ok:!!yc[c]?.ok,days:yc[c]?.days||0,asOf:yc[c]?.asOf||null,reason:yc[c]?.reason||null}])),volumeWindows:Object.fromEntries(ETF.map(c=>[c,{ok:!!vh[c]?.ok,days:vh[c]?.days||0,asOf:vh[c]?.asOf||null,reason:vh[c]?.reason||null}])),liveVolumes:etfLd?.volumeStatus||Object.fromEntries(ETF.map(c=>[c,{ok:Number(etfLd?.quotes?.[c]?.volume)>0,volume:Number(etfLd?.quotes?.[c]?.volume)||null,source:etfLd?.quotes?.[c]?.volumeSource||null}]))}};
 }
-
 
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
 function prefix(a){const p=[0];for(const x of a)p.push(p.at(-1)+(Number.isFinite(x)?x:0));return p}
@@ -2559,8 +2515,7 @@ function modelSyncAuthorized(req){const v=cookieMap(req).model_sync;return !!(v&
 async function supabaseRest(route,opts={}){
  if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))throw Error('Supabase 尚未設定');
  const headers={'apikey':SUPABASE_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json',...(opts.headers||{})};
- const timeoutMs=Number(opts.timeoutMs)||10000;
- const r=await fetchTimeout(SUPABASE_URL+'/rest/v1/'+route,{method:opts.method||'GET',headers,body:opts.body==null?undefined:JSON.stringify(opts.body)},timeoutMs);
+ const r=await fetchTimeout(SUPABASE_URL+'/rest/v1/'+route,{method:opts.method||'GET',headers,body:opts.body==null?undefined:JSON.stringify(opts.body)},8000);
  const text=await r.text();
  if(!r.ok)throw Error('Supabase HTTP '+r.status+(text?'｜'+text.slice(0,240):''));
  if(!text.trim())return null;
