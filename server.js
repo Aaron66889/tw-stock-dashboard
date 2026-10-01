@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.89-SYNC-FIX-BUYMODEL-RESTORE';
+const BUILD='16.8.90-SYNC-KEEP-BUYMODEL-CORE-FIX';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -2214,7 +2214,7 @@ async function buyModel(){
   Promise.all(ETF.map(async c=>[c,await deadline(yahooVolumeWindow(c).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:e.message})),5500,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:'Yahoo量能視窗逾時'})])),
   Promise.all(ETF.map(async c=>[c,await deadline(yahooInstitutionalDirect(c).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:e.message})),5500,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:'Yahoo法人頁逾時'})]))
  ]);
- await ensureEtfQuoteVolumes(etfLd).catch(()=>{});
+ await deadline(ensureEtfQuoteVolumes(etfLd).catch(()=>etfLd),2500,etfLd);
  const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),vh=Object.fromEntries(volWindows||[]),yc=Object.fromEntries(yahooChips||[]),models={},shadowModels={};
  const marketAt=ld.fetchedAt?Date.parse(ld.fetchedAt):0,etfAt=etfLd?.fetchedAt?Date.parse(etfLd.fetchedAt):0,openRequired=twMarketOpenNow();
  const marketAgeMs=ld.lastGoodFallback
@@ -2241,6 +2241,44 @@ async function buyModel(){
  return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'},shadowData:{yahooChips:Object.fromEntries(ETF.map(c=>[c,{ok:!!yc[c]?.ok,days:yc[c]?.days||0,asOf:yc[c]?.asOf||null,reason:yc[c]?.reason||null}])),volumeWindows:Object.fromEntries(ETF.map(c=>[c,{ok:!!vh[c]?.ok,days:vh[c]?.days||0,asOf:vh[c]?.asOf||null,reason:vh[c]?.reason||null}])),liveVolumes:etfLd?.volumeStatus||Object.fromEntries(ETF.map(c=>[c,{ok:Number(etfLd?.quotes?.[c]?.volume)>0,volume:Number(etfLd?.quotes?.[c]?.volume)||null,source:etfLd?.quotes?.[c]?.volumeSource||null}]))}};
 }
 
+
+
+// R3.68: the official four-ETF buy model is the primary path. Keep one completed
+// result for 30s and de-duplicate concurrent callers. Importantly, cache age starts
+// when the calculation FINISHES, not when it starts; otherwise a slow 10s+ build
+// is already expired the moment it becomes available.
+const BUY_MODEL_RUNTIME={value:null,at:0,inflight:null,lastError:null,byCode:{},shadowByCode:{}};
+function buyModelUsableRecord(x){return !!(x&&typeof x==='object'&&!x.error&&Number.isFinite(Number(x.price))&&x.raw)}
+function mergeBuyModelServerFallback(v){
+ if(!v||typeof v!=='object')return v;v.models=v.models||{};v.shadowModels=v.shadowModels||{};
+ for(const c of ETF){
+  const m=v.models[c];
+  if(buyModelUsableRecord(m))BUY_MODEL_RUNTIME.byCode[c]=m;
+  else if(BUY_MODEL_RUNTIME.byCode[c])v.models[c]={...BUY_MODEL_RUNTIME.byCode[c],_serverFallback:{reason:m?.error||'本輪模型資料失敗',at:new Date(BUY_MODEL_RUNTIME.at||Date.now()).toISOString()}};
+  const sm=v.shadowModels[c];
+  if(buyModelUsableRecord(sm))BUY_MODEL_RUNTIME.shadowByCode[c]=sm;
+  else if(BUY_MODEL_RUNTIME.shadowByCode[c])v.shadowModels[c]={...BUY_MODEL_RUNTIME.shadowByCode[c],_serverFallback:{reason:sm?.error||'本輪Shadow資料失敗',at:new Date(BUY_MODEL_RUNTIME.at||Date.now()).toISOString()}};
+ }
+ return v;
+}
+async function buyModelCachedStable(){
+ const now=Date.now();
+ if(BUY_MODEL_RUNTIME.value&&now-BUY_MODEL_RUNTIME.at<30000)return {...BUY_MODEL_RUNTIME.value,cached:true,buyModelCacheAgeMs:now-BUY_MODEL_RUNTIME.at};
+ if(BUY_MODEL_RUNTIME.inflight)return BUY_MODEL_RUNTIME.inflight;
+ BUY_MODEL_RUNTIME.inflight=(async()=>{
+  try{
+   const v=mergeBuyModelServerFallback(await buyModel());
+   BUY_MODEL_RUNTIME.value=v;BUY_MODEL_RUNTIME.at=Date.now();BUY_MODEL_RUNTIME.lastError=null;RUNTIME.bm=v;
+   return {...v,cached:false,buyModelCacheAgeMs:0};
+  }catch(e){BUY_MODEL_RUNTIME.lastError=e?.message||String(e);throw e}
+  finally{BUY_MODEL_RUNTIME.inflight=null}
+ })();
+ return BUY_MODEL_RUNTIME.inflight;
+}
+function buyModelLastGoodResponse(){
+ if(!BUY_MODEL_RUNTIME.value)return null;
+ return {...BUY_MODEL_RUNTIME.value,cached:true,lastGoodFallback:true,buyModelCacheAgeMs:Date.now()-BUY_MODEL_RUNTIME.at,buyModelLastError:BUY_MODEL_RUNTIME.lastError||null,fetchedAt:new Date().toISOString()};
+}
 
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
 function prefix(a){const p=[0];for(const x of a)p.push(p.at(-1)+(Number.isFinite(x)?x:0));return p}
@@ -2395,7 +2433,7 @@ async function preopenTxfPump(){
   if(tickMins===539&&tick.s>=30){const old=getPreopenSnapshot(tick.day);if(old&&!old.locked)savePreopenSnapshot({...old,locked:true,lockedAt:new Date().toISOString(),source:'server-auto-08:57-lock'})}
   const nf=await nightFuture();RUNTIME.nf=nf;
   if(tickMins>=537){
-   const bm=await deadline(cached('buymodel',8000,buyModel),9500,null);
+   const bm=await deadline(buyModelCachedStable(),18000,buyModelLastGoodResponse());
    if(bm?.models){
     const models={};for(const c of ETF){const r=bm.models[c];if(r&&!r.error&&r.raw)models[c]=r.raw}
     if(Object.keys(models).length){
@@ -2408,7 +2446,7 @@ async function preopenTxfPump(){
  }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}
  finally{PREOPEN_PUMP_RUNNING=false}
 }
-async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cached('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
+async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>buyModelCachedStable()]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
 function V(status,evidence,detail='',updatedAt=new Date().toISOString()){return{status,evidence,detail,updatedAt}}
 async function validationReport(deep=false){
  const out={},errors=[...(RUNTIME.errors||[])],ld=RUNTIME.live,ctx=RUNTIME.ctx,nf=RUNTIME.nf,ovs=RUNTIME.ovs,bm=RUNTIME.bm;
@@ -2920,7 +2958,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/taiex-history')return safeApi(res,'taiex-history',async()=>{const h=await taiexHistory();return{...h,ret5:periodReturn(h.rows,5),ret20:periodReturn(h.rows,20)}});
  if(u.pathname==='/api/overseas')return safeApi(res,'overseas',()=>cached('ovs',45000,overseas));
  if(u.pathname==='/api/night-future')return safeApi(res,'night-future',()=>nightFuture());
- if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(cached('buymodel',8000,buyModel),9500,null);return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'模型外部資料逾時；不阻塞頁面，30秒後自動重試',fetchedAt:new Date().toISOString()}});
+ if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(buyModelCachedStable(),19000,buyModelLastGoodResponse());return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'四檔模型首次暖機尚未完成；背景計算持續進行，30秒後自動重試',fetchedAt:new Date().toISOString()}});
  if(u.pathname==='/api/etf-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'etf-history',()=>ETF.includes(code)?etfHistory(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituent-dashboard'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'constituent-dashboard',()=>ETF.includes(code)?constituentDashboard(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituents'){const code=u.searchParams.get('code')||'0050',date=u.searchParams.get('date')||null;return safeApi(res,'constituents',()=>ETF.includes(code)?constituents(code,date):Promise.resolve({ok:false,error:'unsupported code'}))}
