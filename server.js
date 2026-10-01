@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.85-WEEKLY-SHADOW-COMPACT-TRADES';
+const BUILD='16.8.87-CLOUD-SYNC-SLIM';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -2533,7 +2533,8 @@ function modelSyncAuthorized(req){const v=cookieMap(req).model_sync;return !!(v&
 async function supabaseRest(route,opts={}){
  if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))throw Error('Supabase 尚未設定');
  const headers={'apikey':SUPABASE_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json',...(opts.headers||{})};
- const r=await fetchTimeout(SUPABASE_URL+'/rest/v1/'+route,{method:opts.method||'GET',headers,body:opts.body==null?undefined:JSON.stringify(opts.body)},8000);
+ const timeoutMs=Number(opts.timeoutMs)||10000;
+ const r=await fetchTimeout(SUPABASE_URL+'/rest/v1/'+route,{method:opts.method||'GET',headers,body:opts.body==null?undefined:JSON.stringify(opts.body)},timeoutMs);
  const text=await r.text();
  if(!r.ok)throw Error('Supabase HTTP '+r.status+(text?'｜'+text.slice(0,240):''));
  if(!text.trim())return null;
@@ -2568,11 +2569,14 @@ async function cloudRowsById(id){
  return await supabaseRest('model_trades?id=eq.'+encodeURIComponent(id)+'&select=id,code,entry_at,updated_at,payload&limit=1')||[];
 }
 async function cloudModelState(){
- const rows=await supabaseRest('model_trades?select=id,code,entry_at,updated_at,payload&order=entry_at.asc')||[];
- let initialized=false;const trades=[],deletedIds=[];
- for(const r of rows){
-  if(r.id===MODEL_SYNC_META_ID){initialized=true;continue}
-  if([HOLDINGS_SYNC_ID,CONSTITUENT_VERSION_SYNC_ID,PREOPEN_SNAPSHOT_SYNC_ID,DIVIDEND_SYNC_ID].includes(r.id))continue
+ // IMPORTANT: operational snapshots (constituent versions / preopen / dividends / holdings)
+ // share this table and can be very large. Never download those blobs just to list trades.
+ const [metaRows,rows]=await Promise.all([
+  supabaseRest('model_trades?id=eq.'+encodeURIComponent(MODEL_SYNC_META_ID)+'&select=id&limit=1',{timeoutMs:10000}),
+  supabaseRest('model_trades?id=like.mt_*&select=id,code,entry_at,updated_at,payload&order=entry_at.asc',{timeoutMs:15000})
+ ]);
+ const initialized=!!(metaRows&&metaRows.length);const trades=[],deletedIds=[];
+ for(const r of rows||[]){
   const p=r.payload&&typeof r.payload==='object'?r.payload:null;if(!p)continue;
   if(p._deleted){deletedIds.push(r.id);continue}
   trades.push({...p,id:p.id||r.id,code:p.code||r.code,_cloudUpdatedAt:r.updated_at});
@@ -2601,6 +2605,24 @@ async function cloudUpsertTrade(input){
  await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
  await ensureModelSyncMeta();
  return{ok:true,id};
+}
+async function cloudUpsertTradesBatch(inputs){
+ const trades=(Array.isArray(inputs)?inputs:[]).filter(Boolean);if(!trades.length)return{ok:true,count:0,written:0};
+ for(const t of trades)if(!t||typeof t!=='object'||!String(t.id||'').startsWith('mt_'))throw Error('invalid trade');
+ // Only read real trade rows. The same table also contains very large operational snapshots.
+ const rows=await supabaseRest('model_trades?id=like.mt_*&select=id,code,entry_at,updated_at,payload',{timeoutMs:15000})||[],byId=new Map(rows.map(r=>[String(r.id),r])),upserts=[];
+ for(const src of trades){
+  const incoming=JSON.parse(JSON.stringify(src)),id=String(incoming.id),row0=byId.get(id),existing=row0?.payload&&typeof row0.payload==='object'?row0.payload:null;
+  if(existing?._deleted)continue;
+  const incomingStamp=Date.parse(tradeSyncStamp(incoming))||0,existingStamp=Date.parse(tradeSyncStamp(existing))||0;
+  if(existing&&existingStamp>incomingStamp)continue;
+  let merged=existing?{...existing,...incoming}:incoming;
+  if(existing?.exitAt&&!incoming?.exitAt){for(const k of ['exitAt','exitPrice','realizedReturnPct','realizedPnL'])merged[k]=existing[k];merged._syncUpdatedAt=existing._syncUpdatedAt||existing.exitAt}
+  merged._syncUpdatedAt=merged._syncUpdatedAt||new Date().toISOString();delete merged._syncDirty;delete merged._cloudUpdatedAt;
+  upserts.push({id,code:String(merged.code||''),entry_at:merged.entryAt||new Date().toISOString(),updated_at:new Date().toISOString(),payload:merged});
+ }
+ if(upserts.length)await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:upserts});
+ await ensureModelSyncMeta();return{ok:true,count:trades.length,written:upserts.length};
 }
 async function cloudDeleteTrade(id){
  if(!String(id||'').startsWith('mt_'))throw Error('invalid trade id');
@@ -2856,9 +2878,7 @@ const server=http.createServer(async(req,res)=>{
   try{
    const body=await readJSONBody(req),trades=Array.isArray(body.trades)?body.trades:[];
    if(trades.length>500)throw Error('too many trades');
-   for(const t of trades)await cloudUpsertTrade(t);
-   if(trades.length)await ensureModelSyncMeta();
-   return send(res,200,{ok:true,count:trades.length});
+   return send(res,200,await cloudUpsertTradesBatch(trades));
   }catch(e){return send(res,400,{ok:false,error:e.message})}
  }
  if(u.pathname.startsWith('/api/model-trades/')&&req.method==='DELETE'){
