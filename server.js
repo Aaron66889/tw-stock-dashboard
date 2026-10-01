@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.91-R362-CORE-SYNC-ONLY';
+const BUILD='16.8.92-L23-HYSTERESIS-CONSTITUENT-RECOVERY';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -43,6 +43,7 @@ const META={
    cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20,firstReanchor:.31}}
 };
 const cache=new Map(),nightSamples=[],preopenTxfSamples=[],CHASE_CAL_CACHE=new Map(),SHADOW_POLICY_CACHE=new Map();
+let OP_META_RESTORED=false,OP_META_RESTORE_PROMISE=null;
 const CHASE_DAILY_LOCK_FILE='chase_calibration_daily.json';
 const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':12,'00919':8};
 let WARM_ACTIVE=false;
@@ -1642,6 +1643,18 @@ function constituentSignature(items){
  return crypto.createHash('sha256').update(codes.join('|')).digest('hex').slice(0,16);
 }
 function constituentVersionStore(){const x=diskRead(CONSTITUENT_VERSION_FILE);return x&&typeof x==='object'?x:{}}
+function latestStoredConstituentSnapshot(code,maxAgeDays=14){
+ const list=(constituentVersionStore()[code]||[]).filter(x=>x?.items?.length&&x?.complete!==false).sort((a,b)=>String(a.lastObservedAt||a.effectiveDate||'').localeCompare(String(b.lastObservedAt||b.effectiveDate||'')));
+ const hit=list.at(-1);if(!hit)return null;
+ const stamp=Date.parse(hit.lastObservedAt||hit.firstObservedAt||hit.effectiveDate||'');
+ const age=Number.isFinite(stamp)?(Date.now()-stamp)/86400000:999;
+ if(!Number.isFinite(age)||age>maxAgeDays)return null;
+ return{code,asOf:hit.effectiveDate||ymdTaipei(),effectiveDate:hit.effectiveDate||ymdTaipei(),items:(hit.items||[]).map(x=>({...x})),complete:true,expected:hit.expected||META[code]?.expected||(hit.items||[]).length,officialOnly:false,thirdParty:false,verifiedSnapshot:true,source:'已驗證完整成分雲端版本快照',sourceUrl:hit.sourceUrl||META[code]?.url||null,historicalAvailable:false,versionSignature:hit.signature,versionFirstObservedAt:hit.firstObservedAt,versionLastObservedAt:hit.lastObservedAt,note:`即時來源暫時未完整，沿用最近已驗證完整成分版本（最後觀測 ${String(hit.lastObservedAt||hit.effectiveDate||'').slice(0,10)}）；會持續背景重抓最新官方資料。`};
+}
+function mergeVisibleConstituentWeights(base,visible){
+ const vm=new Map((visible?.items||[]).map(x=>[String(x.code),x]));
+ return{...base,items:(base?.items||[]).map(x=>{const v=vm.get(String(x.code));return v?{...x,name:v.name||x.name,weight:Number.isFinite(v.weight)?v.weight:x.weight,shares:Number.isFinite(v.shares)?v.shares:x.shares}:x})};
+}
 function saveConstituentVersion(c){
  if(!c?.complete||!c?.code||!c?.items?.length)return c;
  const signature=constituentSignature(c.items),store=constituentVersionStore(),list=Array.isArray(store[c.code])?store[c.code]:[],now=new Date().toISOString();
@@ -1701,21 +1714,47 @@ function parseOfficialHoldingText(html){
  return{date:dates[0]||ymdTaipei(),items:[...new Map(items.map(x=>[x.code,x])).values()]};
 }
 async function yuantaOfficialConstituents(code){
- const expected=META[code].expected,fundid=META[code].fundId,errs=[];
- const api=`https://www.yuantaetfs.com/api/StkWeights?date=&fundid=${fundid}`;
- try{
-  const d=await deadline(getJSONQuick(api,{'Accept':'application/json, text/plain, */*','Referer':META[code].url,'Origin':'https://www.yuantaetfs.com','X-Requested-With':'XMLHttpRequest'},7000),7500,null);
-  if(d){const items=jsonHoldingRows(d);if(items.length>=expected)return saveConstituentLastGood({code,asOf:ymdTaipei(),effectiveDate:ymdTaipei(),items:items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'元大投信官方 StkWeights',sourceUrl:api,historicalAvailable:false,note:`元大官方 StkWeights API 完整解析 ${items.length}/${expected} 檔。`,attempts:[{source:'Yuanta StkWeights',ok:true,count:items.length,url:api}]});errs.push(`StkWeights parsed ${items.length}/${expected}`)}else errs.push('StkWeights timeout');
- }catch(e){errs.push('StkWeights '+e.message)}
- // Official visible holdings are used as proof when the official API is temporarily blocked from Render.
+ const expected=META[code].expected,fundid=META[code].fundId,errs=[],attempts=[];
+ const apiFor=d=>`https://www.yuantaetfs.com/api/StkWeights?date=${encodeURIComponent(d||'')}&fundid=${fundid}`;
+ let bestApi={items:[],date:null,url:apiFor('')};
+ async function tryApi(dateLabel){
+  const url=apiFor(dateLabel);
+  try{
+   const d=await deadline(getJSONQuick(url,{'Accept':'application/json, text/plain, */*','Referer':META[code].url,'Origin':'https://www.yuantaetfs.com','X-Requested-With':'XMLHttpRequest'},5200),5600,null);
+   if(!d){attempts.push({source:'Yuanta StkWeights',ok:false,count:0,error:'timeout',url});return null}
+   const items=jsonHoldingRows(d);attempts.push({source:'Yuanta StkWeights',ok:items.length>=expected,count:items.length,url,date:dateLabel||'latest'});
+   if(items.length>bestApi.items.length)bestApi={items,date:dateLabel||ymdTaipei(),url};
+   return items;
+  }catch(e){errs.push('StkWeights '+e.message);attempts.push({source:'Yuanta StkWeights',ok:false,count:0,error:e.message,url});return null}
+ }
+ let items=await tryApi('');
+ if(!(items?.length>=expected)){
+  const recent=[0,1,2].map(i=>dateMinus(i).replaceAll('-','/'));
+  const rs=await Promise.all(recent.map(d=>tryApi(d)));
+  items=rs.find(x=>x?.length>=expected)||bestApi.items;
+ }
+ if(items?.length>=expected)return saveConstituentLastGood({code,asOf:parseISODate(bestApi.date)||ymdTaipei(),effectiveDate:parseISODate(bestApi.date)||ymdTaipei(),items:items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'元大投信官方 StkWeights',sourceUrl:bestApi.url,historicalAvailable:false,note:`元大官方 StkWeights 完整解析 ${items.length}/${expected} 檔。`,attempts});
+ if(bestApi.items.length)errs.push(`StkWeights best ${bestApi.items.length}/${expected}`);
+
+ // Official ratio page usually exposes only the first few rows server-side. Use it as current-day proof, not as a fake complete list.
  let visible={date:ymdTaipei(),items:[]};
- try{const html=await deadline(getText(META[code].url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),7000,null);if(html)visible=parseOfficialHoldingText(html)}catch(e){errs.push('Yuanta ratio '+e.message)}
+ try{const html=await deadline(getText(META[code].url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),6500,null);if(html)visible=parseOfficialHoldingText(html);attempts.push({source:'Yuanta ratio',ok:visible.items.length>0,count:visible.items.length,url:META[code].url})}catch(e){errs.push('Yuanta ratio '+e.message);attempts.push({source:'Yuanta ratio',ok:false,count:0,error:e.message,url:META[code].url})}
+
+ // R3.72: deployment-safe recovery. Complete constituent versions are persisted to Supabase; after a Render redeploy,
+ // restore that verified 50-name snapshot and cross-check the issuer-visible rows before using it.
+ const stored=latestStoredConstituentSnapshot(code,14),storedProof=overlapProof(visible,stored,.75);
+ if(stored?.complete&&(visible.items.length===0||storedProof.pass)){
+  const merged=mergeVisibleConstituentWeights(stored,visible);
+  return{...merged,code,complete:true,expected,verifiedSnapshot:true,source:visible.items.length?`已驗證完整成分雲端快照＋元大官方交叉驗證`:`已驗證完整成分雲端快照（官方本輪暫時不可用）`,sourceUrl:META[code].url,note:visible.items.length?`目前元大頁面只直接回傳前 ${visible.items.length} 檔；已用官方可見持股 ${storedProof.hit}/${storedProof.visible} 交叉驗證雲端保存的完整 ${merged.items.length}/${expected} 檔成分，避免部署後退化成5/50。`:`元大官方本輪未能完整回傳；暫沿用最近已驗證完整 ${merged.items.length}/${expected} 檔雲端版本，並持續重抓。`,officialProof:{source:'Yuanta ratio',visible:storedProof.visible,matched:storedProof.hit,pass:visible.items.length?storedProof.pass:null},errors:errs,attempts:[...attempts,{source:'verified cloud snapshot',ok:true,count:merged.items.length,url:stored.sourceUrl||META[code].url}]};
+ }
+
+ // Last resort: complete public holding list is accepted only after current Yuanta-visible rows cross-validate it.
  let full=await moneyDJConstituents(code).catch(()=>null);if(!full?.complete)full=await pocketConstituents(code).catch(()=>null);
  const proof=overlapProof(visible,full,.75);
- if(full?.complete&&proof.pass)return saveConstituentLastGood({...full,code,asOf:full.asOf||visible.date,effectiveDate:full.effectiveDate||visible.date,complete:true,expected,officialOnly:false,thirdParty:true,source:`完整持股備援＋元大官方交叉驗證`,sourceUrl:META[code].url,note:`元大官方 API 本輪未完整；完整持股備援 ${full.items.length}/${expected}，與元大官方可見持股交叉驗證 ${proof.hit}/${proof.visible} 通過。`,officialProof:{source:'Yuanta ratio',visible:proof.visible,matched:proof.hit,pass:true},errors:errs});
- const lg=constituentLastGood(code);if(lg)return lg;
+ if(full?.complete&&proof.pass)return saveConstituentLastGood({...full,code,asOf:full.asOf||visible.date,effectiveDate:full.effectiveDate||visible.date,complete:true,expected,officialOnly:false,thirdParty:true,source:`完整持股備援＋元大官方交叉驗證`,sourceUrl:META[code].url,note:`元大官方完整API本輪未成功；完整持股備援 ${full.items.length}/${expected}，與元大官方可見持股交叉驗證 ${proof.hit}/${proof.visible} 通過。`,officialProof:{source:'Yuanta ratio',visible:proof.visible,matched:proof.hit,pass:true},errors:errs,attempts});
+ const lg=constituentLastGood(code,14);if(lg)return{...lg,attempts:[...attempts,{source:'local last-good',ok:true,count:lg.items.length}]};
  const best=full?.items?.length>(visible.items?.length||0)?full:visible;
- return{code,asOf:best?.asOf||best?.date||ymdTaipei(),effectiveDate:best?.effectiveDate||best?.date||ymdTaipei(),items:best?.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'元大持股來源未完整',sourceUrl:META[code].url,historicalAvailable:false,note:`本輪僅取得 ${(best?.items||[]).length}/${expected} 檔；不完整時不納入模型。`,errors:errs,officialProof:proof};
+ return{code,asOf:best?.asOf||best?.date||ymdTaipei(),effectiveDate:best?.effectiveDate||best?.date||ymdTaipei(),items:best?.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'元大持股來源未完整',sourceUrl:META[code].url,historicalAvailable:false,note:`本輪僅取得 ${(best?.items||[]).length}/${expected} 檔；不完整時不納入模型。`,errors:errs,officialProof:proof,attempts};
 }
 async function capitalOfficialConstituents(code='00919'){
  const expected=META[code].expected,errs=[],urls=[META[code].portfolioUrl,META[code].url].filter(Boolean);let visible={date:ymdTaipei(),items:[]},visibleUrl=urls[0];
@@ -2063,22 +2102,19 @@ async function cathayOfficialExcelConstituents(date=null){
 }
 
 async function constituents(code,date=null){
- const key='const:r342:'+code+':'+(date||'latest');
- return cached(key,date?30*60*1000:20*60*1000,async()=>{
-  if(date){
-   // 00878 has a date-addressable official Excel source. If that exact/nearby historical portfolio is unavailable,
-   // fall back only to our saved historical versions — never to today's holdings.
-   if(code==='00878'){
-    const c=await cathayOfficialExcelConstituents(date).catch(()=>null);
-    if(c?.complete){saveConstituentVersion(c);return c}
-   }
-   return constituentVersionForDate(code,date)||emptyHistoricalConstituents(code,date);
-  }
-  if(code==='00878'){const c=await cathayOfficialExcelConstituents(null);return c?.complete?saveConstituentLastGood(c):(constituentLastGood(code)||c)}
-  if(code==='0050'||code==='0056')return yuantaOfficialConstituents(code);
-  if(code==='00919')return capitalOfficialConstituents(code);
-  throw Error('unsupported constituents');
- });
+ const key='const:r372:'+code+':'+(date||'latest'),now=Date.now(),ttl=date?30*60*1000:20*60*1000,cachedRow=cache.get(key);
+ // Never pin an incomplete 5/50 response for 20 minutes. Complete data keeps the long cache; incomplete data gets only 8 seconds.
+ if(cachedRow){const useTtl=cachedRow?.v?.complete?ttl:8000;if(now-cachedRow.at<useTtl)return{...cachedRow.v,cached:true}}
+ if(!date)await deadline(ensureOperationalMetaRestored(),2500,null).catch(()=>null);
+ let v;
+ if(date){
+  if(code==='00878'){const c=await cathayOfficialExcelConstituents(date).catch(()=>null);if(c?.complete){saveConstituentVersion(c);v=c}}
+  if(!v)v=constituentVersionForDate(code,date)||emptyHistoricalConstituents(code,date);
+ }else if(code==='00878'){const c=await cathayOfficialExcelConstituents(null);v=c?.complete?saveConstituentLastGood(c):(constituentLastGood(code)||c)}
+ else if(code==='0050'||code==='0056')v=await yuantaOfficialConstituents(code);
+ else if(code==='00919')v=await capitalOfficialConstituents(code);
+ else throw Error('unsupported constituents');
+ cache.set(key,{at:Date.now(),v});return{...v,cached:false};
 }
 async function constituentHealth(code){
  return cached('health:r356:'+code,25000,async()=>{
@@ -2088,7 +2124,7 @@ async function constituentHealth(code){
   for(const it of c.items){const z=q[it.code],ch=movePct(z),w=Number.isFinite(it.weight)?it.weight:null;if(w!=null)totalW+=w;if(Number.isFinite(ch)&&w!=null){quotedW+=w;weighted+=clamp(ch/2.5,-1,1)*w;weightedCount++;if(ch>.30)bullW+=w;else if(ch<-.30)weakW+=w;else neutralW+=w}rows.push({...it,changePct:Number.isFinite(ch)?ch:null,last:z?.last??null,quoted:Number.isFinite(ch)})}
   const sourceCoverage=expected?Math.min(1,c.items.length/expected):0,weightCoverage=expected?Math.min(1,c.items.filter(x=>Number.isFinite(x.weight)).length/expected):0,quoteCoverage=totalW?quotedW/totalW:0;
   // R3.27: complete Pocket holdings are accepted for 0050/0056/00919; 00878 remains Cathay official.
-  const trustedHoldingSource=c.officialOnly===true||c.thirdParty===true;
+  const trustedHoldingSource=c.officialOnly===true||c.thirdParty===true||c.verifiedSnapshot===true;
   const usable=!!c.complete&&trustedHoldingSource&&sourceCoverage>=1&&weightCoverage>=1&&quoteCoverage>=.75;
   const score=usable?clamp(Math.round(50+(weighted/quotedW)*38),0,100):null;let divergence='資料不足';if(usable){if(score>=65&&bullW>=weakW*1.5)divergence='健康擴散';else if(score>=52&&weakW<45)divergence='輕度分歧';else if(score<42||weakW>55)divergence='明顯分歧';else divergence='結構背離'}
   return{ok:true,code,score,usable,divergence,bullWeight:bullW,weakWeight:weakW,neutralWeight:neutralW,sourceCoverage:sourceCoverage*100,weightCoverage:weightCoverage*100,quoteCoverage:quoteCoverage*100,asOf:c.asOf,effectiveDate:c.effectiveDate,complete:c.complete,expected,portfolioExpected:c.portfolioExpected||null,portfolioPositions:c.portfolioPositions||null,portfolioWeight:c.portfolioWeight??null,nonStockPositions:c.nonStockPositions||[],items:rows.sort((a,b)=>(b.weight||0)-(a.weight||0)),source:c.source,sourceUrl:c.sourceUrl,historicalAvailable:c.historicalAvailable,note:c.note||null,diagnostics:c.diagnostics||null,attempts:c.attempts||null,errors:c.errors||null};
@@ -2544,6 +2580,12 @@ async function restoreOperationalMeta(){
   const po=await operationalMetaCloudPayload(PREOPEN_SNAPSHOT_SYNC_ID),local=preopenSnapshotStore();
   if(po?.snapshots){const merged={...po.snapshots,...local};for(const [day,x] of Object.entries(po.snapshots)){if(x?.locked&&!local?.[day]?.locked)merged[day]=x}const keep=Object.keys(merged).sort().slice(-20),trim={};for(const d of keep)trim[d]=merged[d];diskWrite(PREOPEN_SNAPSHOT_FILE,trim)}
  }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),`preopen-meta-restore:${e.message}`].slice(-20)}
+ OP_META_RESTORED=true;
+}
+function ensureOperationalMetaRestored(){
+ if(OP_META_RESTORED)return Promise.resolve(true);
+ if(!OP_META_RESTORE_PROMISE)OP_META_RESTORE_PROMISE=restoreOperationalMeta().catch(e=>{RUNTIME.errors=[...(RUNTIME.errors||[]),`operational-meta-restore:${e.message}`].slice(-20)}).finally(()=>{OP_META_RESTORED=true});
+ return OP_META_RESTORE_PROMISE;
 }
 function tradeSyncStamp(t){return String(t?._syncUpdatedAt||t?.exitAt||t?.perf?.fetchedAt||t?.entryAt||new Date(0).toISOString())}
 async function cloudRowsById(id){
@@ -2916,7 +2958,7 @@ server.on('clientError',(err,socket)=>{try{if(socket.writable)socket.end('HTTP/1
 server.listen(PORT,'0.0.0.0',()=>{
  console.log(VERSION+' '+BUILD+' listening on '+PORT);
  // Restore small operational snapshots before the first live/model refresh when Supabase is configured.
- setTimeout(()=>restoreOperationalMeta().catch(()=>{}),500);
+ setTimeout(()=>ensureOperationalMetaRestored().catch(()=>{}),0);
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
  setInterval(refreshRuntime,120000);
