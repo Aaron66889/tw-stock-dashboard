@@ -16,12 +16,4 @@
 
 .etf-daily-pct{font-size:11px;font-weight:850;margin-left:5px;white-space:nowrap;opacity:.95}
 
-.shadowfactors{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:7px}.shadowfactors>div{background:#101e32;border:1px solid #263d5f;border-radius:9px;padding:7px}.shadowfactors span{display:block;color:#8fa8c8;font-size:9px;margin-bottom:3px}.shadowfactors b{display:block;color:#eef5ff;font-size:9px;line-height:1.45;font-weight:600}@media(max-width:700px){.shadowfactors{grid-template-columns:1fr}}
-
-/* R3.63 compact model-trade history */
-.trade-section-head,.trade-history-head{margin:14px 0 8px;padding-top:10px;border-top:1px solid var(--line)}
-.trade-section-head b,.trade-history-head b{display:block;font-size:13px}.trade-section-head small,.trade-history-head small{display:block;color:#91a5c1;font-size:9px;margin-top:3px}
-.trade-attention-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.trade-detail-card{background:#0f1b2d;border:1px solid #243a59;border-radius:12px;padding:10px;margin:0}.trade-detail-card .grid5{margin-top:8px}
-.trade-filter-row{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}.trade-filter{border:1px solid #2b4264;background:#101d30;color:#a9bad2;border-radius:999px;padding:6px 9px;font-size:9px;font-weight:800;cursor:pointer}.trade-filter.on{background:#e7eef8;color:#142033;border-color:#e7eef8}
-.trade-table-wrap{overflow-x:auto;border:1px solid #243a59;border-radius:12px}.trade-table{width:100%;border-collapse:collapse;min-width:760px;font-size:10px}.trade-table th{color:#89a1c0;background:#0e192a;text-align:left;padding:9px;border-bottom:1px solid #243a59;white-space:nowrap}.trade-table td{padding:9px;border-bottom:1px solid #1d304b;white-space:nowrap}.trade-row{cursor:pointer}.trade-row:hover,.trade-row.expanded{background:#14243a}.trade-detail-row td{padding:8px;background:#0b1626}.trade-detail-row .trade-detail-card{margin:0}
-@media(max-width:850px){.trade-attention-grid{grid-template-columns:1fr}.trade-detail-card .grid5{grid-template-columns:repeat(2,1fr)}}
+.shadowfactors{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:7px}.shadowfactors>div{background:#101e32;border:1px solid #263d5f;border-radius:9px;padding:7px}.shadowfactors span{display:block;color:#8fa8c8;font-size:9px;margin-bottom:3px}.shadowfactors b{display:block;color:#eef5ff;font-size:9px;line-height:1.45;font-weight:600}@media(max-width:700px){.shadowfactors{grid-template-columns:1fr}}

@@ -19,13 +19,12 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.92-QUOTE-RECOVERY-SYNC-KEEP',CONFIRM_RULE_VERSION='layer-confirm-v7-time-rebound-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.91-R362-CORE-SYNC-ONLY',CONFIRM_RULE_VERSION='layer-confirm-v7-time-rebound-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null;
 let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,selectedETF='0050',selectedBacktest='0050';
 let etfLiveTimer=null;
-let MODEL_TRADE_FILTER='all',MODEL_TRADE_LIMIT=10,MODEL_TRADE_EXPANDED=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:550,c:18.80}];
 
 // 16.8.74 dividend baseline: reconstructed once from the user's Fubon statements; future distributions are automatic.
@@ -444,7 +443,13 @@ function updateShadowOne(code,r){
  if(newObservation){const ox=statusFor(code);SHADOW_LOG.push({day:dayKey(),at:nowIso,code,price:px,score:r.score,officialBaseScore:r?.officialBaseScore??null,experimentalFactors:r?.experimentalFactors||null,critical:r?.criticalGate?.status||'BLOCKED',policy:m.policyId,q:m.policyQ,shadowZones:m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),shadowStatuses:m.layers.map(L=>layerView(L,px)),shadowConfirmed:m.layers.map(L=>!!L.confirmed),officialZones:ox?.m?.layers?.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)}))||null,officialStatuses:ox?.statuses||null,officialScore:ox?.r?.score??null});SHADOW_LOG=SHADOW_LOG.slice(-2400)}
 }
 function shadowStatusFor(c){const r=lastBuy?.shadowModels?.[c],m=SHADOW_STATE.models?.[c];if(!r||r.error||!m)return null;const px=Number(lastLive?.quotes?.[c]?.last??r.price),statuses=m.layers.map(L=>layerView(L,px));let activeLayer=0;for(let i=statuses.length-1;i>=0;i--){if(statuses[i]!=='WAIT'&&statuses[i]!=='INVALID'){activeLayer=i;break}}return{r,m,px,statuses,activeLayer,activeStatus:statuses[activeLayer]||statuses[0]}}
-function shadowPanel(c){const s=shadowStatusFor(c),o=statusFor(c);if(!s||!o)return'';const d=(center(s.m.layers[0].zone)-center(o.m.layers[0].zone))/Math.max(.01,center(o.m.layers[0].zone))*100,gate=s.r?.criticalGate?.status||'BLOCKED',pol=s.r?.shadowPolicy||{},rule=shadowRules(s.r)[0],state=stageText(s.activeStatus,s.activeLayer+1),replayN=(SHADOW_LOG||[]).filter(x=>x.day===dayKey()&&x.code===c).length,f=s.r?.experimentalFactors||{},v=f.volume||{},ch=f.chips||{},w=f.weekly||{},ef=n=>Number.isFinite(Number(n))?`${Number(n)>=0?'+':''}${Number(n).toFixed(1)}`:'—',vf=v.usable?`${v.label}｜${v.score}/100｜量速 ${Number(v.pace).toFixed(2)}x｜影響 ${ef(f.volumeEffect)}分｜來源 ${v.source||'—'}`:`量價資料不足${v.reason?'（'+v.reason+'）':''}`,cf=ch.usable?`${ch.label}｜${ch.score}/100${Number.isFinite(Number(ch.foreignBreadth))?'｜外資 '+ef(ch.foreignBreadth)+'%':''}${Number.isFinite(Number(ch.trustBreadth))?'｜投信 '+ef(ch.trustBreadth)+'%':''}｜影響 ${ef(f.chipEffect)}分｜截至 ${String(ch.asOf||'—').replaceAll('-','/')}｜來源 ${ch.source||'—'}${ch.fallback?'｜低權重備援':''}`:`籌碼資料不足${ch.reason?'（'+ch.reason+'）':''}`,wf=w.usable?`${w.label}｜${w.score}/100｜20週 ${fmt(w.sma20w)}｜40週 ${fmt(w.sma40w)}${Number.isFinite(Number(w.momentum13wPct))?'｜13週 '+ef(w.momentum13wPct)+'%':''}｜影響 ${ef(f.weeklyEffect)}分｜截至 ${String(w.asOf||'—').replaceAll('-','/')}`:`週線資料不足${w.reason?'（'+w.reason+'）':''}`,scoreLine=Number.isFinite(Number(s.r?.officialBaseScore))?`Shadow分數 ${s.r.score}/100（原Shadow ${s.r.officialBaseScore}/100；量價/籌碼/週線合計 ${ef(f.totalEffect)}分）`:`Shadow分數 ${s.r.score}/100`;return`<div class="shadowbox"><div class="row"><div><b>Shadow 新模型</b><small>量價＋籌碼＋週線趨勢僅進 Shadow，不影響正式買進訊號</small></div><span class="pill ${gate==='PASS'?'live':'warn'}">${gate==='PASS'?'Critical PASS':'Critical '+gate}</span></div><div class="shadowgrid"><span>① ${ztxt(s.m.layers[0].zone)}</span><span>② ${ztxt(s.m.layers[1].zone)}</span><span>③ ${ztxt(s.m.layers[2].zone)}</span></div><div class="shadowfactors"><div><span>量價 Shadow</span><b>${vf}</b></div><div><span>籌碼 Shadow</span><b>${cf}</b></div><div><span>週線趨勢 Shadow</span><b>${wf}</b></div></div><small>${scoreLine}</small><small>${state}｜L1差異 ${d>=0?'+':''}${d.toFixed(2)}%｜OOS ${pol.selectedId||'baseline'} / WF ${pol.wfCount||0}｜L1分數≥${rule.minScore} / ${rule.cycles}筆｜盤中Replay ${replayN}筆</small>${confirmSnapshotText(s.m.layers[0])?`<small>${confirmSnapshotText(s.m.layers[0])}</small>`:''}</div>`}
+function shadowPanel(c){const s=shadowStatusFor(c),o=statusFor(c);if(!s||!o)return'';const d=(center(s.m.layers[0].zone)-center(o.m.layers[0].zone))/Math.max(.01,center(o.m.layers[0].zone))*100,gate=s.r?.criticalGate?.status||'BLOCKED',pol=s.r?.shadowPolicy||{},rule=shadowRules(s.r)[0],state=stageText(s.activeStatus,s.activeLayer+1),replayN=(SHADOW_LOG||[]).filter(x=>x.day===dayKey()&&x.code===c).length,f=s.r?.experimentalFactors||{},v=f.volume||{},ch=f.chips||{},ef=n=>Number.isFinite(Number(n))?`${Number(n)>=0?'+':''}${Number(n).toFixed(1)}`:'—',vf=v.usable?`${v.label}｜${v.score}/100｜量速 ${Number(v.pace).toFixed(2)}x｜影響 ${ef(f.volumeEffect)}分｜來源 ${v.source||'—'}`:`量價資料不足${v.reason?'（'+v.reason+'）':''}`,cf=ch.usable?`${ch.label}｜${ch.score}/100${Number.isFinite(Number(ch.foreignBreadth))?'｜外資 '+ef(ch.foreignBreadth)+'%':''}${Number.isFinite(Number(ch.trustBreadth))?'｜投信 '+ef(ch.trustBreadth)+'%':''}｜影響 ${ef(f.chipEffect)}分｜截至 ${String(ch.asOf||'—').replaceAll('-','/')}｜來源 ${ch.source||'—'}${ch.fallback?'｜低權重備援':''}`:`籌碼資料不足${ch.reason?'（'+ch.reason+'）':''}`,scoreLine=Number.isFinite(Number(s.r?.officialBaseScore))?`Shadow分數 ${s.r.score}/100（原Shadow ${s.r.officialBaseScore}/100；量價/籌碼合計 ${ef(f.totalEffect)}分）`:`Shadow分數 ${s.r.score}/100`;return`<div class="shadowbox"><div class="row"><div><b>Shadow 新模型</b><small>量價＋籌碼僅進 Shadow，不影響正式買進訊號</small></div><span class="pill ${gate==='PASS'?'live':'warn'}">${gate==='PASS'?'Critical PASS':'Critical '+gate}</span></div><div class="shadowgrid"><span>① ${ztxt(s.m.layers[0].zone)}</span><span>② ${ztxt(s.m.layers[1].zone)}</span><span>③ ${ztxt(s.m.layers[2].zone)}</span></div><div class="shadowfactors"><div><span>量價 Shadow</span><b>${vf}</b></div><div><span>籌碼 Shadow</span><b>${cf}</b></div></div><small>${scoreLine}</small><small>${state}｜L1差異 ${d>=0?'+':''}${d.toFixed(2)}%｜OOS ${pol.selectedId||'baseline'} / WF ${pol.wfCount||0}｜L1分數≥${rule.minScore} / ${rule.cycles}筆｜盤中Replay ${replayN}筆</small>${confirmSnapshotText(s.m.layers[0])?`<small>${confirmSnapshotText(s.m.layers[0])}</small>`:''}</div>`}
+
+function appendHistory(code,r,m,px){
+ HIST[code]=HIST[code]||[];const arr=HIST[code],now=new Date().toISOString(),v={from:now,to:now,first:center(m.layers[0].zone),second:center(m.layers[1].zone),third:center(m.layers[2].zone),priceStart:px,priceLast:px,priceMin:px,priceMax:px,status:layerView(m.layers[0],px),count:1};
+ const last=arr.at(-1);if(last&&Math.abs(last.first-v.first)<.025&&Math.abs(last.second-v.second)<.025&&Math.abs(last.third-v.third)<.025&&last.status===v.status){last.to=now;last.priceLast=px;last.priceMin=Math.min(last.priceMin,px);last.priceMax=Math.max(last.priceMax,px);last.count++}else arr.push(v);
+ HIST[code]=arr.slice(-1200);saveJSON('v124_buy_history',HIST)
+}
 function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error)updateOne(c,r);const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
 function statusFor(c){const r=lastBuy?.models?.[c],m=STATE.models?.[c];if(!r||r.error||!m)return null;const px=Number(lastLive?.quotes?.[c]?.last??r.price),statuses=m.layers.map(L=>layerView(L,px));let activeLayer=0;for(let i=statuses.length-1;i>=0;i--){if(statuses[i]!=='WAIT'&&statuses[i]!=='INVALID'){activeLayer=i;break}}const activeStatus=statuses[activeLayer]||statuses[0];return{r,m,px,statuses,activeLayer,activeStatus,rank:rank(activeStatus)}}
 
@@ -647,23 +652,13 @@ function modelSyncSaveLocal(){saveJSON('v124_model_trades',MODEL_TRADES);saveJSO
 function modelTradeClean(t){const x=JSON.parse(JSON.stringify(t));delete x._syncDirty;delete x._cloudUpdatedAt;return x}
 function markModelTradeDirty(t){if(!t)return;t._syncDirty=true;t._syncUpdatedAt=new Date().toISOString()}
 async function modelSyncFetch(url,opts={}){
- const {timeoutMs=20000,retries=2,...fetchOpts}=opts;let lastErr=null;
- for(let attempt=0;attempt<=retries;attempt++){
-  const c=new AbortController(),tm=setTimeout(()=>c.abort(),timeoutMs);
-  try{
-   const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(fetchOpts.headers||{})},...fetchOpts,signal:c.signal});
-   let d={};try{d=await r.json()}catch(_){}
-   if(!r.ok){const e=Error(d.error||('HTTP '+r.status));e.status=r.status;const ra=Number(r.headers.get('retry-after'));if(Number.isFinite(ra)&&ra>0)e.retryAfterMs=ra*1000;throw e}
-   if(d&&d.ok===false){const e=Error(d.error||d.reason||'雲端API暫時失敗');e.status=502;throw e}
-   return d;
-  }catch(e){
-   const aborted=e?.name==='AbortError'||/abort/i.test(String(e?.message||''));
-   lastErr=aborted?Object.assign(Error('雲端回應逾時，將自動重試'),{status:504}):e;
-   const transient=!lastErr.status||lastErr.status===429||lastErr.status>=500;if(!transient||attempt>=retries)throw lastErr;
-   const wait=Math.min(12000,Number(lastErr.retryAfterMs)||1500*(attempt+1));await new Promise(r=>setTimeout(r,wait));
-  }finally{clearTimeout(tm)}
- }
- throw lastErr||Error('雲端同步失敗');
+ const c=new AbortController(),tm=setTimeout(()=>c.abort(),10000);
+ try{
+  const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opts.headers||{})},...opts,signal:c.signal});
+  let d={};try{d=await r.json()}catch(_){}
+  if(!r.ok){const e=Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}
+  return d;
+ }finally{clearTimeout(tm)}
 }
 async function loadDividendAuto(force=false){
  if(DIVIDEND_AUTO.busy||!MODEL_SYNC.ready)return;
@@ -752,13 +747,11 @@ async function pushHoldingsCloud(){
   await loadDividendAuto(true);
  }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股同步失敗，本機仍保留'}
 }
-let CLOUD_SYNC_ALL_BUSY=false;
 async function syncAllCloud(force=false){
  if(CLOUD_SYNC_ALL_BUSY)return;CLOUD_SYNC_ALL_BUSY=true;
  try{
-  const modelOk=await syncModelTrades(force);
-  // If Supabase is rate-limiting the trade sync, do not immediately pile holdings/dividend requests on top of it.
-  if(modelOk&&MODEL_SYNC.ready){await syncHoldingsCloud(force);await loadDividendAuto(force)}
+  await syncModelTrades(force);
+  if(MODEL_SYNC.ready){await syncHoldingsCloud(force);await loadDividendAuto(force)}
   renderModelTrades();
  }finally{CLOUD_SYNC_ALL_BUSY=false}
 }
@@ -783,34 +776,31 @@ async function syncDirtyModelTrades(){
  dirty.forEach(t=>t._syncDirty=false);modelSyncSaveLocal();
 }
 async function syncModelTrades(force=false){
- if(MODEL_SYNC.busy)return false;MODEL_SYNC.busy=true;
+ if(MODEL_SYNC.busy)return;MODEL_SYNC.busy=true;
  try{
   let d=await modelSyncFetch('/api/model-trades');
   MODEL_SYNC.ready=true;MODEL_SYNC.knownUnlocked=true;MODEL_SYNC.status='ready';MODEL_SYNC.message='Supabase 為正式來源；本機 localStorage 為離線備援。';saveJSON('v124_model_sync_known_unlocked',true);
-  let needRefetch=false;
   if(!d.initialized&&MODEL_TRADES.length){
    MODEL_TRADES.forEach(markModelTradeDirty);modelSyncSaveLocal();
-   await syncDirtyModelTrades();needRefetch=true;
+   await syncDirtyModelTrades();
+   d=await modelSyncFetch('/api/model-trades');
   }else{
-   // 雲端已有資料時，只把「只存在本機」且未被雲端刪除的交易重新排入上傳。
+   // 雲端已有資料時，先把「只存在本機」且未被雲端刪除的交易重新排入上傳，避免跨裝置漏單。
    const cloudIds=new Set((d.trades||[]).map(t=>t.id)),deleted=new Set(d.deletedIds||[]);
    let repaired=0;for(const t of MODEL_TRADES){if(t?.id&&!cloudIds.has(t.id)&&!deleted.has(t.id)&&!t._syncDirty){markModelTradeDirty(t);repaired++}}
    if(repaired)modelSyncSaveLocal();
-   const hadWrites=MODEL_PENDING_DELETES.length>0||MODEL_TRADES.some(t=>t._syncDirty);
-   if(hadWrites){await syncDirtyModelTrades();needRefetch=true}
+   await syncDirtyModelTrades();
+   d=await modelSyncFetch('/api/model-trades');
   }
-  // A clean device now uses the first GET directly instead of doing a second identical Supabase GET every cycle.
-  if(needRefetch)d=await modelSyncFetch('/api/model-trades');
   MODEL_TRADES=(Array.isArray(d.trades)?d.trades:[]).map(t=>({...t,_syncDirty:false}));
   const deleted=new Set(d.deletedIds||[]);MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(id=>!deleted.has(id));
   modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();MODEL_SYNC.status='ready';MODEL_SYNC.message='雲端同步完成；手機／電腦以 trade ID 雙向合併。';renderModelTrades();
-  return true;
  }catch(e){
   if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.knownUnlocked=false;saveJSON('v124_model_sync_known_unlocked',false);MODEL_SYNC.status='locked';MODEL_SYNC.message='這台裝置尚未輸入同步碼。'}
   else if(e.status===503){MODEL_SYNC.ready=false;MODEL_SYNC.status='setup';MODEL_SYNC.message='Render 尚缺 MODEL_SYNC_KEY / Supabase 環境設定。'}
-  else if(MODEL_SYNC.knownUnlocked){MODEL_SYNC.ready=true;MODEL_SYNC.status='degraded';MODEL_SYNC.message='雲端暫時不穩；本機紀錄保留並每60秒自動重試：'+(e.message||'未知錯誤')}
+  else if(MODEL_SYNC.knownUnlocked){MODEL_SYNC.ready=true;MODEL_SYNC.status='degraded';MODEL_SYNC.message='雲端暫時不穩；本機紀錄保留並每15秒自動重試：'+(e.message||'未知錯誤')}
   else{MODEL_SYNC.ready=false;MODEL_SYNC.status='error';MODEL_SYNC.message='雲端暫時連不上，本機紀錄仍保留：'+(e.message||'未知錯誤')}
-  renderModelTrades();return false;
+  renderModelTrades();
  }finally{MODEL_SYNC.busy=false}
 }
 
@@ -850,7 +840,7 @@ function saveModelTrade(){
  const priceVsFirstHighPct=Number.isFinite(firstHigh)&&firstHigh>0?(price/firstHigh-1)*100:null;
  const signalText=x.r.noBuyToday?'今日暫無合理買點':stageText(x.activeStatus,x.activeLayer+1);
  const trade={id:'mt_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),code,name:NAME[code],tradeType,layer,entryAt:new Date().toISOString(),entryDate:dayKey(),entryPrice:price,shares,
-  snapshot:{zones:x.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:x.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),score:x.r.score,chaseRisk:x.r.chaseRisk,chaseWarningThreshold:x.r.chaseWarningThreshold??null,chaseHardThreshold:x.r.chaseHardThreshold??88,chaseCalibrationSource:x.r.chaseCalibration?.source||null,chaseCalibrationLockedDate:x.r.chaseCalibration?.lockedDate||null,chaseCalibrationLockStatus:x.r.chaseCalibration?.lockStatus||null,chaseCalibrationObservations:x.r.chaseCalibration?.observations??null,chaseCalibrationWalkForwardCount:x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0,confirmationVersion:CONFIRM_RULE_VERSION,confirmationRule:LAYER_CONFIRM_RULES[layer?layer-1:0]||null,environmentScore:x.r.environmentScore,health:x.r.health||null,noBuyToday:!!x.r.noBuyToday,modelStatus:x.activeStatus||null,modelStatusText:signalText,priceVsFirstHighPct,night:lastNight?{last:lastNight.last,changePct:lastNight.changePct}:null,overseas:lastOverseas?.quotes?{NASDAQ:lastOverseas.quotes.NASDAQ?.changePct,SOX:lastOverseas.quotes.SOX?.changePct,TSM:lastOverseas.quotes.TSM?.changePct}:null,shadow:(()=>{const sx=shadowStatusFor(code);return sx?{zones:sx.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:sx.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),status:sx.activeStatus,statusText:stageText(sx.activeStatus,sx.activeLayer+1),criticalGate:sx.r?.criticalGate||null,policy:sx.r?.shadowPolicy||null,confirmationVersion:SHADOW_CONFIRM_VERSION,experimentalFactors:sx.r?.experimentalFactors||null}:null})(),version:'V12.4',build:CLIENT_BUILD},
+  snapshot:{zones:x.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:x.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),score:x.r.score,chaseRisk:x.r.chaseRisk,chaseWarningThreshold:x.r.chaseWarningThreshold??null,chaseHardThreshold:x.r.chaseHardThreshold??88,chaseCalibrationSource:x.r.chaseCalibration?.source||null,chaseCalibrationLockedDate:x.r.chaseCalibration?.lockedDate||null,chaseCalibrationLockStatus:x.r.chaseCalibration?.lockStatus||null,chaseCalibrationObservations:x.r.chaseCalibration?.observations??null,chaseCalibrationWalkForwardCount:x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0,confirmationVersion:CONFIRM_RULE_VERSION,confirmationRule:LAYER_CONFIRM_RULES[layer?layer-1:0]||null,environmentScore:x.r.environmentScore,health:x.r.health||null,noBuyToday:!!x.r.noBuyToday,modelStatus:x.activeStatus||null,modelStatusText:signalText,priceVsFirstHighPct,night:lastNight?{last:lastNight.last,changePct:lastNight.changePct}:null,overseas:lastOverseas?.quotes?{NASDAQ:lastOverseas.quotes.NASDAQ?.changePct,SOX:lastOverseas.quotes.SOX?.changePct,TSM:lastOverseas.quotes.TSM?.changePct}:null,shadow:(()=>{const sx=shadowStatusFor(code);return sx?{zones:sx.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:sx.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),status:sx.activeStatus,statusText:stageText(sx.activeStatus,sx.activeLayer+1),criticalGate:sx.r?.criticalGate||null,policy:sx.r?.shadowPolicy||null,confirmationVersion:SHADOW_CONFIRM_VERSION}:null})(),version:'V12.4',build:CLIENT_BUILD},
   exitAt:null,exitPrice:null,perf:null};
  markModelTradeDirty(trade);MODEL_TRADES.push(trade);modelSyncSaveLocal();
  const h=H.find(v=>v.t===code);
@@ -943,29 +933,15 @@ function downloadTradeDiagnostics(){
  const data=performanceDiagnosticPayload(),name=`model-performance-diagnostic-${dayKey()}-${CLIENT_BUILD}.json`,blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
  a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);alert(`績效診斷檔已下載：${name}\n通常會在瀏覽器的「下載」資料夾。`)
 }
-function modelTradeAgeDays(t){const d=new Date(String(t?.entryDate||t?.entryAt||''));return Number.isNaN(d.getTime())?999:Math.floor((Date.now()-d.getTime())/86400000)}
-function modelTradeMatches(t){const f=MODEL_TRADE_FILTER;if(f==='all')return true;if(ETF.includes(f))return t.code===f;if(f==='model')return t.tradeType!=='manual';if(f==='manual')return t.tradeType==='manual';if(/^L[123]$/.test(f))return t.tradeType!=='manual'&&Number(t.layer)===Number(f.slice(1));return true}
-function setModelTradeFilter(v){MODEL_TRADE_FILTER=v;MODEL_TRADE_EXPANDED=null;renderModelTrades()}
-function setModelTradeLimit(v){MODEL_TRADE_LIMIT=v==='all'?'all':Number(v)||10;MODEL_TRADE_EXPANDED=null;renderModelTrades()}
-function toggleModelTradeDetail(id){MODEL_TRADE_EXPANDED=MODEL_TRADE_EXPANDED===id?null:id;renderModelTrades()}
-function modelTradeStatusText(t){const p=t?.perf||{},age=modelTradeAgeDays(t);if(t.exitAt)return'已結束';if(!p.horizon?.[5])return'追蹤中';if(p.reachedLayer3)return'曾到L3';if(p.reachedLayer2)return'曾到L2';if(age<=14)return'近期';return'歷史'}
-function modelTradeCloudText(t){if(t?._syncDirty)return'⏳ 待同步';if(t?._cloudUpdatedAt)return'☁️ 已上雲';if(MODEL_SYNC.status==='degraded'||MODEL_SYNC.knownUnlocked)return'⚠️ 待雲端確認';return'💾 僅本機'}
-function modelTradeDetailHtml(t){const p=t.perf,m=modelNetMetrics(t),ret=m.ret,pnl=m.net,h=p?.horizon||{},manual=t.tradeType==='manual',label=manual?'自主買入':`模型第${t.layer}層`,gap=Number(t.snapshot?.priceVsFirstHighPct),sf=t.snapshot?.shadow?.experimentalFactors||null,shadowExtra=sf?`<br>Shadow快照：量價 ${sf.volume?.usable?sf.volume.score+'/100':'—'}｜籌碼 ${sf.chips?.usable?sf.chips.score+'/100':'—'}｜週線 ${sf.weekly?.usable?sf.weekly.score+'/100':'—'}｜合計影響 ${Number.isFinite(Number(sf.totalEffect))?(Number(sf.totalEffect)>=0?'+':'')+Number(sf.totalEffect).toFixed(1)+'分':'—'}`:'';return`<div class="trade-detail-card"><div class="row"><div><b>${t.code}｜${label}</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}｜${modelTradeCloudText(t)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束淨損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b><small>${Number.isFinite(m.gross)&&Number.isFinite(m.cost)?`毛損益 ${Math.round(m.gross).toLocaleString()}｜估計成本 ${Math.round(m.cost)}元`:''}</small></div><div class="box"><span class="k">5日</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">MAE / MFE</span><b>${Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—'} / ${Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'}</b></div></div><div class="reading">${manual?'<b>交易來源：自主買入（未觸發模型）</b><br>':'進場快照：'}分數 ${t.snapshot?.score??'—'}｜防追高 ${t.snapshot?.chaseRisk??'—'}｜環境 ${fmt(t.snapshot?.environmentScore)}｜歷史 ${p?.officialHistory?'TWSE官方':'備援/建立中'}。${manual?`<br>當下模型：${t.snapshot?.modelStatusText||'未記錄'}${Number.isFinite(gap)?`｜成交價較當時第一買點上緣 ${gap>=0?'+':''}${gap.toFixed(2)}%`:''}`:''}${p?`<br>第2層曾到：${p.reachedLayer2?'是':'否'}｜第3層曾到：${p.reachedLayer3?'是':'否'}｜進場追高：${p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—'}${Number.isFinite(p.benchmarkDeltaCurrentPct)?`<br>相對「同日開盤直接買」：${p.benchmarkDeltaCurrentPct>=0?'+':''}${p.benchmarkDeltaCurrentPct.toFixed(2)} 個百分點`:''}<br><b>診斷：</b>${tradeDiagnosticLabel(t)}`:''}${shadowExtra}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`}
 function renderModelTrades(){
  const open=MODEL_TRADES.filter(t=>!t.exitAt),modelTrades=MODEL_TRADES.filter(t=>t.tradeType!=='manual'),manualTrades=MODEL_TRADES.filter(t=>t.tradeType==='manual');
- const modelMetrics=modelTrades.map(t=>({t,m:modelNetMetrics(t)})),modelRets=modelMetrics.map(x=>x.m.ret).filter(Number.isFinite),manualRets=manualTrades.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),maes=modelTrades.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfes=modelTrades.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),bd=modelTrades.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);
- const allMetrics=MODEL_TRADES.map(modelNetMetrics),allPnls=allMetrics.map(x=>x.net).filter(Number.isFinite),allPnl=allPnls.reduce((sum,x)=>sum+x,0),modelWins=modelRets.filter(x=>x>0).length;
- const shadowSnap=modelTrades.filter(t=>t.snapshot?.shadow?.zones?.[0]&&t.snapshot?.zones?.[0]),shadowShift=shadowSnap.map(t=>{const a=center(t.snapshot.zones[0]),b=center(t.snapshot.shadow.zones[0]);return a>0?(b-a)/a*100:null}).filter(Number.isFinite);
- $('liveTradeSummary').innerHTML=`<div class="box"><span class="k">模型買入</span><b>${modelTrades.length}筆</b><small>${modelRets.length?`獲利 ${modelWins}/${modelRets.length}｜平均 ${pct(mean(modelRets))}`:'尚無完整績效'}</small></div><div class="box"><span class="k">平均 MAE / MFE</span><b>${fmt(mean(maes))}% / ${fmt(mean(mfes))}%</b><small>看進場後最差／最好路徑</small></div><div class="box"><span class="k">vs 同日開盤</span><b class="${cls(mean(bd))}">${bd.length?pct(mean(bd)):'—'}</b><small>平均相對優勢</small></div><div class="box"><span class="k">Shadow 對照</span><b>${shadowSnap.length}筆</b><small>${shadowShift.length?`L1平均位移 ${pct(mean(shadowShift))}`:'等待共時快照'}｜非績效勝負</small></div><div class="box"><span class="k">追蹤中 / 淨損益</span><b>${open.length}筆｜<span class="${cls(allPnl)}">${allPnls.length?Math.round(allPnl).toLocaleString():'—'}</span></b></div>`;
- const layerDiag=performanceDiagnosticPayload().summary.byLayer,oldDiag=document.getElementById('tradeLayerDiagnostic');if(oldDiag)oldDiag.remove();$('liveTradeSummary').insertAdjacentHTML('afterend',`<div id="tradeLayerDiagnostic" class="reading" style="margin:8px 0 12px"><b>分層診斷：</b>L1 ${layerDiag[1].trades}筆｜平均報酬 ${pct(layerDiag[1].avgNetReturnPct)}｜平均MAE ${fmt(layerDiag[1].avgMAEPct)}%｜後續到L2 ${layerDiag[1].reachedNextLayer??0}筆；L2 ${layerDiag[2].trades}筆；L3 ${layerDiag[3].trades}筆。<br><span class="note">正式L1：20秒＋最低反彈＋有效破低容忍帶；量價／籌碼／週線趨勢仍僅進Shadow。</span></div>`);
- const attention=MODEL_TRADES.filter(t=>!t.exitAt&&(modelTradeAgeDays(t)<=14||!t.perf?.horizon?.[5]||t.perf?.reachedLayer2||t.perf?.reachedLayer3)).sort((a,b)=>new Date(b.entryAt)-new Date(a.entryAt)).slice(0,6);
- const attentionHtml=`<div class="trade-section-head"><div><b>目前需要看的交易</b><small>近期14日、未滿5日或曾觸及下一層；最多展開6筆。</small></div></div>${attention.length?`<div class="trade-attention-grid">${attention.map(modelTradeDetailHtml).join('')}</div>`:'<div class="notice">目前沒有需要優先檢視的交易。</div>'}`;
- const filters=[['all','全部'],['0050','0050'],['0056','0056'],['00878','00878'],['00919','00919'],['L1','L1'],['L2','L2'],['L3','L3'],['model','模型買入'],['manual','自主買入']],limits=[[10,'最近10筆'],[30,'最近30筆'],['all','全部']];
- let hist=MODEL_TRADES.slice().sort((a,b)=>new Date(b.entryAt)-new Date(a.entryAt)).filter(modelTradeMatches);if(MODEL_TRADE_LIMIT!=='all')hist=hist.slice(0,MODEL_TRADE_LIMIT);
- const controls=`<div class="trade-history-head"><div><b>歷史交易</b><small>預設只列最近10筆；點任一列才展開完整快照。</small></div><div class="trade-filter-row">${filters.map(([v,l])=>`<button class="trade-filter ${MODEL_TRADE_FILTER===v?'on':''}" onclick="setModelTradeFilter('${v}')">${l}</button>`).join('')}</div><div class="trade-filter-row">${limits.map(([v,l])=>`<button class="trade-filter ${String(MODEL_TRADE_LIMIT)===String(v)?'on':''}" onclick="setModelTradeLimit('${v}')">${l}</button>`).join('')}</div></div>`;
- const rows=hist.map(t=>{const m=modelNetMetrics(t),p=t.perf||{},ret=m.ret,expanded=MODEL_TRADE_EXPANDED===t.id,label=t.tradeType==='manual'?'自主':`L${t.layer||'—'}`;return`<tr class="trade-row ${expanded?'expanded':''}" onclick="toggleModelTradeDetail('${t.id}')"><td>${t.entryDate||'—'}</td><td><b>${t.code}</b></td><td>${label}</td><td>${fmt(t.entryPrice)}</td><td>${Number(t.shares||0).toLocaleString()}</td><td class="${cls(ret)}">${pct(ret)}</td><td>${Number.isFinite(Number(p.maePct))?fmt(p.maePct)+'%':'—'}</td><td>${Number.isFinite(Number(p.mfePct))?fmt(p.mfePct)+'%':'—'}</td><td>${modelTradeStatusText(t)}<br><small>${modelTradeCloudText(t)}</small></td></tr>${expanded?`<tr class="trade-detail-row"><td colspan="9">${modelTradeDetailHtml(t)}</td></tr>`:''}`}).join('');
- const table=hist.length?`<div class="trade-table-wrap"><table class="trade-table"><thead><tr><th>日期</th><th>ETF</th><th>層級</th><th>買價</th><th>股數</th><th>目前報酬</th><th>MAE</th><th>MFE</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="notice">此篩選條件沒有交易紀錄。</div>';
- $('modelTradeList').innerHTML=modelSyncBar()+attentionHtml+controls+table;
+ const modelRets=modelTrades.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),manualRets=manualTrades.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite);
+ const allMetrics=MODEL_TRADES.map(modelNetMetrics),allPnls=allMetrics.map(x=>x.net).filter(Number.isFinite),allPnl=allPnls.reduce((sum,x)=>sum+x,0);
+ const modelWins=modelRets.filter(x=>x>0).length,manualWins=manualRets.filter(x=>x>0).length;
+ $('liveTradeSummary').innerHTML=`<div class="box"><span class="k">模型買入</span><b>${modelTrades.length}筆</b><small>${modelRets.length?`獲利 ${modelWins}/${modelRets.length}｜平均 ${pct(mean(modelRets))}`:'尚無完整績效'}</small></div><div class="box"><span class="k">自主買入</span><b>${manualTrades.length}筆</b><small>${manualRets.length?`獲利 ${manualWins}/${manualRets.length}｜平均 ${pct(mean(manualRets))}`:'尚無完整績效'}</small></div><div class="box"><span class="k">全部追蹤中</span><b>${open.length}筆</b></div><div class="box"><span class="k">全部合計淨損益</span><b class="${cls(allPnl)}">${allPnls.length?Math.round(allPnl).toLocaleString():'—'}</b></div><div class="box"><span class="k">績效分類</span><b>分開統計</b><small>自主買入不污染模型績效</small></div>`;
+ const layerDiag=performanceDiagnosticPayload().summary.byLayer;
+ const oldDiag=document.getElementById('tradeLayerDiagnostic');if(oldDiag)oldDiag.remove();$('liveTradeSummary').insertAdjacentHTML('afterend',`<div id="tradeLayerDiagnostic" class="reading" style="margin:8px 0 12px"><b>分層診斷：</b>L1 ${layerDiag[1].trades}筆｜平均MAE ${fmt(layerDiag[1].avgMAEPct)}%｜後續到L2 ${layerDiag[1].reachedNextLayer??0}筆；L2 ${layerDiag[2].trades}筆｜平均MAE ${fmt(layerDiag[2].avgMAEPct)}%；L3 ${layerDiag[3].trades}筆。<br><span class="note">確認規則：L1需20秒＋最低反彈幅度＋有效破低容忍帶＋分數≥50；不再用連續3筆觀測，避免正常tick雜訊反覆洗掉確認；確認後鎖定快照並給ATR自適應執行帶；L2深回檔≥46；L3極端回檔≥42；Gate只暫停執行，不刪除已確認快照。</span></div>`);
+ $('modelTradeList').innerHTML=modelSyncBar()+(MODEL_TRADES.length?MODEL_TRADES.slice().reverse().map(t=>{const p=t.perf,m=modelNetMetrics(t),ret=m.ret,pnl=m.net,h=p?.horizon||{},manual=t.tradeType==='manual',label=manual?'自主買入':`模型第${t.layer}層`,gap=Number(t.snapshot?.priceVsFirstHighPct);return`<div class="card"><div class="row"><div><b>${t.code}｜${label}</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束淨損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b><small>${Number.isFinite(m.gross)&&Number.isFinite(m.cost)?`毛損益 ${Math.round(m.gross).toLocaleString()}｜估計成本 ${Math.round(m.cost)}元`:''}</small></div><div class="box"><span class="k">5日</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">MAE / MFE</span><b>${Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—'} / ${Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'}</b></div></div><div class="reading">${manual?'<b>交易來源：自主買入（未觸發模型）</b><br>':'進場快照：'}分數 ${t.snapshot.score}｜防追高 ${t.snapshot.chaseRisk}｜環境 ${fmt(t.snapshot.environmentScore)}｜歷史 ${p?.officialHistory?'TWSE官方':'備援/建立中'}。${manual?`<br>當下模型：${t.snapshot?.modelStatusText||'未記錄'}${Number.isFinite(gap)?`｜成交價較當時第一買點上緣 ${gap>=0?'+':''}${gap.toFixed(2)}%`:''}`:''}${p?`<br>第2層曾到：${p.reachedLayer2?'是':'否'}｜第3層曾到：${p.reachedLayer3?'是':'否'}｜進場追高：${p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—'}${Number.isFinite(p.benchmarkDeltaCurrentPct)?`<br>相對「同日開盤直接買」：${p.benchmarkDeltaCurrentPct>=0?'+':''}${p.benchmarkDeltaCurrentPct.toFixed(2)} 個百分點`:''}<br><b>診斷：</b>${tradeDiagnosticLabel(t)}`:''}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`}).join(''):'<div class="notice">尚無實戰紀錄。可在ETF買點旁選「記錄模型買入」或「記錄自主買入」。</div>')
 }
 async function loadHistoryStatus(){
  try{
