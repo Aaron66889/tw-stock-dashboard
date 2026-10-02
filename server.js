@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.93-LIVE-CONSTITUENTS-FAST';
+const BUILD='16.8.94-COMPACT-TRADES-DIVIDEND-ANNOUNCEMENT';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -1363,6 +1363,36 @@ async function twseDividendEvents(code){
    events=[...new Map([...events,...yearly.flat()].map(x=>[x.date,x])).values()].sort((a,b)=>a.date.localeCompare(b.date));
   }
   return{ok:events.length>0,complete:events.length>=DIV_MIN[code],events,expectedMin:DIV_MIN[code],source:'TWSE ETF e添富',errors:errors.slice(0,6)};
+ });
+}
+
+function rocSlashDate(s){
+ const m=String(s||'').match(/(\d{3})[\/年](\d{1,2})[\/月](\d{1,2})(?:日)?/);return m?rocDividendDate(m[1],m[2],m[3]):null;
+}
+function parseTwseDistributionAnnouncement(code,html,url=null){
+ const text=stripTags(html).replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();
+ const est=text.match(/每受益權單位預估配發金額為新臺幣\s*([0-9]+(?:\.[0-9]+)?)\s*元/i);
+ const actual=text.match(/每受益權單位(?:之)?實際配發金額(?:為)?新臺幣?\s*([0-9]+(?:\.[0-9]+)?)\s*元/i);
+ const amount=n((est||actual||[])[1]);if(!(amount>0))return null;
+ const pick=label=>{const re=new RegExp(label+'[:：]?\\s*(\\d{3}[\\/年]\\d{1,2}[\\/月]\\d{1,2}(?:日)?)');const m=text.match(re);return m?rocSlashDate(m[1]):null};
+ const exDate=pick('除息交易日'),recordDate=pick('收益分配基準日'),payDate=pick('收益分配發放日'),confirmDate=pick('現金收益公布日期');
+ if(!exDate||!payDate)return null;
+ const ad=text.match(/(?:^|\s)(20\d{2})[.\/-](\d{2})[.\/-](\d{2})(?:\s|$)/),announcementDate=ad?`${ad[1]}-${ad[2]}-${ad[3]}`:null;
+ return{code,amount,estimated:!!est,status:est?'estimated':'actual',announcementDate,confirmDate,exDate,recordDate,payDate,source:est?'TWSE ETF e添富收益分配預估公告':'TWSE ETF e添富收益分配正式公告',url};
+}
+async function twseDistributionAnnouncementMap(){
+ return cached('div:announcement:r1',10*60*1000,async()=>{
+  const out=Object.fromEntries(ETF.map(c=>[c,null])),errors=[];let html='';
+  const pages=await Promise.all([0,10,20,30,40].map(async offset=>{try{return await getText(`https://www.twse.com.tw/zh/ETFortune/announcementList?max=10&offset=${offset}&type=distribution`)}catch(e){errors.push('list'+offset+':'+e.message);return''}}));html=pages.join('\n');
+  if(!html.trim())return{ok:false,byCode:out,errors,source:'TWSE ETF e添富收益分配公告'};
+  const hrefs=[...html.matchAll(/href\s*=\s*["']([^"']*announcement\?[^"']+)["']/gi)].map(m=>htmlEntities(m[1])).map(h=>{try{return new URL(h,'https://www.twse.com.tw').toString()}catch{return null}}).filter(Boolean);
+  await Promise.all(ETF.map(async code=>{
+   const links=[...new Set(hrefs.filter(h=>{try{return new URL(h).searchParams.get('fund')===code}catch{return false}}))].slice(0,4);
+   for(const link of links){
+    try{const ev=parseTwseDistributionAnnouncement(code,await getText(link),link);if(ev&&ev.exDate>=ymdTaipei()){out[code]=ev;break}}catch(e){errors.push(code+':'+e.message)}
+   }
+  }));
+  return{ok:Object.values(out).some(Boolean),byCode:out,errors:errors.slice(0,8),source:'TWSE ETF e添富收益分配公告'};
  });
 }
 
@@ -2721,8 +2751,8 @@ async function dividendAutoReport(){
  }
  // One migrated entitlement that occurred before the automatic snapshot start but pays after it.
  for(const [key,v] of Object.entries(DIVIDEND_BOOTSTRAP_LOCKS)){const cur=state.locked[key];const needsCorrection=!cur||Number(cur.shares)!==Number(v.shares)||Number(cur.cash)!==Number(v.cash)||Number(cur.amount)!==Number(v.amount)||String(cur.payDate||'')!==String(v.payDate||'');if(needsCorrection){state.locked[key]={...v,key,lockedAt:cur?.lockedAt||new Date().toISOString(),correctedAt:new Date().toISOString(),snapshotDay:'migration'};dirty=true}}
- const fetched=await Promise.all(ETF.map(async code=>{try{return[code,await twseDividendEvents(code)]}catch(e){return[code,{ok:false,events:[],errors:[e.message],source:'TWSE ETF e添富'}]}}));
- const sourceByCode=Object.fromEntries(fetched),allEvents={};
+ const [fetched,announcementReport]=await Promise.all([Promise.all(ETF.map(async code=>{try{return[code,await twseDividendEvents(code)]}catch(e){return[code,{ok:false,events:[],errors:[e.message],source:'TWSE ETF e添富'}]}})),twseDistributionAnnouncementMap().catch(e=>({ok:false,byCode:{},errors:[e.message],source:'TWSE ETF e添富收益分配公告'}))]);
+ const sourceByCode=Object.fromEntries(fetched),announcementByCode=announcementReport?.byCode||{},allEvents={};
  for(const [code,d] of fetched){
   const events=(d?.events||[]).map(e=>({...e,code,exDate:e.exDate||e.date})).filter(e=>e.exDate&&e.payDate&&Number(e.amount)>0).sort((a,b)=>a.exDate.localeCompare(b.exDate));
   allEvents[code]=events;
@@ -2743,10 +2773,12 @@ async function dividendAutoReport(){
   const paidLocks=locks.filter(x=>x.payDate&&x.payDate<=today),pendingLocks=locks.filter(x=>x.exDate<=today&&x.payDate>today);
   const autoPaid=paidLocks.reduce((sum,x)=>sum+(Number(x.cash)||0),0),pending=pendingLocks.reduce((sum,x)=>sum+(Number(x.cash)||0),0),received=(Number(DIVIDEND_BASE[code])||0)+autoPaid;
   const upcoming=(allEvents[code]||[]).filter(e=>e.exDate>today).map(e=>{const shares=Math.max(0,Number(currentHoldings?.[code])||0);return{...e,sharesEstimate:shares,cashEstimate:Math.max(0,Math.round(shares*Number(e.amount)))}})[0]||null;
+  const ann=announcementByCode[code]||null,sharesEstimate=Math.max(0,Number(currentHoldings?.[code])||0);
+  const estimatedUpcoming=ann&&ann.exDate>=today&&(!upcoming||upcoming.exDate!==ann.exDate)?{...ann,sharesEstimate,cashEstimate:Math.max(0,Math.round(sharesEstimate*Number(ann.amount)))}:null;
   const nextPending=pendingLocks[0]||null,lastPaid=paidLocks.at(-1)||null;
-  byCode[code]={code,base:Number(DIVIDEND_BASE[code])||0,baseAsOf:DIVIDEND_BASE_ASOF,autoPaid,received,pending,nextPending,lastPaid,upcoming,locks:locks.slice(-12),snapshotDay:latestSnap?.day||null,source:sourceByCode[code]?.source||'TWSE ETF e添富',sourceOk:!!sourceByCode[code]?.ok,sourceErrors:sourceByCode[code]?.errors||[]};
+  byCode[code]={code,base:Number(DIVIDEND_BASE[code])||0,baseAsOf:DIVIDEND_BASE_ASOF,autoPaid,received,pending,nextPending,lastPaid,upcoming,estimatedUpcoming,locks:locks.slice(-12),snapshotDay:latestSnap?.day||null,source:sourceByCode[code]?.source||'TWSE ETF e添富',sourceOk:!!sourceByCode[code]?.ok,sourceErrors:[...(sourceByCode[code]?.errors||[]),...(announcementReport?.errors||[])].slice(0,8),version:'div-auto-v2'};
  }
- return{ok:true,build:BUILD,version:'div-auto-v1',automatic:true,startDate:DIVIDEND_AUTO_START,baseAsOf:DIVIDEND_BASE_ASOF,today,snapshotDay:latestSnap?.day||null,byCode,source:'TWSE ETF e添富配息清單＋雲端持股日快照',updatedAt:state.updatedAt||cloud.updatedAt||null,fetchedAt:new Date().toISOString()};
+ return{ok:true,build:BUILD,version:'div-auto-v2-announcement',automatic:true,startDate:DIVIDEND_AUTO_START,baseAsOf:DIVIDEND_BASE_ASOF,today,snapshotDay:latestSnap?.day||null,byCode,source:'TWSE ETF e添富配息清單＋收益分配公告＋雲端持股日快照',announcementSource:announcementReport?.source||null,updatedAt:state.updatedAt||cloud.updatedAt||null,fetchedAt:new Date().toISOString()};
 }
 async function cloudUpsertHoldings(holdings){
  if(!Array.isArray(holdings)||holdings.length>100)throw Error('invalid holdings');
