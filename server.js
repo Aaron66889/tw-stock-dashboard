@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.95-TREND-ENTRY-PAGE';
+const BUILD='16.8.96-TREND-ENTRY-TRADE-TRACKING';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -2312,7 +2312,7 @@ function trendBacktest(rows){
   const r5=(c[i+5]/c[i]-1)*100,r20=(c[i+20]/c[i]-1)*100,mae20=(Math.min(...l.slice(i+1,i+21))/c[i]-1)*100;
   sig.push({r5,r20,mae20});lastSignal=i;
  }
- return{signals:sig.length,avg5:mean(sig.map(x=>x.r5)),avg20:mean(sig.map(x=>x.r20)),win20:sig.length?sig.filter(x=>x.r20>0).length/sig.length*100:null,avgMAE20:mean(sig.map(x=>x.mae20)),note:'價格核心：20日突破＋20>60>120日線＋20日線上彎＋不超過0.60 ATR；訊號間隔10交易日'};
+ return{signals:sig.length,startDate:a[260]?.date||a[0]?.date||null,endDate:a[Math.max(260,a.length-22)]?.date||a.at(-1)?.date||null,avg5:mean(sig.map(x=>x.r5)),avg20:mean(sig.map(x=>x.r20)),win20:sig.length?sig.filter(x=>x.r20>0).length/sig.length*100:null,avgMAE20:mean(sig.map(x=>x.mae20)),note:'價格核心：20日突破＋20>60>120日線＋20日線上彎＋不超過0.60 ATR；訊號間隔10交易日'};
 }
 function trendEntryOne(code,q,hist){
  const rows=adjustedRows(hist?.rows||[]),today=ymdTaipei();if(rows.length<260)return{code,name:META[code].name,ok:false,error:'歷史樣本不足',historyDays:rows.length};
