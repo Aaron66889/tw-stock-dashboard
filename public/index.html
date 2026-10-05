@@ -2,7 +2,7 @@
 <html lang="zh-Hant"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#111827"><link rel="manifest" href="/manifest.json"><link rel="icon" href="/icon.svg">
-<link rel="stylesheet" href="/styles.css?v=R3.74"><title>台股戰情16.8</title>
+<link rel="stylesheet" href="/styles.css?v=R3.75"><title>台股戰情16.8</title>
 <style>
 .buybox.layer-touched{border-color:#d9942f!important;background:rgba(217,148,47,.16)!important}
 .buybox.layer-touched .k,.buybox.layer-touched b{color:#f4b44f!important}
@@ -27,9 +27,9 @@
 @keyframes priceFlashDown{0%,55%{color:#39c987!important;text-shadow:0 0 9px rgba(57,201,135,.4)}100%{color:inherit;text-shadow:none}}
 </style>
 </head><body><main>
-<div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.74</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
+<div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.75</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
 <nav class="topnav">
-<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
+<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF合理買點</button><button class="navb" data-page="trendBuyPage">ETF漲價買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
 </nav>
 
 <div id="home" class="page on">
@@ -59,7 +59,13 @@
 </div>
 
 <div id="buy" class="page">
-<section class="card"><div class="sectiontitle">四檔ETF動態買點</div><div class="reading">價格約10秒更新；正式模型約30秒重算。R3.42正式買點保留；Shadow新模型同步比較但不影響正式買進訊號。</div></section><div id="buyCards"></div>
+<section class="card"><div class="sectiontitle">四檔ETF合理買點</div><div class="reading">回檔型正式模型：第一／理想／強力三層，等待價格回到合理區並完成確認。價格約10秒更新；正式模型約30秒重算。</div></section><div id="buyCards"></div>
+</div>
+
+<div id="trendBuyPage" class="page">
+<section class="card"><div class="row"><div><div class="sectiontitle">四檔ETF漲價買點｜順勢／突破回踩</div><div class="note">獨立於「ETF合理買點」的順勢模型。只找上升趨勢中的突破或回踩機會；不改動原三層買點、Gate 與正式模型紀錄。</div></div><button class="btn primary" onclick="loadTrendBuy(true)">重新整理</button></div><div id="trendBuySummary" class="reading">順勢模型載入中。</div></section>
+<div id="trendBuyCards"></div>
+<section class="card"><div class="sectiontitle">這一頁怎麼看</div><div class="reading"><b>順勢買點不是追高。</b>模型會檢查日線均線結構、週線方向、20日／55日突破、ATR 距離與過熱程度；只有價格仍在「可接受執行帶」內才會顯示可小額。若漲得太遠則顯示不追價。此頁先獨立驗證，不影響既有合理買點。</div></section>
 </div>
 
 
@@ -114,7 +120,7 @@
 <div class="askrow"><input id="question" placeholder="例如：00878三層買點？"><button class="btn primary" onclick="sendAsk()">送出</button></div></section>
 </div>
 
-<footer>V12.4 FINAL R3.74｜紅＝漲、綠＝跌。公開行情與模型僅供資訊整理；模型不保證最低點或獲利。完整成分健康只有在來源回傳足夠覆蓋時才納入，資料不足時寧可停用，不拿前幾大成分冒充全部。</footer>
+<footer>V12.4 FINAL R3.75｜紅＝漲、綠＝跌。公開行情與模型僅供資訊整理；模型不保證最低點或獲利。完整成分健康只有在來源回傳足夠覆蓋時才納入，資料不足時寧可停用，不拿前幾大成分冒充全部。</footer>
 </main>
 
 <div id="holdingModal" class="modal" onclick="if(event.target===this)closeHolding()"><div class="sheet"><div class="row"><div class="sectiontitle" id="holdingTitle">新增持股</div><button class="btn" onclick="closeHolding()">關閉</button></div><input id="editHoldingId" type="hidden">
@@ -129,4 +135,4 @@
 <div class="field" id="mtLayerField"><label>依模型哪一層買入</label><select id="mtLayer" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px"><option value="1">第一層</option><option value="2">第二／理想層</option><option value="3">第三／強力層</option></select></div>
 <div id="mtSnapshot" class="reading"></div><button id="mtSaveBtn" class="btn primary" style="width:100%;margin-top:12px" onclick="saveModelTrade()">保存這筆模型實戰</button></div></div>
 
-<script src="/app.js?v=R3.74"></script></body></html>
+<script src="/app.js?v=R3.75"></script></body></html>
