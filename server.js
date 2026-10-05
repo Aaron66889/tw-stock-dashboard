@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.94-COMPACT-TRADES-DIVIDEND-ANNOUNCEMENT';
+const BUILD='16.8.95-TREND-ENTRY-PAGE';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -2294,6 +2294,69 @@ async function buyModel(){
  return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'},shadowData:{yahooChips:Object.fromEntries(ETF.map(c=>[c,{ok:!!yc[c]?.ok,days:yc[c]?.days||0,asOf:yc[c]?.asOf||null,reason:yc[c]?.reason||null}])),volumeWindows:Object.fromEntries(ETF.map(c=>[c,{ok:!!vh[c]?.ok,days:vh[c]?.days||0,asOf:vh[c]?.asOf||null,reason:vh[c]?.reason||null}])),liveVolumes:etfLd?.volumeStatus||Object.fromEntries(ETF.map(c=>[c,{ok:Number(etfLd?.quotes?.[c]?.volume)>0,volume:Number(etfLd?.quotes?.[c]?.volume)||null,source:etfLd?.quotes?.[c]?.volumeSource||null}]))}};
 }
 
+
+/* ---------- Trend-entry / rising-price buy model (independent from the pullback model) ---------- */
+function avgLast(a,k){const x=a.slice(-k).filter(Number.isFinite);return x.length===k?x.reduce((s,v)=>s+v,0)/k:null}
+function weekStartKey(date){const d=new Date(String(date)+'T00:00:00Z');if(Number.isNaN(d.getTime()))return String(date);const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)}
+function weeklySeries(rows,scale=1){const m=new Map();for(const r of rows){if(!r?.date||!(r.aClose>0))continue;m.set(weekStartKey(r.date),{date:r.date,close:r.aClose*scale})}return[...m.values()].sort((a,b)=>a.date.localeCompare(b.date))}
+function trendBacktest(rows){
+ const a=adjustedRows(rows);if(a.length<300)return{signals:0,avg5:null,avg20:null,win20:null,avgMAE20:null,note:'歷史樣本不足'};
+ const last=a.at(-1),scale=last?.close>0&&last?.aClose>0?last.close/last.aClose:1,c=a.map(x=>x.aClose*scale),h=a.map(x=>(x.aHigh??x.aClose)*scale),l=a.map(x=>(x.aLow??x.aClose)*scale),tr=[0];
+ for(let i=1;i<a.length;i++)tr[i]=Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1]));
+ const sig=[];let lastSignal=-99;
+ for(let i=260;i<a.length-21;i++){
+  if(i-lastSignal<10)continue;
+  const sma20=c.slice(i-19,i+1).reduce((s,v)=>s+v,0)/20,sma60=c.slice(i-59,i+1).reduce((s,v)=>s+v,0)/60,sma120=c.slice(i-119,i+1).reduce((s,v)=>s+v,0)/120;
+  const prior20=c.slice(i-29,i-9).reduce((s,v)=>s+v,0)/20,atr=tr.slice(i-13,i+1).reduce((s,v)=>s+v,0)/14,br=Math.max(...h.slice(i-20,i));
+  if(!(atr>0&&sma20>sma60&&sma60>sma120&&sma20>prior20&&c[i]>=br&&c[i]<=br+.60*atr))continue;
+  const r5=(c[i+5]/c[i]-1)*100,r20=(c[i+20]/c[i]-1)*100,mae20=(Math.min(...l.slice(i+1,i+21))/c[i]-1)*100;
+  sig.push({r5,r20,mae20});lastSignal=i;
+ }
+ return{signals:sig.length,avg5:mean(sig.map(x=>x.r5)),avg20:mean(sig.map(x=>x.r20)),win20:sig.length?sig.filter(x=>x.r20>0).length/sig.length*100:null,avgMAE20:mean(sig.map(x=>x.mae20)),note:'價格核心：20日突破＋20>60>120日線＋20日線上彎＋不超過0.60 ATR；訊號間隔10交易日'};
+}
+function trendEntryOne(code,q,hist){
+ const rows=adjustedRows(hist?.rows||[]),today=ymdTaipei();if(rows.length<260)return{code,name:META[code].name,ok:false,error:'歷史樣本不足',historyDays:rows.length};
+ const latest=rows.at(-1),scale=latest?.close>0&&latest?.aClose>0?latest.close/latest.aClose:1,base=(latest?.date===today?rows.slice(0,-1):rows);if(base.length<260)return{code,name:META[code].name,ok:false,error:'有效歷史樣本不足'};
+ const close=base.map(x=>x.aClose*scale),high=base.map(x=>(x.aHigh??x.aClose)*scale),low=base.map(x=>(x.aLow??x.aClose)*scale),tr=[];
+ for(let i=1;i<base.length;i++)tr.push(Math.max(high[i]-low[i],Math.abs(high[i]-close[i-1]),Math.abs(low[i]-close[i-1])));
+ const px=Number(q?.last)||close.at(-1),s20=avgLast(close,20),s60=avgLast(close,60),s120=avgLast(close,120),s250=avgLast(close,250),atr=avgLast(tr,14),s20prev=base.length>=30?base.slice(0,-10).map(x=>x.aClose*scale).slice(-20).reduce((s,v)=>s+v,0)/20:null;
+ const br20=Math.max(...high.slice(-20)),br55=Math.max(...high.slice(-55)),p20=close.at(-21),p60=close.at(-61),mom20=p20>0?(px/p20-1)*100:null,mom60=p60>0?(px/p60-1)*100:null;
+ const wk=weeklySeries(base,scale),wc=wk.map(x=>x.close),w20=avgLast(wc,20),w40=avgLast(wc,40),w20prev=wc.length>=24?avgLast(wc.slice(0,-4),20):null;
+ const distBreakAtr=atr>0?(px-br20)/atr:null,distSma20Atr=atr>0?(px-s20)/atr:null;
+ let score=40;const parts=[];const add=(label,v)=>{score+=v;parts.push({label,value:v})};
+ if(s20>s60)add('20日>60日',10);else add('20日≤60日',-8);
+ if(s60>s120)add('60日>120日',7);else add('60日≤120日',-6);
+ if(s120&&s250){if(s120>s250)add('120日>250日',5);else add('120日≤250日',-4)}
+ if(s20prev){if(s20>s20prev)add('20日線上彎',6);else add('20日線未上彎',-6)}
+ if(w20&&w40){if(w20>w40)add('20週>40週',8);else add('20週≤40週',-8)}
+ if(w20prev){if(w20>w20prev)add('20週線上彎',5);else add('20週線未上彎',-5)}
+ if(Number.isFinite(mom20)){if(mom20>0)add('20日動能正',5);else add('20日動能負',-5)}
+ if(Number.isFinite(mom60)){if(mom60>0)add('60日動能正',4);else add('60日動能負',-4)}
+ if(px>=br20)add('站上20日突破位',10);else if(atr>0&&px>=br20-.25*atr)add('接近20日突破位',4);
+ if(px>=br55)add('站上55日突破位',5);
+ if(Number.isFinite(distBreakAtr)){if(distBreakAtr>1.2)add('突破後過熱',-20);else if(distBreakAtr>.75)add('追價偏高',-12);else if(distBreakAtr>.45)add('距突破稍遠',-5)}
+ if(Number.isFinite(distSma20Atr)&&distSma20Atr>2)add('遠離20日線',-8);
+ score=Math.round(clamp(score,0,100));
+ const entryLow=atr>0?br20-.10*atr:br20,entryHigh=atr>0?br20+.30*atr:br20,maxChase=atr>0?br20+.60*atr:br20,brokeToday=Number(q?.high)>=br20;
+ let status='WAIT',statusText='等待突破',action='等待';
+ if(score<58){status='WEAK';statusText='趨勢不足';action='不追價，等待趨勢改善'}
+ else if(px>maxChase){status='NO_CHASE';statusText='漲太遠／不追';action='等待回踩突破區'}
+ else if((px>=br20&&px<=entryHigh)||(brokeToday&&px>=entryLow&&px<=entryHigh)){
+   status='TREND_BUY';statusText=brokeToday&&px<br20?'突破後回踩／可小額':'順勢買點成立／可小額';action=score>=75?'可用約0.5倍第一層部位':'可用約0.25倍第一層部位';
+ }else if(px<br20){status='WAIT_BREAKOUT';statusText='等待有效突破';action='突破20日高點後再評估'}
+ else{status='WAIT_RETEST';statusText='突破成立／等待回踩';action='不追目前價格，等回到執行帶'}
+ const bt=trendBacktest(hist?.rows||[]);
+ return{ok:true,code,name:META[code].name,price:px,prevClose:Number(q?.effectivePrevClose||q?.prevClose)||null,changePct:Number(q?.effectivePrevClose||q?.prevClose)>0?(px/Number(q?.effectivePrevClose||q?.prevClose)-1)*100:null,score,status,statusText,action,levels:{breakout20:br20,breakout55:br55,entryLow,entryHigh,maxChase},trend:{sma20:s20,sma60:s60,sma120:s120,sma250:s250,weekly20:w20,weekly40:w40,momentum20:mom20,momentum60:mom60,atr,distBreakAtr,distSma20Atr,brokeToday},parts,backtest:bt,historySource:hist?.source||null,historyOfficial:!!hist?.validation?.fullHistoryPass,historyDays:hist?.rows?.length||0};
+}
+async function trendEntryModel(){
+ let quotes=null,quoteSource='';const bm=RUNTIME.bm,age=bm?.fetchedAt?Date.now()-Date.parse(bm.fetchedAt):Infinity;
+ if(age<120000&&ETF.every(c=>Number(bm?.quotes?.[c]?.last)>0)){quotes=bm.quotes;quoteSource='buy-model cache'}
+ if(!quotes){const qd=await deadline(liveEtf4().catch(()=>null),8500,null);quotes=qd?.quotes||{};quoteSource=qd?.source||'ETF live'}
+ const harr=await Promise.all(ETF.map(async c=>[c,await deadline(etfHistory(c).catch(e=>({ok:false,rows:[],source:'history error',validation:{fullHistoryPass:false},error:e.message})),7000,{ok:false,rows:[],source:'history timeout',validation:{fullHistoryPass:false}})]));
+ const hs=Object.fromEntries(harr),models={};for(const c of ETF){try{models[c]=trendEntryOne(c,quotes?.[c],hs[c])}catch(e){models[c]={ok:false,code:c,name:META[c].name,error:e.message}}}
+ return{ok:true,build:BUILD,source:'獨立順勢／突破回踩模型',quoteSource,fetchedAt:new Date().toISOString(),models};
+}
+
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
 function prefix(a){const p=[0];for(const x of a)p.push(p.at(-1)+(Number.isFinite(x)?x:0));return p}
 function avgP(p,i,k){return i+1>=k?(p[i+1]-p[i+1-k])/k:null}
@@ -2980,6 +3043,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/overseas')return safeApi(res,'overseas',()=>cached('ovs',45000,overseas));
  if(u.pathname==='/api/night-future')return safeApi(res,'night-future',()=>nightFuture());
  if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(cached('buymodel',8000,buyModel),9500,null);return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'模型外部資料逾時；不阻塞頁面，30秒後自動重試',fetchedAt:new Date().toISOString()}});
+ if(u.pathname==='/api/trend-entry')return safeApi(res,'trend-entry',()=>cached('trend-entry',30000,trendEntryModel));
  if(u.pathname==='/api/etf-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'etf-history',()=>ETF.includes(code)?etfHistory(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituent-dashboard'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'constituent-dashboard',()=>ETF.includes(code)?constituentDashboard(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituents'){const code=u.searchParams.get('code')||'0050',date=u.searchParams.get('date')||null;return safeApi(res,'constituents',()=>ETF.includes(code)?constituents(code,date):Promise.resolve({ok:false,error:'unsupported code'}))}
