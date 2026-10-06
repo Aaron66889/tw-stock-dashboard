@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.97-ETF-TREND-ADD-V2';
+const BUILD='16.8.98-ETF-TRADE-TOTAL-RETURN';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -2613,9 +2613,29 @@ function autoWarmAllHistory(){
 }
 
 
+function tradeActualField(row,field){
+ const rawKey={open:'rawOpen',high:'rawHigh',low:'rawLow',close:'rawClose'}[field];
+ const raw=rawKey?Number(row?.[rawKey]):NaN,base=Number(row?.[field]);
+ return Number.isFinite(raw)&&raw>0?raw:(Number.isFinite(base)&&base>0?base:null);
+}
+function tradeDividendEventsFromReport(code,d){
+ const out=(d?.events||[]).map(e=>({code,exDate:String(e?.exDate||e?.date||''),payDate:e?.payDate?String(e.payDate):null,amount:Number(e?.amount)||0,source:e?.source||d?.source||'TWSE ETF e添富'})).filter(e=>/^\d{4}-\d{2}-\d{2}$/.test(e.exDate)&&e.amount>0);
+ // Keep the one entitlement that predates the automatic snapshot system as a source fallback.
+ for(const v of Object.values(DIVIDEND_BOOTSTRAP_LOCKS||{}))if(v?.code===code&&v?.exDate&&Number(v?.amount)>0&&!out.some(e=>e.exDate===v.exDate))out.push({code,exDate:String(v.exDate),payDate:v.payDate?String(v.payDate):null,amount:Number(v.amount),source:v.source||'migration fallback'});
+ return out.sort((a,b)=>a.exDate.localeCompare(b.exDate));
+}
+function tradeDividendPerShare(events,entryDate,throughDate){
+ return (events||[]).reduce((sum,e)=>sum+(e.exDate>entryDate&&e.exDate<=throughDate?(Number(e.amount)||0):0),0);
+}
+function tradeEligibleDividends(events,entryDate,throughDate){return(events||[]).filter(e=>e.exDate>entryDate&&e.exDate<=throughDate)}
+
 async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3Low=null,layer1High=null){
  if(!ETF.includes(code)||!(Number(entryPrice)>0)||!/^\d{4}-\d{2}-\d{2}$/.test(entryDate||''))return{ok:false,error:'invalid trade parameters'};
- const ep=Number(entryPrice);
+ const ep=Number(entryPrice),today=ymdTaipei();
+ // Trade-performance only: use cash-entitlement total return. This does NOT touch buy zones, Gate, confirmations or quote logic.
+ let divReport=null,dividendError=null;
+ try{divReport=await deadline(twseDividendEvents(code),6500,null)}catch(e){dividendError=e.message||String(e)}
+ const dividendEvents=tradeDividendEventsFromReport(code,divReport),dividendDataComplete=!!divReport?.complete;
  // 16.8.38：模型實戰的「目前價」必須直接讀四檔ETF即時來源。
  // RUNTIME.live 是大盤/台積電環境，不是 ETF quote owner，不能拿它算 0050/0056/00878/00919 損益。
  let livePx=null,liveSource=null;
@@ -2626,27 +2646,55 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
  }catch(_){}
  let h;try{h=await etfHistory(code)}catch(e){h={rows:[],source:'history unavailable',validation:{fullHistoryPass:false},error:e.message}}
  const rows=adjustedRows(h.rows||[]).filter(x=>x.date>=entryDate);
- const histPx=Number(rows.at(-1)?.close);
+ const histPx=tradeActualField(rows.at(-1),'close');
  const current=Number.isFinite(livePx)&&livePx>0?livePx:(Number.isFinite(histPx)&&histPx>0?histPx:null);
+ const currentDividendPerShare=tradeDividendPerShare(dividendEvents,entryDate,today),eligibleDividends=tradeEligibleDividends(dividendEvents,entryDate,today);
+ const currentPriceReturnPct=Number.isFinite(current)?(current/ep-1)*100:null;
+ const currentTotalReturnPct=Number.isFinite(current)?((current+currentDividendPerShare)/ep-1)*100:null;
  const immediate={
   currentPrice:current,
-  currentReturnPct:Number.isFinite(current)?(current/ep-1)*100:null,
-  currentPnLPerShare:Number.isFinite(current)?current-ep:null,
+  currentPriceReturnPct,
+  currentTotalReturnPct,
+  // Backward-compatible fields now intentionally mean economic total return (price + entitled cash distributions).
+  currentReturnPct:currentTotalReturnPct,
+  currentPricePnLPerShare:Number.isFinite(current)?current-ep:null,
+  currentPnLPerShare:Number.isFinite(current)?current+currentDividendPerShare-ep:null,
+  accruedDividendPerShare:currentDividendPerShare,
+  eligibleDividends,
+  dividendDataComplete,
+  dividendSource:divReport?.source||'TWSE ETF e添富',
+  dividendError:dividendError||(divReport?.errors||[])[0]||null,
+  returnBasis:'cash-entitlement-total-return-v1',
   currentPriceSource:Number.isFinite(livePx)&&livePx>0?liveSource:(Number.isFinite(histPx)&&histPx>0?'daily history fallback':null)
  };
- if(!rows.length)return{ok:true,status:'TRACKING',code,entryDate,entryPrice:ep,...immediate,horizon:{5:null,20:null,60:null},benchmark:{entryMode:'same-day-open',entryPrice:null,currentReturnPct:null,horizon:{5:null,20:null,60:null}},maePct:null,mfePct:null,maeDate:null,mfeDate:null,
+ if(!rows.length)return{ok:true,status:'TRACKING',code,entryDate,entryPrice:ep,...immediate,horizon:{5:null,20:null,60:null},benchmark:{entryMode:'same-day-open',entryPrice:null,currentReturnPct:null,currentPriceReturnPct:null,horizon:{5:null,20:null,60:null}},maePct:null,mfePct:null,priceMaePct:null,priceMfePct:null,maeDate:null,mfeDate:null,
   reachedLayer2:false,reachedLayer3:false,chaseEntry:Number.isFinite(Number(layer1High))?ep>Number(layer1High):null,historySource:h.source,officialHistory:!!h.validation?.fullHistoryPass,reason:'尚未形成進場日後的日K；即時損益仍持續追蹤',updatedAt:new Date().toISOString()};
- const r0=rows[0],entryFactor=r0.close>0&&r0.aClose>0?r0.aClose/r0.close:1,horizon={};
- for(const k of [5,20,60]){const x=rows[k];horizon[k]=x?{date:x.date,priceReturnPct:(x.close/ep-1)*100,totalReturnPct:(x.aClose/(ep*entryFactor)-1)*100}:null}
- const benchmarkEntry=Number(r0.open??r0.close),benchmarkAdjEntry=Number(r0.aOpen??r0.aClose),benchmarkHorizon={};
- for(const k of [5,20,60]){const x=rows[k];benchmarkHorizon[k]=x&&benchmarkAdjEntry>0?{date:x.date,totalReturnPct:(x.aClose/benchmarkAdjEntry-1)*100}:null}
- const benchmark={entryMode:'same-day-open',entryPrice:benchmarkEntry>0?benchmarkEntry:null,currentReturnPct:Number.isFinite(current)&&benchmarkEntry>0?(current/benchmarkEntry-1)*100:null,horizon:benchmarkHorizon};
- let min=null,max=null;
- for(const x of rows){const lo=x.low??x.close,hi=x.high??x.close;if(!min||lo<min.price)min={date:x.date,price:lo};if(!max||hi>max.price)max={date:x.date,price:hi}}
+ const r0=rows[0],horizon={};
+ for(const k of [5,20,60]){
+  const x=rows[k],px=x?tradeActualField(x,'close'):null,div=x?tradeDividendPerShare(dividendEvents,entryDate,x.date):0;
+  horizon[k]=x&&Number.isFinite(px)?{date:x.date,priceReturnPct:(px/ep-1)*100,totalReturnPct:((px+div)/ep-1)*100,dividendPerShare:div}:null
+ }
+ const benchmarkEntry=tradeActualField(r0,'open')??tradeActualField(r0,'close'),benchmarkHorizon={};
+ for(const k of [5,20,60]){
+  const x=rows[k],px=x?tradeActualField(x,'close'):null,div=x?tradeDividendPerShare(dividendEvents,entryDate,x.date):0;
+  benchmarkHorizon[k]=x&&Number.isFinite(px)&&benchmarkEntry>0?{date:x.date,priceReturnPct:(px/benchmarkEntry-1)*100,totalReturnPct:((px+div)/benchmarkEntry-1)*100,dividendPerShare:div}:null
+ }
+ const benchmarkPriceReturnPct=Number.isFinite(current)&&benchmarkEntry>0?(current/benchmarkEntry-1)*100:null;
+ const benchmarkCurrentReturnPct=Number.isFinite(current)&&benchmarkEntry>0?((current+currentDividendPerShare)/benchmarkEntry-1)*100:null;
+ const benchmark={entryMode:'same-day-open',entryPrice:benchmarkEntry>0?benchmarkEntry:null,currentPriceReturnPct:benchmarkPriceReturnPct,currentReturnPct:benchmarkCurrentReturnPct,horizon:benchmarkHorizon,accruedDividendPerShare:currentDividendPerShare,returnBasis:'cash-entitlement-total-return-v1'};
+ let min=null,max=null,priceMin=null,priceMax=null;
+ for(const x of rows){
+  const lo=tradeActualField(x,'low')??tradeActualField(x,'close'),hi=tradeActualField(x,'high')??tradeActualField(x,'close');if(!(lo>0&&hi>0))continue;
+  const div=tradeDividendPerShare(dividendEvents,entryDate,x.date),econLo=lo+div,econHi=hi+div;
+  if(!min||econLo<min.price)min={date:x.date,price:econLo,marketPrice:lo,dividendPerShare:div};if(!max||econHi>max.price)max={date:x.date,price:econHi,marketPrice:hi,dividendPerShare:div};
+  if(!priceMin||lo<priceMin.price)priceMin={date:x.date,price:lo};if(!priceMax||hi>priceMax.price)priceMax={date:x.date,price:hi};
+ }
  const l2=Number(layer2Low),l3=Number(layer3Low),l1h=Number(layer1High);
  return{ok:true,status:'READY',code,entryDate,entryPrice:ep,...immediate,horizon,benchmark,
   benchmarkDeltaCurrentPct:Number.isFinite(immediate.currentReturnPct)&&Number.isFinite(benchmark.currentReturnPct)?immediate.currentReturnPct-benchmark.currentReturnPct:null,
   maePct:min?(min.price/ep-1)*100:null,mfePct:max?(max.price/ep-1)*100:null,maeDate:min?.date||null,mfeDate:max?.date||null,
+  priceMaePct:priceMin?(priceMin.price/ep-1)*100:null,priceMfePct:priceMax?(priceMax.price/ep-1)*100:null,
+  // Layer-reach diagnostics also use the economic price (market low + entitled dividend), so an ex-dividend gap cannot fake an L2/L3 touch.
   reachedLayer2:Number.isFinite(l2)&&min?min.price<=l2:false,reachedLayer3:Number.isFinite(l3)&&min?min.price<=l3:false,
   chaseEntry:Number.isFinite(l1h)?ep>l1h:null,historySource:h.source,officialHistory:!!h.validation?.fullHistoryPass,updatedAt:new Date().toISOString()};
 }
