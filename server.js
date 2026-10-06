@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.99-ETF-TRADE-TOTAL-RETURN-CONSISTENCY';
+const BUILD='16.8.102-PERF-SAFE-REQUEST-DEDUPE';
 const TRADE_RETURN_VERSION='cash-entitlement-total-return-v2';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
@@ -43,7 +43,7 @@ const META={
  '00919':{name:'群益台灣精選高息',listed:'2022-10-20',expected:40,source:'Capital',url:'https://www.capitalfund.com.tw/etf/product/detail/195/buyback',portfolioUrl:'https://www.capitalfund.com.tw/etf/product/detail/195/portfolio',
    cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20,firstReanchor:.31}}
 };
-const cache=new Map(),nightSamples=[],preopenTxfSamples=[],CHASE_CAL_CACHE=new Map(),SHADOW_POLICY_CACHE=new Map();
+const cache=new Map(),INFLIGHT_CACHE=new Map(),nightSamples=[],preopenTxfSamples=[],CHASE_CAL_CACHE=new Map(),SHADOW_POLICY_CACHE=new Map();
 let OP_META_RESTORED=false,OP_META_RESTORE_PROMISE=null;
 const CHASE_DAILY_LOCK_FILE='chase_calibration_daily.json';
 const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':12,'00919':8};
@@ -98,7 +98,18 @@ function twAfterCashOpenNow(){const t=taipeiClock(),m=t.h*60+t.m;return ['Mon','
 async function getText(url,headers={},tries=2){let e;for(let i=0;i<tries;i++){try{const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html,application/xhtml+xml,*/*','Accept-Language':'zh-TW,zh;q=0.9',...headers}},9000);if(!r.ok)throw Error('HTTP '+r.status);return await r.text()}catch(x){e=x;if(i+1<tries)await sleep(250*(i+1))}}throw e}
 async function postText(url,headers={},ms=15000){const r=await fetchTimeout(url,{method:'POST',headers:{'User-Agent':'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0)','Accept':'text/html,application/xhtml+xml,*/*','Accept-Language':'zh-TW,zh;q=0.9','Content-Type':'application/x-www-form-urlencoded','Cache-Control':'no-cache','Pragma':'no-cache','If-Modified-Since':'Sat, 1 Jan 2000 00:00:00 GMT',...headers},body:''},ms);if(!r.ok)throw Error('HTTP '+r.status);return await r.text()}
 async function getBuffer(url,headers={}){const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'*/*',...headers}},12000);if(!r.ok)throw Error('HTTP '+r.status);return Buffer.from(await r.arrayBuffer())}
-async function cached(key,ttl,fn){const c=cache.get(key),now=Date.now();if(c&&now-c.at<ttl)return {...c.v,cached:true};const v=await fn();cache.set(key,{at:now,v});return {...v,cached:false}}
+async function cached(key,ttl,fn){
+ const c=cache.get(key),now=Date.now();
+ if(c&&now-c.at<ttl)return {...c.v,cached:true};
+ // R3.82a safe performance patch: callers asking for the same uncached resource
+ // share one in-flight Promise instead of starting duplicate external requests.
+ const running=INFLIGHT_CACHE.get(key);
+ if(running){const v=await running;return {...v,cached:true}}
+ const task=(async()=>{const v=await fn();cache.set(key,{at:Date.now(),v});return v})();
+ INFLIGHT_CACHE.set(key,task);
+ try{const v=await task;return {...v,cached:false}}
+ finally{if(INFLIGHT_CACHE.get(key)===task)INFLIGHT_CACHE.delete(key)}
+}
 function stripTags(s){return String(s||'').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/&#x27;|&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g,' ').trim()}
 function ymdTaipei(d=new Date()){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(d)}
 function taipeiClock(d=new Date()){const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',weekday:'short',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(d).map(x=>[x.type,x.value]));return{day:ymdTaipei(d),weekday:parts.weekday,h:Number(parts.hour),m:Number(parts.minute),s:Number(parts.second)}}
@@ -2274,7 +2285,7 @@ async function buyModel(){
   deadline(liveEtf4().catch(e=>({ok:false,quotes:{},error:e.message,fetchedAt:null})),9000,{ok:false,quotes:{},error:'ETF live deadline exceeded',fetchedAt:null}),
   deadline(cached('ctx',30000,context).catch(()=>null),6000,null),
   deadline(cached('ovs',45000,overseas).catch(()=>null),6000,null),
-  deadline(nightFuture().catch(()=>null),6000,null),
+  deadline(cached('nf',5000,nightFuture).catch(()=>null),6000,null),
   Promise.all(ETF.map(async c=>[c,await deadline(etfHistory(c).catch(e=>({ok:false,rows:[],source:'history error',validation:{fullHistoryPass:false},error:e.message})),7000,historyTimeout(c))])),
   Promise.all(ETF.map(async c=>[c,await deadline(constituentHealth(c).catch(e=>({ok:false,code:c,usable:false,score:null,divergence:'成分來源錯誤',sourceCoverage:0,quoteCoverage:0,reason:e.message})),6000,healthTimeout(c))])),
   deadline(institutionalRecentWindow(5).catch(e=>({ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:e.message,reason:e.message})),7800,{ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:'institutional window deadline exceeded',reason:'T86視窗建立逾時'}),
@@ -2559,7 +2570,7 @@ async function preopenTxfPump(){
  }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}
  finally{PREOPEN_PUMP_RUNNING=false}
 }
-async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cached('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
+async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>cached('nf',5000,nightFuture)],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cached('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
 function V(status,evidence,detail='',updatedAt=new Date().toISOString()){return{status,evidence,detail,updatedAt}}
 async function validationReport(deep=false){
  const out={},errors=[...(RUNTIME.errors||[])],ld=RUNTIME.live,ctx=RUNTIME.ctx,nf=RUNTIME.nf,ovs=RUNTIME.ovs,bm=RUNTIME.bm;
@@ -3132,7 +3143,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/context')return safeApi(res,'context',()=>cached('ctx',30000,context));
  if(u.pathname==='/api/taiex-history')return safeApi(res,'taiex-history',async()=>{const h=await taiexHistory();return{...h,ret5:periodReturn(h.rows,5),ret20:periodReturn(h.rows,20)}});
  if(u.pathname==='/api/overseas')return safeApi(res,'overseas',()=>cached('ovs',45000,overseas));
- if(u.pathname==='/api/night-future')return safeApi(res,'night-future',()=>nightFuture());
+ if(u.pathname==='/api/night-future')return safeApi(res,'night-future',()=>cached('nf',5000,nightFuture));
  if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(cached('buymodel',8000,buyModel),9500,null);return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'模型外部資料逾時；不阻塞頁面，30秒後自動重試',fetchedAt:new Date().toISOString()}});
  if(u.pathname==='/api/trend-entry')return safeApi(res,'trend-entry',()=>cached('trend-entry',30000,trendEntryModel));
  if(u.pathname==='/api/etf-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'etf-history',()=>ETF.includes(code)?etfHistory(code):Promise.resolve({ok:false,error:'unsupported code'}))}
