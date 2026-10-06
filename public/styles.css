@@ -26,3 +26,9 @@
 .trade-filter-row{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}.trade-filter{border:1px solid #2b4264;background:#101d30;color:#a9bad2;border-radius:999px;padding:6px 9px;font-size:9px;font-weight:800;cursor:pointer}.trade-filter.on{background:#e7eef8;color:#142033;border-color:#e7eef8}
 .trade-table-wrap{overflow-x:auto;border:1px solid #243a59;border-radius:12px}.trade-table{width:100%;border-collapse:collapse;min-width:760px;font-size:10px}.trade-table th{color:#89a1c0;background:#0e192a;text-align:left;padding:9px;border-bottom:1px solid #243a59;white-space:nowrap}.trade-table td{padding:9px;border-bottom:1px solid #1d304b;white-space:nowrap}.trade-row{cursor:pointer}.trade-row:hover,.trade-row.expanded{background:#14243a}.trade-detail-row td{padding:8px;background:#0b1626}.trade-detail-row .trade-detail-card{margin:0}
 @media(max-width:850px){.trade-attention-grid{grid-template-columns:1fr}.trade-detail-card .grid5{grid-template-columns:repeat(2,1fr)}}
+
+/* R3.81 validation summary: separate trade-critical checks from auxiliary validation without changing model logic. */
+.validation-summary-box{min-height:104px}
+.validation-summary-box b{font-size:21px}
+.trade-core-spec{box-shadow:inset 3px 0 0 #5ea0ff}
+.coremark{display:inline-block;margin-left:5px;padding:2px 5px;border-radius:999px;background:#18345a;color:#8fc0ff;font-size:7px;vertical-align:1px}
