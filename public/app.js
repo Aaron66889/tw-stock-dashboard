@@ -19,13 +19,14 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.102-PERF-SAFE-REQUEST-DEDUPE',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.103-VALIDATION-DATA-STATE',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const TRADE_RETURN_REQUIRED='cash-entitlement-total-return-v2';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null,lastTrendBuy=null;
 let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,trendBuyTimer,selectedETF='0050',selectedBacktest='0050';
 let MODEL_PERF_REFRESHING=false,MODEL_PERF_LAST_AT=0;
+let VALIDATION_REFRESHING=false,VALIDATION_LAST_AT=0,VALIDATION_LAST_ERROR='',HISTORY_REFRESHING=false,HISTORY_LAST_AT=0;
 let etfLiveTimer=null;
 const DEFAULT_H=[{t:'0050',n:'0050',s:3150,c:77.37},{t:'0056',n:'0056',s:750,c:33.91},{t:'00878',n:'00878',s:4000,c:18.06},{t:'00919',n:'00919',s:550,c:18.80}];
 
@@ -674,18 +675,40 @@ function clientValidation(base){const c={...(base||{})};const now=taipeiNow(),m=
  c.core={participation:{status:ETF.every(x=>'noSignalDays' in STATE)?'PASS':'PASS',evidence:'連續無訊號日數＋中樞重錨機制已接'},downEscape:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'買點下修需環境/成分惡化證據'},hysteresis:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'確認狀態保存，不因10秒離區直接取消'}};return c}
 const TRADE_CORE_SPEC_IDS=[9,10,11,13,14,21,34];
 function validationBucket(ids,checks){const counts={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};for(const id of ids)counts[checks[id]?.status||'WAIT']++;return{...counts,total:ids.length,pass:counts.PASS}}
+function modelPageDataStateHtml(){
+ const busy=VALIDATION_REFRESHING||HISTORY_REFRESHING||MODEL_PERF_REFRESHING;
+ const hp=(VALIDATION?.historyProgress?.length?VALIDATION.historyProgress:(Array.isArray(HISTORY_STATUS)?HISTORY_STATUS:[]));
+ const warming=hp.filter(x=>x&&(x.refreshDue===true||x.backtestReadyPass!==true||['QUEUED','RUNNING','RETRYING','FINALIZING','PARTIAL','IDLE','REFRESH_DUE','SOURCE_BLOCKED'].includes(x.status)));
+ const last=VALIDATION_LAST_AT||Date.parse(VALIDATION?.generatedAt||'')||0;
+ const lastText=last?new Date(last).toLocaleTimeString('zh-TW',{hour12:false}):'尚未完成';
+ if(busy)return`<b class="amber">🔄 本頁資料更新中</b>｜交易核心燈沿用最近一次可用驗證｜上次驗證 ${lastText}`;
+ if(warming.length){const detail=warming.map(x=>`${x.code} ${Number.isFinite(Number(x.percent))?x.percent+'%':(x.status||'建立中')}`).join('｜');return`<b class="amber">🟡 驗證結果可用｜背景資料仍在建立</b>｜${detail}｜上次驗證 ${lastText}`;}
+ if(VALIDATION_LAST_ERROR)return`<b class="amber">⚠️ 最新驗證更新失敗｜保留上次結果</b>｜${VALIDATION_LAST_ERROR}｜上次驗證 ${lastText}`;
+ if(VALIDATION)return`<b class="upc">✅ 本頁最新驗證資料已完成</b>｜${lastText}`;
+ return'<b class="amber">🔄 驗證資料尚未載入</b>';
+}
 function renderSpecs(){
  const checks=clientValidation(VALIDATION?.checks||{}),allIds=SPEC.map(x=>x[0]),coreIds=TRADE_CORE_SPEC_IDS,coreSet=new Set(coreIds),auxIds=allIds.filter(id=>!coreSet.has(id));
  const counts=validationBucket(allIds,checks),core=validationBucket(coreIds,checks),aux=validationBucket(auxIds,checks),coreAllPass=core.PASS===core.total,coreHasFail=core.FAIL>0,totalAllPass=counts.PASS===counts.total;
  const coreClass=coreAllPass?'upc':coreHasFail?'downc':'amber',auxClass=aux.PASS===aux.total?'upc':'amber',totalClass=totalAllPass?'upc':'amber';
  $('validationSummary').innerHTML=`<div class="box validation-summary-box"><span class="k">交易核心</span><b class="${coreClass}">${core.PASS}/${core.total}${coreAllPass?' PASS':''}</b><small>動態買點／三層／評分／Hard Gate／防追高／成分引擎／資料逾時</small></div><div class="box validation-summary-box"><span class="k">輔助驗證</span><b class="${auxClass}">${aux.PASS}/${aux.total}</b><small>PARTIAL ${aux.PARTIAL}｜FAIL ${aux.FAIL}｜WAIT ${aux.WAIT}</small></div><div class="box validation-summary-box"><span class="k">總驗證</span><b class="${totalClass}">${counts.PASS}/${counts.total}</b><small>PASS ${counts.PASS}｜PARTIAL ${counts.PARTIAL}｜FAIL ${counts.FAIL}｜WAIT ${counts.WAIT}</small></div>`;
- if(coreAllPass){$('validationOverall').innerHTML=totalAllPass?'<b class="upc">🟢 交易機制可用｜45/45 驗收完成</b>':'<b class="upc">🟢 交易機制可用。</b> 核心 7/7 PASS；其餘為輔助驗證，未全通過不等於正式買點失效。';}
- else if(coreHasFail){$('validationOverall').innerHTML=`<b class="downc">🔴 正式交易訊號受影響。</b> 交易核心 ${core.PASS}/${core.total} PASS；請先查看下方標示「交易核心」的 FAIL 項目。`;}
- else{$('validationOverall').innerHTML=`<b class="amber">🟡 交易核心尚未完成驗證。</b> 目前 ${core.PASS}/${core.total} PASS（PARTIAL ${core.PARTIAL}｜WAIT ${core.WAIT}）；正式訊號需留意。`;}
+ let verdict='';
+ if(coreAllPass){verdict=totalAllPass?'<b class="upc">🟢 交易機制可用｜45/45 驗收完成</b>':'<b class="upc">🟢 交易機制可用。</b> 核心 7/7 PASS；其餘為輔助驗證，未全通過不等於正式買點失效。';}
+ else if(coreHasFail){verdict=`<b class="downc">🔴 正式交易訊號受影響。</b> 交易核心 ${core.PASS}/${core.total} PASS；請先查看下方標示「交易核心」的 FAIL 項目。`;}
+ else{verdict=`<b class="amber">🟡 交易核心尚未完成驗證。</b> 目前 ${core.PASS}/${core.total} PASS（PARTIAL ${core.PARTIAL}｜WAIT ${core.WAIT}）；正式訊號需留意。`;}
+ $('validationOverall').innerHTML=modelPageDataStateHtml()+'<br>'+verdict;
  $('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase(),isCore=coreSet.has(x[0]);return`<div class="spec ${st}${isCore?' trade-core-spec':''}"><b>#${x[0]} ${x[1]}${isCore?' <span class="coremark">交易核心</span>':''}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');
  const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('')
 }
-let validationPoll=null;async function loadValidation(deep=false){try{const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);if(!d.ok){$('validationOverall').innerHTML='<b class="downc">驗證API錯誤：</b>'+(d.error||'未知');return}VALIDATION=d;renderSpecs()}catch(e){$('validationOverall').innerHTML='<b class="downc">驗證中心連線錯誤：</b>'+e.message}}
+let validationPoll=null;async function loadValidation(deep=false){
+ VALIDATION_REFRESHING=true;VALIDATION_LAST_ERROR='';if(modelPageVisible())renderSpecs();
+ try{
+  const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);
+  if(!d.ok)throw Error(d.error||'驗證API錯誤');
+  VALIDATION=d;VALIDATION_LAST_AT=Date.parse(d.generatedAt||'')||Date.now();
+ }catch(e){VALIDATION_LAST_ERROR=e.message||'驗證中心連線錯誤';}
+ finally{VALIDATION_REFRESHING=false;if(modelPageVisible())renderSpecs()}
+}
 async function runDeepValidation(){clearTimeout(validationPoll);$('deepValidateBtn').disabled=true;try{await get('/api/history-warm?all=1');await loadValidation(true);const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;if(ready<4){$('validationOverall').innerHTML+=`<br><span class="note">完整回測歷史背景建立中：${hp.map(x=>x.code+' '+x.percent+'%').join('｜')}</span>`;validationPoll=setTimeout(runDeepValidation,3000)}}finally{$('deepValidateBtn').disabled=false}}
 
 
@@ -919,7 +942,7 @@ async function refreshModelTradePerformance(force=false){
  if(MODEL_PERF_REFRESHING)return;
  if(!force&&!modelPageVisible())return;
  if(!force&&Date.now()-MODEL_PERF_LAST_AT<30000)return;
- MODEL_PERF_REFRESHING=true;
+ MODEL_PERF_REFRESHING=true;if(modelPageVisible())renderSpecs();
  let changed=false;
  try{
  for(const t of MODEL_TRADES){
@@ -938,7 +961,7 @@ async function refreshModelTradePerformance(force=false){
   }catch(_){}
  }
  modelSyncSaveLocal();renderModelTrades();if(changed)syncModelTrades(false)
- }finally{MODEL_PERF_REFRESHING=false;MODEL_PERF_LAST_AT=Date.now()}
+ }finally{MODEL_PERF_REFRESHING=false;MODEL_PERF_LAST_AT=Date.now();if(modelPageVisible())renderSpecs()}
 }
 function closeTrackedTrade(id){
  const t=MODEL_TRADES.find(x=>x.id===id);if(!t)return;const px=Number(lastLive?.quotes?.[t.code]?.last??t.perf?.currentPrice);
@@ -1078,13 +1101,15 @@ function renderModelTrades(){
  $('modelTradeList').innerHTML=modelSyncBar()+attentionHtml+controls+table;
 }
 async function loadHistoryStatus(){
+ HISTORY_REFRESHING=true;if(modelPageVisible())renderSpecs();
  try{
-  const d=await get('/api/history-status');HISTORY_STATUS=d.history||[];
+  const d=await get('/api/history-status');HISTORY_STATUS=d.history||[];HISTORY_LAST_AT=Date.now();
   $('historyBuildStatus').innerHTML=HISTORY_STATUS.map(x=>{
     const v=x.validation||{},ready=x.status==='READY',fail=x.status==='VALIDATION_FAIL'||x.status==='ERROR';
     return`<div class="box"><span class="k">${x.code}</span><b class="${ready?'upc':fail?'downc':'amber'}">${x.status}</b><small>${x.doneMonths}/${x.totalMonths}月｜${x.percent}%${x.first?`<br><b>回測資料起始：${x.first}</b><br>資料截止：${x.last}`:''}${v.rows?`<br>${v.rows}交易日`:''}${x.code==='0050'&&x.first?'<br>0050採實際可得長期樣本，不強求2003':''}${ready?'<br>官方全歷史 PASS':x.status==='LONG_SAMPLE_READY'?'<br>長期樣本可回測':fail?`<br>價格:${v.priceHistoryPass?'PASS':'FAIL'}｜企業行動:${v.corporateActionPass?'PASS':'FAIL'}｜精度:${v.backtestPrecisionPass?'PASS':'FAIL'}`:'<br>背景建立中'}</small></div>`
   }).join('')
  }catch(e){$('historyBuildStatus').innerHTML='<div class="notice">歷史狀態讀取失敗：'+e.message+'</div>'}
+ finally{HISTORY_REFRESHING=false;if(modelPageVisible())renderSpecs()}
 }
 
 function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')||q.includes('哪個最好')){const a=ETF.map(c=>[c,statusFor(c)]).filter(x=>x[1]).sort((a,b)=>b[1].rank-a[1].rank||b[1].r.score-a[1].r.score);return a.length?'目前排序：'+a.map(([c,x])=>`${c} ${x.r.noBuyToday?'今日無合理買點':stageText(x.activeStatus,x.activeLayer+1)} ${x.r.score}分`).join('；'):'模型尚未完整。'}if(q.includes('夜盤')){const n=lastNight||lastBuy?.nightFuture;return n?.available?`WTX& ${fmt(n.last)}，相對參考價 ${pct(n.changePct)}，距今晚最高 ${fmt(n.offHighPoints)}點（${pct(n.offHighPct)}），短線${n.momentum?.direction||'累積中'}。`:'夜盤目前沒有可用資料。'}if(q.includes('剛剛')||q.includes('發生什麼'))return EVENTS.length?'最近事件：'+EVENTS.slice(-5).map(x=>x.text).join('；'):'目前沒有重大事件。';if(c){const x=statusFor(c);if(!x)return c+'模型資料尚未完整。';if(q.includes('成分')||q.includes('健康'))return x.r.health?.usable?`${c}成分健康 ${x.r.health.score}/100，${x.r.health.divergence}。`:`${c}目前完整成分覆蓋不足，因此健康度不納入模型，避免拿前幾大成分冒充全部。`;if(q.includes('買點')||q.includes('第一')||q.includes('第二')||q.includes('第三'))return `${c}：第一 ${ztxt(x.m.layers[0].zone)}，理想 ${ztxt(x.m.layers[1].zone)}，強力 ${ztxt(x.m.layers[2].zone)}；現價 ${fmt(x.px)}。${x.r.noBuyToday?'今日暫無合理買點。':stageText(x.activeStatus,x.activeLayer+1)+'。'}`;if(q.includes('為什麼')||q.includes('能買')||q.includes('不能買'))return explain(c,x)+` 防追高 ${x.r.chaseRisk}/100，環境 ${x.r.environmentScore.toFixed(0)}。`}return'可以問：四檔哪個最好、某ETF三層買點、為什麼不能買、成分健康、夜盤、剛剛發生什麼。'}
