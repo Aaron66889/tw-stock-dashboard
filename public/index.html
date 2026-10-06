@@ -29,7 +29,7 @@
 </head><body><main>
 <div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.76</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
 <nav class="topnav">
-<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF合理買點</button><button class="navb" data-page="trendBuyPage">ETF漲價買點</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
+<button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF合理買點</button><button class="navb" data-page="trendBuyPage">ETF強勢加碼</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
 </nav>
 
 <div id="home" class="page on">
@@ -63,7 +63,7 @@
 </div>
 
 <div id="trendBuyPage" class="page">
-<section class="card"><div class="row"><div><div class="sectiontitle">四檔ETF漲價買點｜順勢／突破回踩</div><div class="note">獨立於「ETF合理買點」的順勢模型。只找上升趨勢中的突破或回踩機會；不改動原三層買點、Gate 與正式模型紀錄。</div></div><button class="btn primary" onclick="loadTrendBuy(true)">重新整理</button></div><div id="trendBuySummary" class="reading">順勢模型載入中。</div></section>
+<section class="card"><div class="row"><div><div class="sectiontitle">四檔ETF強勢加碼｜趨勢確認後的小額加碼</div><div class="note">獨立於「ETF合理買點」的強勢加碼模型。只在趨勢結構與突破條件確認後評估小額加碼；分數代表趨勢強度，不是上漲機率，也不改動原三層買點、Gate 與正式模型紀錄。</div></div><button class="btn primary" onclick="loadTrendBuy(true)">重新整理</button></div><div id="trendBuySummary" class="reading">強勢加碼模型載入中。</div></section>
 <div id="trendBuyCards"></div>
 <section class="card"><div class="sectiontitle">這一頁怎麼看</div><div class="reading"><b>順勢買點不是追高。</b>模型會檢查日線均線結構、週線方向、20日／55日突破、ATR 距離與過熱程度；只有價格仍在「可接受執行帶」內才會顯示可小額。若漲得太遠則顯示不追價。此頁先獨立驗證，不影響既有合理買點。</div></section>
 </div>
