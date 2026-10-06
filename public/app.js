@@ -19,7 +19,8 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.98-ETF-TRADE-TOTAL-RETURN',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.99-ETF-TRADE-TOTAL-RETURN-CONSISTENCY',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const TRADE_RETURN_REQUIRED='cash-entitlement-total-return-v2';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null,lastTrendBuy=null;
@@ -691,7 +692,7 @@ async function loadDividendAuto(force=false){
   if(d?.ok){
    DIVIDEND_AUTO.ready=true;DIVIDEND_AUTO.byCode=d.byCode||{};DIVIDEND_AUTO.snapshotDay=d.snapshotDay||null;DIVIDEND_AUTO.source=d.source||null;DIVIDEND_AUTO.lastAt=d.fetchedAt||new Date().toISOString();
    DIVIDEND_AUTO.message=`四檔全自動｜持股快照 ${String(d.snapshotDay||'建立中').replaceAll('-','/')}`;
-   renderHoldings();
+   normalizeAllModelTradeTotalReturns();renderHoldings();renderModelTrades();
   }
  }catch(e){DIVIDEND_AUTO.ready=false;DIVIDEND_AUTO.message='股息自動同步暫時失敗，先顯示已重建基準值'}
  finally{DIVIDEND_AUTO.busy=false}
@@ -908,7 +909,7 @@ async function refreshModelTradePerformance(){
     if(!Number.isFinite(Number(p.currentPrice))&&Number.isFinite(Number(prev.currentPrice)))p.currentPrice=prev.currentPrice;
     if(!Number.isFinite(Number(p.currentReturnPct))&&Number.isFinite(Number(prev.currentReturnPct)))p.currentReturnPct=prev.currentReturnPct;
     if(!Number.isFinite(Number(p.currentPnLPerShare))&&Number.isFinite(Number(prev.currentPnLPerShare)))p.currentPnLPerShare=prev.currentPnLPerShare;
-    t.perf={...prev,...p};markModelTradeDirty(t);changed=true
+    t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true
    }
   }catch(_){}
  }
@@ -918,7 +919,7 @@ function closeTrackedTrade(id){
  const t=MODEL_TRADES.find(x=>x.id===id);if(!t)return;const px=Number(lastLive?.quotes?.[t.code]?.last??t.perf?.currentPrice);
  if(t.exitAt)return;
  const v=prompt(`輸入 ${t.code} 實際賣出價格`,Number.isFinite(px)?px.toFixed(2):'');if(v===null)return;const p=Number(v);if(!(p>0))return alert('價格不正確');
- const divPerShare=Math.max(0,Number(t.perf?.accruedDividendPerShare)||0),grossPerShare=p-t.entryPrice+divPerShare;t.exitAt=new Date().toISOString();t.exitPrice=p;t.realizedPricePnL=(p-t.entryPrice)*t.shares;t.realizedDividendPnL=divPerShare*t.shares;t.realizedPnL=grossPerShare*t.shares;t.realizedReturnPct=t.entryPrice>0?grossPerShare/t.entryPrice*100:null;markModelTradeDirty(t);modelSyncSaveLocal();renderModelTrades();syncModelTrades(true)
+ const divPerShare=Math.max(0,Number(modelTradeDividendPerShare(t))||0),grossPerShare=p-t.entryPrice+divPerShare;t.exitAt=new Date().toISOString();t.exitPrice=p;t.realizedPricePnL=(p-t.entryPrice)*t.shares;t.realizedDividendPnL=divPerShare*t.shares;t.realizedPnL=grossPerShare*t.shares;t.realizedReturnPct=t.entryPrice>0?grossPerShare/t.entryPrice*100:null;markModelTradeDirty(t);modelSyncSaveLocal();renderModelTrades();syncModelTrades(true)
 }
 function deleteTrackedTrade(id){
  if(!confirm('刪除這筆實戰紀錄？'))return;
@@ -933,6 +934,34 @@ function fubonEstimatedTradeCost(entryPrice,shares,currentPrice){
  const etfTax=Math.round(sellValue*0.001);
  return buyFee+sellFee+etfTax;
 }
+function modelTradeThroughDay(t){
+ if(t?.exitAt){try{return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date(t.exitAt))}catch(_){}}
+ return dayKey();
+}
+function modelTradeDividendPerShare(t){
+ const p=t?.perf||{},entry=Number(t?.entryPrice),entryDate=String(t?.entryDate||''),through=modelTradeThroughDay(t),vals=[];
+ const direct=Number(p.accruedDividendPerShare);if(Number.isFinite(direct)&&direct>=0)vals.push(direct);
+ const elig=(p.eligibleDividends||[]).reduce((sum,e)=>sum+(Number(e?.amount)||0),0);if(elig>0)vals.push(elig);
+ const locks=DIVIDEND_AUTO?.byCode?.[t?.code]?.locks||[];
+ const locked=locks.filter(e=>String(e?.exDate||'')>entryDate&&String(e?.exDate||'')<=through).reduce((sum,e)=>sum+(Number(e?.amount)||0),0);if(locked>0)vals.push(locked);
+ const known=(DIVIDEND_KNOWN_FUTURE?.[t?.code]||[]).filter(e=>String(e?.exDate||'')>entryDate&&String(e?.exDate||'')<=through).reduce((sum,e)=>sum+(Number(e?.amount)||0),0);if(known>0)vals.push(known);
+ if(entry>0){for(const h of Object.values(p.horizon||{})){const pr=Number(h?.priceReturnPct),tr=Number(h?.totalReturnPct);if(Number.isFinite(pr)&&Number.isFinite(tr)&&tr>=pr){const d=entry*(tr-pr)/100;if(d>=0)vals.push(d)}}}
+ return vals.length?Math.max(...vals):0;
+}
+function normalizeModelTradeTotalReturn(t){
+ if(!t?.perf||t?.exitAt)return false;
+ const p=t.perf,entry=Number(t.entryPrice),px=Number(p.currentPrice),div=modelTradeDividendPerShare(t);let changed=false;
+ if(entry>0&&px>0){
+  const priceRet=(px/entry-1)*100,totalRet=((px+div)/entry-1)*100,pricePnl=px-entry,totalPnl=px+div-entry;
+  const put=(k,v)=>{if(!Number.isFinite(Number(p[k]))||Math.abs(Number(p[k])-v)>1e-9){p[k]=v;changed=true}};
+  put('currentPriceReturnPct',priceRet);put('currentTotalReturnPct',totalRet);put('currentReturnPct',totalRet);put('currentPricePnLPerShare',pricePnl);put('currentPnLPerShare',totalPnl);
+  if(div>0&&(!Number.isFinite(Number(p.accruedDividendPerShare))||Number(p.accruedDividendPerShare)<div-1e-9)){p.accruedDividendPerShare=div;changed=true}
+  if(div>0&&p.returnBasis!=='cash-entitlement-total-return-v2'){p.frontendReturnBasis='cash-entitlement-total-return-fallback-v1';changed=true}
+ }
+ return changed;
+}
+function normalizeAllModelTradeTotalReturns(){let changed=false;for(const t of MODEL_TRADES)if(normalizeModelTradeTotalReturn(t))changed=true;if(changed)modelSyncSaveLocal();return changed}
+function modelTradePathMetricsReady(t){return t?.perf?.returnBasis===TRADE_RETURN_REQUIRED||modelTradeDividendPerShare(t)<=0}
 function modelNetMetrics(t){
  const p=t?.perf,entry=Number(t?.entryPrice),shares=Number(t?.shares);
  const rawPerfPx=p?.currentPrice,perfPx=(rawPerfPx==null||rawPerfPx==='')?null:Number(rawPerfPx);
@@ -946,21 +975,21 @@ function modelNetMetrics(t){
   const base=entry*shares;
   return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null};
  }
- const rawPerShare=p?.currentPnLPerShare;
- const perfPerShare=(rawPerShare==null||rawPerShare==='')?null:Number(rawPerShare);
- const gross=Number.isFinite(perfPerShare)?perfPerShare*shares:
-   (Number.isFinite(px)&&Number.isFinite(entry)?(px-entry)*shares:null);
+ const base=entry*shares,divPerShare=modelTradeDividendPerShare(t),totalRet=Number(p?.currentTotalReturnPct);
+ const gross=Number.isFinite(totalRet)&&base>0?totalRet/100*base:
+   (Number.isFinite(px)&&Number.isFinite(entry)?(px+divPerShare-entry)*shares:null);
  const cost=fubonEstimatedTradeCost(entry,shares,px);
  const net=Number.isFinite(gross)&&Number.isFinite(cost)?gross-cost:null;
- const base=entry*shares;
- return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null};
+ return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null,dividendPerShare:divPerShare};
 }
 function modelFamilyOf(t){if(t?.tradeType==='manual')return'manual';return t?.modelFamily||t?.snapshot?.modelFamily||'reasonable'}
 function tradeDiagnosticLabel(t){
  const p=t?.perf||{},m=modelNetMetrics(t),parts=[],family=modelFamilyOf(t);
  if(family==='manual')parts.push('自主買入');else if(family==='trend')parts.push('強勢加碼');else parts.push(`合理模型L${t.layer||'—'}`);
- if(Number.isFinite(p.maePct)&&p.maePct<=-1)parts.push('進場後曾有較深回撤');
- if(family==='reasonable'&&t.layer===1&&p.reachedLayer2)parts.push('L1後續曾到L2，需檢查是否偏早');
+ const pathReady=modelTradePathMetricsReady(t);
+ if(pathReady&&Number.isFinite(p.maePct)&&p.maePct<=-1)parts.push('進場後曾有較深回撤');
+ if(pathReady&&family==='reasonable'&&t.layer===1&&p.reachedLayer2)parts.push('L1後續曾到L2，需檢查是否偏早');
+ if(!pathReady&&modelTradeDividendPerShare(t)>0)parts.push('除息路徑等待後端含息重算');
  if(Number.isFinite(p.benchmarkDeltaCurrentPct))parts.push(p.benchmarkDeltaCurrentPct>=0?'目前優於同日開盤直接買':'目前落後同日開盤直接買');
  if(Number.isFinite(m.ret)&&Math.abs(m.ret)<.5)parts.push('目前仍屬小幅波動');
  return parts.join('｜');
@@ -969,11 +998,11 @@ function tradeDiagnosticLabel(t){
 function performanceDiagnosticPayload(){
  const modelTrades=MODEL_TRADES.filter(t=>t.tradeType!=='manual'),reasonableTrades=modelTrades.filter(t=>modelFamilyOf(t)==='reasonable'),trendTrades=modelTrades.filter(t=>modelFamilyOf(t)==='trend'),byLayer={};
  for(const layer of [1,2,3]){
-  const a=reasonableTrades.filter(t=>Number(t.layer)===layer),mae=a.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfe=a.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),bdelta=a.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);
+  const a=reasonableTrades.filter(t=>Number(t.layer)===layer),pathA=a.filter(modelTradePathMetricsReady),mae=pathA.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfe=pathA.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),bdelta=a.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);
   byLayer[layer]={trades:a.length,avgNetReturnPct:mean(rets),avgMAEPct:mean(mae),avgMFEPct:mean(mfe),reachedNextLayer:layer<3?a.filter(t=>layer===1?t.perf?.reachedLayer2:t.perf?.reachedLayer3).length:null,avgBenchmarkDeltaCurrentPct:mean(bdelta)};
  }
- const famStats=a=>{const rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),mae=a.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfe=a.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),bd=a.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);return{trades:a.length,avgNetReturnPct:mean(rets),avgMAEPct:mean(mae),avgMFEPct:mean(mfe),avgBenchmarkDeltaCurrentPct:mean(bd)}};
- return{generatedAt:new Date().toISOString(),day:dayKey(),build:CLIENT_BUILD,confirmationRules:LAYER_CONFIRM_RULES,summary:{total:MODEL_TRADES.length,model:modelTrades.length,manual:MODEL_TRADES.filter(t=>t.tradeType==='manual').length,byLayer,byFamily:{reasonable:famStats(reasonableTrades),trend:famStats(trendTrades)}},trades:MODEL_TRADES.map(t=>{const p=t.perf||{},m=modelNetMetrics(t),bench=p.benchmark||{};return{id:t.id,code:t.code,name:t.name,tradeType:t.tradeType||'model',modelFamily:modelFamilyOf(t),layer:t.layer,entryAt:t.entryAt,entryDate:t.entryDate,entryPrice:t.entryPrice,shares:t.shares,exitAt:t.exitAt||null,exitPrice:t.exitPrice||null,build:t.snapshot?.build||null,confirmationVersion:t.snapshot?.confirmationVersion||null,confirmationRule:t.snapshot?.confirmationRule||null,score:t.snapshot?.score??null,chaseRisk:t.snapshot?.chaseRisk??null,chaseWarningThreshold:t.snapshot?.chaseWarningThreshold??null,chaseHardThreshold:t.snapshot?.chaseHardThreshold??null,chaseCalibrationLockedDate:t.snapshot?.chaseCalibrationLockedDate??null,chaseCalibrationObservations:t.snapshot?.chaseCalibrationObservations??null,chaseCalibrationWalkForwardCount:t.snapshot?.chaseCalibrationWalkForwardCount??null,environmentScore:t.snapshot?.environmentScore??null,healthScore:t.snapshot?.health?.score??null,healthDivergence:t.snapshot?.health?.divergence??null,modelStatus:t.snapshot?.modelStatusText||null,zones:t.snapshot?.zones||null,trendLevels:t.snapshot?.trendLevels||null,trend:t.snapshot?.trend||null,trendScoreGroups:t.snapshot?.scoreGroups||null,trendRegime:t.snapshot?.regime||null,trendBacktest:t.snapshot?.trendBacktest||null,shadow:t.snapshot?.shadow||null,currentPrice:p.currentPrice??null,currentPriceReturnPct:p.currentPriceReturnPct??null,currentTotalReturnPct:p.currentTotalReturnPct??p.currentReturnPct??null,accruedDividendPerShare:p.accruedDividendPerShare??0,eligibleDividends:p.eligibleDividends||[],dividendDataComplete:p.dividendDataComplete??null,returnBasis:p.returnBasis||null,netPnL:m.net,netReturnPct:m.ret,grossPnL:m.gross,estimatedCost:m.cost,horizon:p.horizon||null,maePct:p.maePct??null,priceMaePct:p.priceMaePct??null,maeDate:p.maeDate??null,mfePct:p.mfePct??null,priceMfePct:p.priceMfePct??null,mfeDate:p.mfeDate??null,reachedLayer2:!!p.reachedLayer2,reachedLayer3:!!p.reachedLayer3,chaseEntry:p.chaseEntry??null,benchmarkEntryMode:bench.entryMode||null,benchmarkEntryPrice:bench.entryPrice??null,benchmarkCurrentReturnPct:bench.currentReturnPct??null,benchmarkDeltaCurrentPct:p.benchmarkDeltaCurrentPct??null,benchmarkHorizon:bench.horizon||null,diagnosis:tradeDiagnosticLabel(t)} })};
+ const famStats=a=>{const rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),pathA=a.filter(modelTradePathMetricsReady),mae=pathA.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfe=pathA.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),bd=a.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);return{trades:a.length,avgNetReturnPct:mean(rets),avgMAEPct:mean(mae),avgMFEPct:mean(mfe),avgBenchmarkDeltaCurrentPct:mean(bd)}};
+ return{generatedAt:new Date().toISOString(),day:dayKey(),build:CLIENT_BUILD,confirmationRules:LAYER_CONFIRM_RULES,summary:{total:MODEL_TRADES.length,model:modelTrades.length,manual:MODEL_TRADES.filter(t=>t.tradeType==='manual').length,byLayer,byFamily:{reasonable:famStats(reasonableTrades),trend:famStats(trendTrades)}},trades:MODEL_TRADES.map(t=>{const p=t.perf||{},m=modelNetMetrics(t),bench=p.benchmark||{};return{id:t.id,code:t.code,name:t.name,tradeType:t.tradeType||'model',modelFamily:modelFamilyOf(t),layer:t.layer,entryAt:t.entryAt,entryDate:t.entryDate,entryPrice:t.entryPrice,shares:t.shares,exitAt:t.exitAt||null,exitPrice:t.exitPrice||null,build:t.snapshot?.build||null,confirmationVersion:t.snapshot?.confirmationVersion||null,confirmationRule:t.snapshot?.confirmationRule||null,score:t.snapshot?.score??null,chaseRisk:t.snapshot?.chaseRisk??null,chaseWarningThreshold:t.snapshot?.chaseWarningThreshold??null,chaseHardThreshold:t.snapshot?.chaseHardThreshold??null,chaseCalibrationLockedDate:t.snapshot?.chaseCalibrationLockedDate??null,chaseCalibrationObservations:t.snapshot?.chaseCalibrationObservations??null,chaseCalibrationWalkForwardCount:t.snapshot?.chaseCalibrationWalkForwardCount??null,environmentScore:t.snapshot?.environmentScore??null,healthScore:t.snapshot?.health?.score??null,healthDivergence:t.snapshot?.health?.divergence??null,modelStatus:t.snapshot?.modelStatusText||null,zones:t.snapshot?.zones||null,trendLevels:t.snapshot?.trendLevels||null,trend:t.snapshot?.trend||null,trendScoreGroups:t.snapshot?.scoreGroups||null,trendRegime:t.snapshot?.regime||null,trendBacktest:t.snapshot?.trendBacktest||null,shadow:t.snapshot?.shadow||null,currentPrice:p.currentPrice??null,currentPriceReturnPct:p.currentPriceReturnPct??null,currentTotalReturnPct:p.currentTotalReturnPct??p.currentReturnPct??null,accruedDividendPerShare:modelTradeDividendPerShare(t),eligibleDividends:p.eligibleDividends||[],dividendDataComplete:p.dividendDataComplete??null,returnBasis:p.returnBasis||p.frontendReturnBasis||null,netPnL:m.net,netReturnPct:m.ret,grossPnL:m.gross,estimatedCost:m.cost,horizon:p.horizon||null,maePct:p.maePct??null,priceMaePct:p.priceMaePct??null,maeDate:p.maeDate??null,mfePct:p.mfePct??null,priceMfePct:p.priceMfePct??null,mfeDate:p.mfeDate??null,reachedLayer2:!!p.reachedLayer2,reachedLayer3:!!p.reachedLayer3,chaseEntry:p.chaseEntry??null,benchmarkEntryMode:bench.entryMode||null,benchmarkEntryPrice:bench.entryPrice??null,benchmarkCurrentReturnPct:bench.currentReturnPct??null,benchmarkDeltaCurrentPct:p.benchmarkDeltaCurrentPct??null,benchmarkHorizon:bench.horizon||null,diagnosis:tradeDiagnosticLabel(t)} })};
 }
 
 function downloadTradeDiagnostics(){
@@ -985,29 +1014,29 @@ function modelTradeMatches(t){const f=MODEL_TRADE_FILTER,fam=modelFamilyOf(t);if
 function setModelTradeFilter(v){MODEL_TRADE_FILTER=v;MODEL_TRADE_EXPANDED=null;renderModelTrades()}
 function setModelTradeLimit(v){MODEL_TRADE_LIMIT=v==='all'?'all':Number(v)||10;MODEL_TRADE_EXPANDED=null;renderModelTrades()}
 function toggleModelTradeDetail(id){MODEL_TRADE_EXPANDED=MODEL_TRADE_EXPANDED===id?null:id;renderModelTrades()}
-function modelTradeStatusText(t){const p=t?.perf||{},age=modelTradeAgeDays(t);if(t.exitAt)return'已結束';if(!p.horizon?.[5])return'追蹤中';if(p.reachedLayer3)return'曾到L3';if(p.reachedLayer2)return'曾到L2';if(age<=14)return'近期';return'歷史'}
+function modelTradeStatusText(t){const p=t?.perf||{},age=modelTradeAgeDays(t),pathOk=p.returnBasis===TRADE_RETURN_REQUIRED;if(t.exitAt)return'已結束';if(!p.horizon?.[5])return'追蹤中';if(pathOk&&p.reachedLayer3)return'曾到L3';if(pathOk&&p.reachedLayer2)return'曾到L2';if(!pathOk&&modelTradeDividendPerShare(t)>0)return'含息重算中';if(age<=14)return'近期';return'歷史'}
 function modelTradeDetailHtml(t){
  const p=t.perf,m=modelNetMetrics(t),ret=m.ret,pnl=m.net,h=p?.horizon||{},family=modelFamilyOf(t),manual=family==='manual',trendFamily=family==='trend',label=manual?'自主買入':trendFamily?'強勢加碼':`合理模型第${t.layer}層`,gap=Number(t.snapshot?.priceVsFirstHighPct),sf=t.snapshot?.shadow?.experimentalFactors||null,shadowExtra=sf?`<br>Shadow快照：量價 ${sf.volume?.usable?sf.volume.score+'/100':'—'}｜籌碼 ${sf.chips?.usable?sf.chips.score+'/100':'—'}｜合計影響 ${Number.isFinite(Number(sf.totalEffect))?(Number(sf.totalEffect)>=0?'+':'')+Number(sf.totalEffect).toFixed(1)+'分':'—'}`:'';
  const tl=t.snapshot?.trendLevels||{},tt=t.snapshot?.trend||{},tb=t.snapshot?.trendBacktest||{};
  const snapshotText=trendFamily?`<b>進場快照：強勢加碼</b><br>ETF趨勢強度 ${t.snapshot?.score??'—'}/100｜狀態 ${t.snapshot?.modelStatusText||'—'}｜突破位 ${fmt(tl.breakout20)}｜執行帶 ${fmt(tl.entryLow)}–${fmt(tl.entryHigh)}｜最高追價線 ${fmt(tl.maxChase)}<br>日線20/60/120 ${fmt(tt.sma20)} / ${fmt(tt.sma60)} / ${fmt(tt.sma120)}｜週線20/40 ${fmt(tt.weekly20)} / ${fmt(tt.weekly40)}｜20日動能 ${pct(tt.momentum20)}｜相對大盤20/60日 ${pct(tt.relative20)} / ${pct(tt.relative60)}｜距突破 ${Number.isFinite(Number(tt.distBreakAtr))?fmt(tt.distBreakAtr)+' ATR':'—'}<br>歷史核心 ${tb.signals||0}筆${tb.startDate&&tb.endDate?`｜${tb.startDate.slice(0,4)}～${tb.endDate.slice(0,4)}`:''}｜20日 ${pct(tb.avg20)}（勝率 ${pct(tb.win20)}）｜60日 ${pct(tb.avg60)}（勝率 ${pct(tb.win60)}）｜20日MAE/MFE ${fmt(tb.avgMAE20)}%/${fmt(tb.avgMFE20)}%｜假突破 ${pct(tb.fakeBreak5Rate)}`:
   `${manual?'<b>交易來源：自主買入（未觸發模型）</b><br>':'進場快照：'}分數 ${t.snapshot?.score??'—'}｜防追高 ${t.snapshot?.chaseRisk??'—'}｜環境 ${fmt(t.snapshot?.environmentScore)}｜歷史 ${p?.officialHistory?'TWSE官方':'備援/建立中'}。${manual?`<br>當下模型：${t.snapshot?.modelStatusText||'未記錄'}${Number.isFinite(gap)?`｜成交價較當時第一買點上緣 ${gap>=0?'+':''}${gap.toFixed(2)}%`:''}`:''}`;
- return`<div class="trade-detail-card"><div class="row"><div><b>${t.code}｜${label}</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束淨損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b><small>${Number.isFinite(m.gross)&&Number.isFinite(m.cost)?`含息毛損益 ${Math.round(m.gross).toLocaleString()}｜估計成本 ${Math.round(m.cost)}元`:''}${Number(p?.accruedDividendPerShare)>0?`｜每股已取得配息 ${Number(p.accruedDividendPerShare).toFixed(2)}`:''}</small></div><div class="box"><span class="k">5日含息</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日含息</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日含息</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">含息 MAE / MFE</span><b>${Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—'} / ${Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'}</b></div></div><div class="reading">${snapshotText}${p?`${trendFamily?'':'<br>第2層曾到：'+(p.reachedLayer2?'是':'否')+'｜第3層曾到：'+(p.reachedLayer3?'是':'否')+'｜進場追高：'+(p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—')}${Number.isFinite(p.benchmarkDeltaCurrentPct)?`<br>相對「同日開盤直接買」：${p.benchmarkDeltaCurrentPct>=0?'+':''}${p.benchmarkDeltaCurrentPct.toFixed(2)} 個百分點`:''}<br><b>診斷：</b>${tradeDiagnosticLabel(t)}`:''}${shadowExtra}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`;
+ return`<div class="trade-detail-card"><div class="row"><div><b>${t.code}｜${label}</b><div class="note">${new Date(t.entryAt).toLocaleString('zh-TW',{hour12:false})}｜${t.shares.toLocaleString()}股 @ ${fmt(t.entryPrice)}</div></div><b class="${cls(ret)}">${Number.isFinite(ret)?pct(ret):'追蹤中'}</b></div><div class="grid5"><div class="box"><span class="k">目前/結束淨損益</span><b class="${cls(pnl)}">${Number.isFinite(pnl)?Math.round(pnl).toLocaleString():'—'}</b><small>${Number.isFinite(m.gross)&&Number.isFinite(m.cost)?`含息毛損益 ${Math.round(m.gross).toLocaleString()}｜估計成本 ${Math.round(m.cost)}元`:''}${Number(modelTradeDividendPerShare(t))>0?`｜每股已取得配息 ${Number(modelTradeDividendPerShare(t)).toFixed(2)}`:''}${p?.returnBasis!==TRADE_RETURN_REQUIRED&&Number(modelTradeDividendPerShare(t))>0?'｜前端含息校正中':''}</small></div><div class="box"><span class="k">5日含息</span><b>${h[5]?pct(h[5].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">20日含息</span><b>${h[20]?pct(h[20].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">60日含息</span><b>${h[60]?pct(h[60].totalReturnPct):'未到'}</b></div><div class="box"><span class="k">${p?.returnBasis===TRADE_RETURN_REQUIRED?'含息 MAE / MFE':'MAE / MFE'}</span><b>${p?.returnBasis===TRADE_RETURN_REQUIRED?(Number.isFinite(p?.maePct)?fmt(p.maePct)+'%':'—')+' / '+(Number.isFinite(p?.mfePct)?fmt(p.mfePct)+'%':'—'):'等待後端含息重算'}</b></div></div><div class="reading">${snapshotText}${p?`${trendFamily?'':(p.returnBasis===TRADE_RETURN_REQUIRED?'<br>第2層曾到：'+(p.reachedLayer2?'是':'否')+'｜第3層曾到：'+(p.reachedLayer3?'是':'否'):'<br>第2/3層觸及：等待後端含息重算')+'｜進場追高：'+(p.chaseEntry===true?'是':p.chaseEntry===false?'否':'—')}${Number.isFinite(p.benchmarkDeltaCurrentPct)?`<br>相對「同日開盤直接買」：${p.benchmarkDeltaCurrentPct>=0?'+':''}${p.benchmarkDeltaCurrentPct.toFixed(2)} 個百分點`:''}<br><b>診斷：</b>${tradeDiagnosticLabel(t)}`:''}${shadowExtra}</div><button class="btn" onclick="closeTrackedTrade('${t.id}')">${t.exitAt?'已結束':'記錄賣出/結束追蹤'}</button> <button class="btn danger" onclick="deleteTrackedTrade('${t.id}')">刪除</button></div>`;
 }
 
 function renderModelTrades(){
  const open=MODEL_TRADES.filter(t=>!t.exitAt),modelTrades=MODEL_TRADES.filter(t=>t.tradeType!=='manual'),reasonableTrades=modelTrades.filter(t=>modelFamilyOf(t)==='reasonable'),trendTrades=modelTrades.filter(t=>modelFamilyOf(t)==='trend'),manualTrades=MODEL_TRADES.filter(t=>t.tradeType==='manual');
- const modelMetrics=modelTrades.map(t=>({t,m:modelNetMetrics(t)})),modelRets=modelMetrics.map(x=>x.m.ret).filter(Number.isFinite),manualRets=manualTrades.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),maes=modelTrades.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfes=modelTrades.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),bd=modelTrades.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);
+ const modelMetrics=modelTrades.map(t=>({t,m:modelNetMetrics(t)})),modelRets=modelMetrics.map(x=>x.m.ret).filter(Number.isFinite),manualRets=manualTrades.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),pathTrades=modelTrades.filter(modelTradePathMetricsReady),maes=pathTrades.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfes=pathTrades.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),bd=modelTrades.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);
  const allMetrics=MODEL_TRADES.map(modelNetMetrics),allPnls=allMetrics.map(x=>x.net).filter(Number.isFinite),allPnl=allPnls.reduce((sum,x)=>sum+x,0),modelWins=modelRets.filter(x=>x>0).length;
  const shadowSnap=modelTrades.filter(t=>t.snapshot?.shadow?.zones?.[0]&&t.snapshot?.zones?.[0]),shadowShift=shadowSnap.map(t=>{const a=center(t.snapshot.zones[0]),b=center(t.snapshot.shadow.zones[0]);return a>0?(b-a)/a*100:null}).filter(Number.isFinite);
  $('liveTradeSummary').innerHTML=`<div class="box"><span class="k">模型買入</span><b>${modelTrades.length}筆</b><small>合理 ${reasonableTrades.length}｜強勢加碼 ${trendTrades.length}${modelRets.length?`｜獲利 ${modelWins}/${modelRets.length}`:''}</small></div><div class="box"><span class="k">平均 MAE / MFE</span><b>${fmt(mean(maes))}% / ${fmt(mean(mfes))}%</b><small>看進場後最差／最好路徑</small></div><div class="box"><span class="k">vs 同日開盤</span><b class="${cls(mean(bd))}">${bd.length?pct(mean(bd)):'—'}</b><small>兩種模型合計平均相對優勢</small></div><div class="box"><span class="k">Shadow 對照</span><b>${shadowSnap.length}筆</b><small>${shadowShift.length?`合理L1平均位移 ${pct(mean(shadowShift))}`:'等待共時快照'}｜非績效勝負</small></div><div class="box"><span class="k">追蹤中 / 淨損益</span><b>${open.length}筆｜<span class="${cls(allPnl)}">${allPnls.length?Math.round(allPnl).toLocaleString():'—'}</span></b></div>`;
  const diag=performanceDiagnosticPayload().summary,layerDiag=diag.byLayer,trendDiag=diag.byFamily?.trend||{},oldDiag=document.getElementById('tradeLayerDiagnostic');if(oldDiag)oldDiag.remove();$('liveTradeSummary').insertAdjacentHTML('afterend',`<div id="tradeLayerDiagnostic" class="reading" style="margin:8px 0 12px"><b>合理買點模型：</b>L1 ${layerDiag[1].trades}筆｜平均報酬 ${pct(layerDiag[1].avgNetReturnPct)}｜平均MAE ${fmt(layerDiag[1].avgMAEPct)}%｜後續到L2 ${layerDiag[1].reachedNextLayer??0}筆；L2 ${layerDiag[2].trades}筆；L3 ${layerDiag[3].trades}筆。<br><b>強勢加碼：</b>${trendDiag.trades||0}筆｜平均報酬 ${pct(trendDiag.avgNetReturnPct)}｜平均MAE ${fmt(trendDiag.avgMAEPct)}%｜vs同日開盤 ${pct(trendDiag.avgBenchmarkDeltaCurrentPct)}。<br><span class="note">兩套模型分開統計：合理買點維持三層回檔；強勢加碼只記錄趨勢確認後的突破／回踩訊號。</span></div>`);
- const attention=MODEL_TRADES.filter(t=>!t.exitAt&&(modelTradeAgeDays(t)<=14||!t.perf?.horizon?.[5]||t.perf?.reachedLayer2||t.perf?.reachedLayer3)).sort((a,b)=>new Date(b.entryAt)-new Date(a.entryAt)).slice(0,6);
+ const attention=MODEL_TRADES.filter(t=>!t.exitAt&&(modelTradeAgeDays(t)<=14||!t.perf?.horizon?.[5]||(modelTradePathMetricsReady(t)&&(t.perf?.reachedLayer2||t.perf?.reachedLayer3)))).sort((a,b)=>new Date(b.entryAt)-new Date(a.entryAt)).slice(0,6);
  const attentionHtml=`<div class="trade-section-head"><div><b>目前需要看的交易</b><small>近期14日、未滿5日或曾觸及下一層；最多展開6筆。</small></div></div>${attention.length?`<div class="trade-attention-grid">${attention.map(modelTradeDetailHtml).join('')}</div>`:'<div class="notice">目前沒有需要優先檢視的交易。</div>'}`;
  const filters=[['all','全部'],['0050','0050'],['0056','0056'],['00878','00878'],['00919','00919'],['reasonable','合理模型'],['trend','強勢加碼'],['L1','L1'],['L2','L2'],['L3','L3'],['model','全部模型'],['manual','自主買入']],limits=[[10,'最近10筆'],[30,'最近30筆'],['all','全部']];
  let hist=MODEL_TRADES.slice().sort((a,b)=>new Date(b.entryAt)-new Date(a.entryAt)).filter(modelTradeMatches);if(MODEL_TRADE_LIMIT!=='all')hist=hist.slice(0,MODEL_TRADE_LIMIT);
  const controls=`<div class="trade-history-head"><div><b>歷史交易</b><small>預設只列最近10筆；點任一列才展開完整快照。</small></div><div class="trade-filter-row">${filters.map(([v,l])=>`<button class="trade-filter ${MODEL_TRADE_FILTER===v?'on':''}" onclick="setModelTradeFilter('${v}')">${l}</button>`).join('')}</div><div class="trade-filter-row">${limits.map(([v,l])=>`<button class="trade-filter ${String(MODEL_TRADE_LIMIT)===String(v)?'on':''}" onclick="setModelTradeLimit('${v}')">${l}</button>`).join('')}</div></div>`;
- const rows=hist.map(t=>{const m=modelNetMetrics(t),p=t.perf||{},ret=m.ret,expanded=MODEL_TRADE_EXPANDED===t.id,fam=modelFamilyOf(t),label=fam==='manual'?'自主':fam==='trend'?'強勢加碼':`L${t.layer||'—'}`;return`<tr class="trade-row ${expanded?'expanded':''}" onclick="toggleModelTradeDetail('${t.id}')"><td>${t.entryDate||'—'}</td><td><b>${t.code}</b></td><td>${label}</td><td>${fmt(t.entryPrice)}</td><td>${Number(t.shares||0).toLocaleString()}</td><td class="${cls(ret)}">${pct(ret)}</td><td>${Number.isFinite(Number(p.maePct))?fmt(p.maePct)+'%':'—'}</td><td>${Number.isFinite(Number(p.mfePct))?fmt(p.mfePct)+'%':'—'}</td><td>${modelTradeStatusText(t)}</td></tr>${expanded?`<tr class="trade-detail-row"><td colspan="9">${modelTradeDetailHtml(t)}</td></tr>`:''}`}).join('');
- const table=hist.length?`<div class="trade-table-wrap"><table class="trade-table"><thead><tr><th>日期</th><th>ETF</th><th>層級</th><th>買價</th><th>股數</th><th>目前報酬</th><th>MAE</th><th>MFE</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="notice">此篩選條件沒有交易紀錄。</div>';
+ const rows=hist.map(t=>{const m=modelNetMetrics(t),p=t.perf||{},ret=m.ret,expanded=MODEL_TRADE_EXPANDED===t.id,fam=modelFamilyOf(t),label=fam==='manual'?'自主':fam==='trend'?'強勢加碼':`L${t.layer||'—'}`,pathReady=modelTradePathMetricsReady(t);return`<tr class="trade-row ${expanded?'expanded':''}" onclick="toggleModelTradeDetail('${t.id}')"><td>${t.entryDate||'—'}</td><td><b>${t.code}</b></td><td>${label}</td><td>${fmt(t.entryPrice)}</td><td>${Number(t.shares||0).toLocaleString()}</td><td class="${cls(ret)}">${pct(ret)}</td><td>${pathReady&&Number.isFinite(Number(p.maePct))?fmt(p.maePct)+'%':pathReady?'—':'重算中'}</td><td>${pathReady&&Number.isFinite(Number(p.mfePct))?fmt(p.mfePct)+'%':pathReady?'—':'重算中'}</td><td>${modelTradeStatusText(t)}</td></tr>${expanded?`<tr class="trade-detail-row"><td colspan="9">${modelTradeDetailHtml(t)}</td></tr>`:''}`}).join('');
+ const table=hist.length?`<div class="trade-table-wrap"><table class="trade-table"><thead><tr><th>日期</th><th>ETF</th><th>層級</th><th>買價</th><th>股數</th><th>目前含息</th><th>MAE</th><th>MFE</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="notice">此篩選條件沒有交易紀錄。</div>';
  $('modelTradeList').innerHTML=modelSyncBar()+attentionHtml+controls+table;
 }
 async function loadHistoryStatus(){
