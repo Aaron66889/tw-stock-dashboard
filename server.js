@@ -9,7 +9,8 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.98-ETF-TRADE-TOTAL-RETURN';
+const BUILD='16.8.99-ETF-TRADE-TOTAL-RETURN-CONSISTENCY';
+const TRADE_RETURN_VERSION='cash-entitlement-total-return-v2';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
 const SUPABASE_SECRET_KEY=String(process.env.SUPABASE_SECRET_KEY||'').trim();
@@ -2625,9 +2626,10 @@ function tradeDividendEventsFromReport(code,d){
  return out.sort((a,b)=>a.exDate.localeCompare(b.exDate));
 }
 function tradeDividendPerShare(events,entryDate,throughDate){
- return (events||[]).reduce((sum,e)=>sum+(e.exDate>entryDate&&e.exDate<=throughDate?(Number(e.amount)||0):0),0);
+ const uniq=new Map();for(const e of (events||[])){const d=String(e?.exDate||e?.date||'');if(/^\d{4}-\d{2}-\d{2}$/.test(d)&&Number(e?.amount)>0)uniq.set(d,{...e,exDate:d})}
+ return [...uniq.values()].reduce((sum,e)=>sum+(e.exDate>String(entryDate||'')&&e.exDate<=String(throughDate||'')?(Number(e.amount)||0):0),0);
 }
-function tradeEligibleDividends(events,entryDate,throughDate){return(events||[]).filter(e=>e.exDate>entryDate&&e.exDate<=throughDate)}
+function tradeEligibleDividends(events,entryDate,throughDate){const uniq=new Map();for(const e of (events||[])){const d=String(e?.exDate||e?.date||'');if(/^\d{4}-\d{2}-\d{2}$/.test(d)&&Number(e?.amount)>0)uniq.set(d,{...e,exDate:d})}return [...uniq.values()].filter(e=>e.exDate>String(entryDate||'')&&e.exDate<=String(throughDate||''))}
 
 async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3Low=null,layer1High=null){
  if(!ETF.includes(code)||!(Number(entryPrice)>0)||!/^\d{4}-\d{2}-\d{2}$/.test(entryDate||''))return{ok:false,error:'invalid trade parameters'};
@@ -2652,7 +2654,10 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
  const currentPriceReturnPct=Number.isFinite(current)?(current/ep-1)*100:null;
  const currentTotalReturnPct=Number.isFinite(current)?((current+currentDividendPerShare)/ep-1)*100:null;
  const immediate={
+  build:BUILD,
+  tradeReturnVersion:TRADE_RETURN_VERSION,
   currentPrice:current,
+  currentEconomicPrice:Number.isFinite(current)?current+currentDividendPerShare:null,
   currentPriceReturnPct,
   currentTotalReturnPct,
   // Backward-compatible fields now intentionally mean economic total return (price + entitled cash distributions).
@@ -2664,7 +2669,7 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
   dividendDataComplete,
   dividendSource:divReport?.source||'TWSE ETF e添富',
   dividendError:dividendError||(divReport?.errors||[])[0]||null,
-  returnBasis:'cash-entitlement-total-return-v1',
+  returnBasis:TRADE_RETURN_VERSION,
   currentPriceSource:Number.isFinite(livePx)&&livePx>0?liveSource:(Number.isFinite(histPx)&&histPx>0?'daily history fallback':null)
  };
  if(!rows.length)return{ok:true,status:'TRACKING',code,entryDate,entryPrice:ep,...immediate,horizon:{5:null,20:null,60:null},benchmark:{entryMode:'same-day-open',entryPrice:null,currentReturnPct:null,currentPriceReturnPct:null,horizon:{5:null,20:null,60:null}},maePct:null,mfePct:null,priceMaePct:null,priceMfePct:null,maeDate:null,mfeDate:null,
@@ -2681,7 +2686,7 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
  }
  const benchmarkPriceReturnPct=Number.isFinite(current)&&benchmarkEntry>0?(current/benchmarkEntry-1)*100:null;
  const benchmarkCurrentReturnPct=Number.isFinite(current)&&benchmarkEntry>0?((current+currentDividendPerShare)/benchmarkEntry-1)*100:null;
- const benchmark={entryMode:'same-day-open',entryPrice:benchmarkEntry>0?benchmarkEntry:null,currentPriceReturnPct:benchmarkPriceReturnPct,currentReturnPct:benchmarkCurrentReturnPct,horizon:benchmarkHorizon,accruedDividendPerShare:currentDividendPerShare,returnBasis:'cash-entitlement-total-return-v1'};
+ const benchmark={entryMode:'same-day-open',entryPrice:benchmarkEntry>0?benchmarkEntry:null,currentPriceReturnPct:benchmarkPriceReturnPct,currentReturnPct:benchmarkCurrentReturnPct,horizon:benchmarkHorizon,accruedDividendPerShare:currentDividendPerShare,returnBasis:TRADE_RETURN_VERSION};
  let min=null,max=null,priceMin=null,priceMax=null;
  for(const x of rows){
   const lo=tradeActualField(x,'low')??tradeActualField(x,'close'),hi=tradeActualField(x,'high')??tradeActualField(x,'close');if(!(lo>0&&hi>0))continue;
@@ -2693,7 +2698,10 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
  return{ok:true,status:'READY',code,entryDate,entryPrice:ep,...immediate,horizon,benchmark,
   benchmarkDeltaCurrentPct:Number.isFinite(immediate.currentReturnPct)&&Number.isFinite(benchmark.currentReturnPct)?immediate.currentReturnPct-benchmark.currentReturnPct:null,
   maePct:min?(min.price/ep-1)*100:null,mfePct:max?(max.price/ep-1)*100:null,maeDate:min?.date||null,mfeDate:max?.date||null,
+  maeDetail:min?{date:min.date,marketPrice:min.marketPrice,dividendPerShare:min.dividendPerShare,economicPrice:min.price}:null,
+  mfeDetail:max?{date:max.date,marketPrice:max.marketPrice,dividendPerShare:max.dividendPerShare,economicPrice:max.price}:null,
   priceMaePct:priceMin?(priceMin.price/ep-1)*100:null,priceMfePct:priceMax?(priceMax.price/ep-1)*100:null,
+  layerReachBasis:TRADE_RETURN_VERSION,
   // Layer-reach diagnostics also use the economic price (market low + entitled dividend), so an ex-dividend gap cannot fake an L2/L3 touch.
   reachedLayer2:Number.isFinite(l2)&&min?min.price<=l2:false,reachedLayer3:Number.isFinite(l3)&&min?min.price<=l3:false,
   chaseEntry:Number.isFinite(l1h)?ep>l1h:null,historySource:h.source,officialHistory:!!h.validation?.fullHistoryPass,updatedAt:new Date().toISOString()};
@@ -2704,7 +2712,7 @@ function modelTradeStaticProof(){
   const app=fs.readFileSync(path.join(PUBLIC,'app.js'),'utf8');
   const required=['v124_model_trades','function saveModelTrade','function refreshModelTradePerformance','function downloadTradeDiagnostics','currentReturnPct','maePct','mfePct','benchmarkDeltaCurrentPct','reachedLayer2','reachedLayer3','chaseEntry','function closeTrackedTrade'];
   const missing=required.filter(x=>!app.includes(x));
-  return{pass:missing.length===0,storageKey:'v124_model_trades',metrics:['currentPnL','5d','20d','60d','MAE','MFE','sameDayOpenBenchmark','benchmarkDelta','reachedLayer2','reachedLayer3','chaseEntry'],missing};
+  return{pass:missing.length===0,tradeReturnVersion:TRADE_RETURN_VERSION,storageKey:'v124_model_trades',metrics:['currentPnL','5d','20d','60d','MAE','MFE','sameDayOpenBenchmark','benchmarkDelta','reachedLayer2','reachedLayer3','chaseEntry'],missing};
  }catch(e){return{pass:false,storageKey:'v124_model_trades',metrics:[],missing:['app.js unreadable'],error:e.message}}
 }
 
