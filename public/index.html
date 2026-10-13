@@ -65,6 +65,7 @@
 <div id="trendBuyPage" class="page">
 <section class="card"><div class="row"><div><div class="sectiontitle">四檔ETF強勢加碼｜趨勢確認後的小額加碼</div><div class="note">獨立於「ETF合理買點」的強勢加碼模型。只在趨勢結構與突破條件確認後評估小額加碼；分數代表趨勢強度，不是上漲機率，也不改動原三層買點、Gate 與正式模型紀錄。</div></div><button class="btn primary" onclick="loadTrendBuy(true)">重新整理</button></div><div id="trendBuySummary" class="reading">強勢加碼模型載入中。</div></section>
 <div id="trendBuyCards"></div>
+<section class="card" id="trendForwardLedger"><div class="sectiontitle">A／B 前向實盤訊號帳簿</div><div class="reading">讀取持久化雲端前向訊號，顯示5／20／60日實際時間推進的績效。正式買點與持股不受影響。</div></section>
 <section class="card" id="trendShadowB"><div class="sectiontitle">強勢加碼 B 版｜Shadow 實驗</div><div class="reading">點入本頁後才計算，不影響正式強勢加碼訊號。</div></section>
 <section class="card"><div class="sectiontitle">這一頁怎麼看</div><div class="reading"><b>順勢買點不是追高。</b>模型會檢查日線均線結構、週線方向、20日／55日突破、ATR 距離與過熱程度；只有價格仍在「可接受執行帶」內才會顯示可小額。若漲得太遠則顯示不追價。此頁先獨立驗證，不影響既有合理買點。</div></section>
 </div>
@@ -136,4 +137,4 @@
 <div class="field" id="mtLayerField"><label>依模型哪一層買入</label><select id="mtLayer" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px"><option value="1">第一層</option><option value="2">第二／理想層</option><option value="3">第三／強力層</option></select></div>
 <div id="mtSnapshot" class="reading"></div><button id="mtSaveBtn" class="btn primary" style="width:100%;margin-top:12px" onclick="saveModelTrade()">保存這筆模型實戰</button></div></div>
 
-<script src="/app.js?v=16.8.101-SYNC-RELIABILITY"></script><script src="/model-ab.js?v=ab-20261013"></script><script src="/trend-shadow-b-ui.js?v=trend-b-20261013"></script></body></html>
+<script src="/app.js?v=16.8.101-SYNC-RELIABILITY"></script><script src="/model-ab.js?v=ab-20261013"></script><script src="/trend-shadow-b-ui.js?v=trend-b-20261013"></script><script src="/trend-forward-ui.js?v=ab-ledger-20261013"></script></body></html>
