@@ -95,6 +95,7 @@
 <div id="model" class="page">
 <section class="card"><div class="sectiontitle">模型狀況／核心風控</div><div id="modelCards"></div></section>
 <section class="card"><div class="row"><div><div class="sectiontitle">我的實戰成績</div><div class="note">模型買入與自主買入分開統計；自主買入仍保存當下模型快照，但不計入模型績效。</div></div><button class="btn primary" onclick="downloadTradeDiagnostics()">下載績效診斷</button></div><div id="liveTradeSummary" class="grid5"></div><div id="modelTradeList"></div></section>
+<section class="card" id="abValidation"><div class="sectiontitle">A／B 驗證｜績效歸因</div><div class="reading">模型實戰載入後自動整理唯讀比較；不更動正式策略或交易紀錄。</div></section>
 <section class="card"><div class="sectiontitle">全歷史建立狀態</div><div class="note">服務啟動後自動建立四檔TWSE官方全歷史，不需要按回測才開始。完成前模型會明示使用備援。</div><div id="historyBuildStatus" class="grid4"></div></section>
 <section class="card"><div class="sectiontitle">全歷史價格核心回測</div><div class="note">上市日至今是主結果；近10／5／2／1年只是切片。使用還原權息序列避免除息假跌。這裡驗證價格核心，不等同完整重播盤中環境、成分健康與兩次確認狀態機。</div><div class="etftabs" id="backtestTabs"></div><button class="btn primary" id="runBacktestBtn" onclick="runBacktest()">執行價格核心回測</button><div id="backtestResult" class="reading">尚未執行。</div></section>
 <section class="card"><div class="row"><div class="sectiontitle">今日模型事件</div><button class="btn danger" id="clearModelEventsBtn" onclick="clearModelEvents()">清除事件</button></div><div class="note" style="margin-bottom:8px">事件太多時可清除本機紀錄；後續新模型事件仍會繼續記錄。</div><div id="modelEvents"></div></section>
@@ -135,4 +136,4 @@
 <div class="field" id="mtLayerField"><label>依模型哪一層買入</label><select id="mtLayer" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px"><option value="1">第一層</option><option value="2">第二／理想層</option><option value="3">第三／強力層</option></select></div>
 <div id="mtSnapshot" class="reading"></div><button id="mtSaveBtn" class="btn primary" style="width:100%;margin-top:12px" onclick="saveModelTrade()">保存這筆模型實戰</button></div></div>
 
-<script src="/app.js?v=16.8.101-SYNC-RELIABILITY"></script></body></html>
+<script src="/app.js?v=16.8.101-SYNC-RELIABILITY"></script><script src="/model-ab.js?v=ab-20261013"></script></body></html>
