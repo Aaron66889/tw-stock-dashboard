@@ -2934,16 +2934,62 @@ async function dividendAutoReport(){
  }
  return{ok:true,build:BUILD,version:'div-auto-v2-announcement',automatic:true,startDate:DIVIDEND_AUTO_START,baseAsOf:DIVIDEND_BASE_ASOF,today,snapshotDay:latestSnap?.day||null,byCode,source:'TWSE ETF e添富配息清單＋收益分配公告＋雲端持股日快照',announcementSource:announcementReport?.source||null,updatedAt:state.updatedAt||cloud.updatedAt||null,fetchedAt:new Date().toISOString()};
 }
-async function cloudUpsertHoldings(holdings){
+// R3.81: optimistic concurrency prevents two devices from losing each other's
+// share increments. No database schema migration: applied IDs live in the
+// existing holdings payload, and are preserved by manual portfolio uploads.
+function cleanHoldingsInput(holdings){
  if(!Array.isArray(holdings)||holdings.length>100)throw Error('invalid holdings');
- const clean=holdings.map(h=>({t:String(h?.t||''),n:String(h?.n||h?.t||''),s:Number(h?.s)||0,c:Number(h?.c)||0,dividendReceived:Math.max(0,Number(h?.dividendReceived)||0),dividendAsOf:String(h?.dividendAsOf||'')}))
-   .filter(h=>h.t&&h.s>=0&&h.c>=0);
- const now=new Date().toISOString();
- const row={id:HOLDINGS_SYNC_ID,code:'__HOLDINGS__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload:{holdings:clean,updatedAt:now}};
- await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
- let dividendSnapshotRecorded=false,dividendSnapshotError=null;
- try{await recordDividendHoldingsSnapshot(clean,ymdTaipei());dividendSnapshotRecorded=true}catch(e){dividendSnapshotError=e.message||String(e)}
- return{ok:true,holdings:clean,updatedAt:now,dividendSnapshotRecorded,dividendSnapshotError};
+ return holdings.map(h=>({t:String(h?.t||''),n:String(h?.n||h?.t||''),s:Number(h?.s)||0,c:Number(h?.c)||0,dividendReceived:Math.max(0,Number(h?.dividendReceived)||0),dividendAsOf:String(h?.dividendAsOf||'')}))
+  .filter(h=>h.t&&h.s>=0&&h.c>=0);
+}
+async function conditionalCloudHoldingsWrite(existingRow,holdings,appliedTradeIds){
+ const now=new Date().toISOString(),ids=[...new Set(appliedTradeIds||[])];
+ const payload={holdings,appliedTradeIds:ids,updatedAt:now};
+ if(existingRow){
+  const route='model_trades?id=eq.'+encodeURIComponent(HOLDINGS_SYNC_ID)+'&updated_at=eq.'+encodeURIComponent(existingRow.updated_at)+'&select=id';
+  const r=await supabaseRest(route,{method:'PATCH',headers:{'Prefer':'return=representation'},body:{updated_at:now,payload}});
+  return Array.isArray(r)&&r.length===1;
+ }
+ try{
+  // An ordinary insert (no upsert) fails if another device initialized the row.
+  await supabaseRest('model_trades',{method:'POST',headers:{'Prefer':'return=minimal'},body:[{id:HOLDINGS_SYNC_ID,code:'__HOLDINGS__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload}]});
+  return true;
+ }catch(e){if(String(e.message||'').includes('HTTP 409'))return false;throw e}
+}
+async function cloudUpsertHoldings(holdings,expectedUpdatedAt){
+ const clean=cleanHoldingsInput(holdings);
+ for(let attempt=0;attempt<8;attempt++){
+  const rows=await cloudRowsById(HOLDINGS_SYNC_ID),r=rows[0],p=r?.payload&&typeof r.payload==='object'?r.payload:null;
+  const applied=Array.isArray(p?.appliedTradeIds)?p.appliedTradeIds:[];
+  if(expectedUpdatedAt&&r?.updated_at!==expectedUpdatedAt)throw Error('其他裝置已更新雲端持股，為避免覆蓋請重新下載、核對後再上傳');
+  if(await conditionalCloudHoldingsWrite(r,clean,applied)){
+   let dividendSnapshotRecorded=false,dividendSnapshotError=null;
+   try{await recordDividendHoldingsSnapshot(clean,ymdTaipei());dividendSnapshotRecorded=true}catch(e){dividendSnapshotError=e.message||String(e)}
+   const latest=await cloudRowsById(HOLDINGS_SYNC_ID);
+   return{ok:true,holdings:clean,updatedAt:latest[0]?.updated_at||null,dividendSnapshotRecorded,dividendSnapshotError};
+  }
+ }
+ throw Error('持股同時被其他裝置更新，請稍後重試');
+}
+async function cloudApplyHoldingsTrade(trade){
+ const id=String(trade?.id||''),code=String(trade?.code||'').trim(),shares=Number(trade?.shares),price=Number(trade?.entryPrice);
+ if(!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(id)||!ETF.includes(code)||!Number.isFinite(shares)||shares<=0||!Number.isSafeInteger(shares)||!Number.isFinite(price)||price<=0||price>1e7)throw Error('invalid holdings trade');
+ for(let attempt=0;attempt<10;attempt++){
+  const rows=await cloudRowsById(HOLDINGS_SYNC_ID),r=rows[0],p=r?.payload&&typeof r.payload==='object'?r.payload:null;
+  if(!p)throw Error('雲端持股尚未初始化；請先在正確裝置上傳持股後再同步交易');
+  const applied=Array.isArray(p.appliedTradeIds)?p.appliedTradeIds:[];
+  if(applied.includes(id))return{ok:true,applied:true,alreadyApplied:true,tradeId:id,holdings:p.holdings||[]};
+  const clean=cleanHoldingsInput(p.holdings||[]);
+  const h=clean.find(x=>x.t===code);
+  if(h){const prev=Number(h.s)||0,newShares=prev+shares;h.c=(prev*Number(h.c||0)+shares*price)/newShares;h.s=newShares}
+  else clean.push({t:code,n:code,s:shares,c:price,dividendReceived:0,dividendAsOf:ymdTaipei()});
+  if(await conditionalCloudHoldingsWrite(r,clean,[...applied,id])){
+   let dividendSnapshotRecorded=false,dividendSnapshotError=null;
+   try{await recordDividendHoldingsSnapshot(clean,ymdTaipei());dividendSnapshotRecorded=true}catch(e){dividendSnapshotError=e.message||String(e)}
+   return{ok:true,applied:true,alreadyApplied:false,tradeId:id,holdings:clean,dividendSnapshotRecorded,dividendSnapshotError};
+  }
+ }
+ throw Error('持股同時被其他裝置更新，稍後重試這筆交易');
 }
 
 
@@ -3065,12 +3111,18 @@ const server=http.createServer(async(req,res)=>{
   }catch(e){return send(res,400,{ok:false,error:e.message})}
  }
 
+ if(u.pathname==='/api/holdings-sync/apply-trade'&&req.method==='POST'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'持股雲端同步尚未完成後端設定'});
+  if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'持股雲端同步尚未解鎖'});
+  try{const body=await readJSONBody(req,8192);return send(res,200,await cloudApplyHoldingsTrade(body.trade))}
+  catch(e){return send(res,400,{ok:false,error:e.message||String(e)})}
+ }
  if(u.pathname==='/api/holdings-sync'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'持股雲端同步尚未完成後端設定'});
   if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'持股雲端同步尚未解鎖'});
   if(req.method==='GET')return safeApi(res,'holdings-sync',async()=>({ok:true,...await cloudHoldingsState(),fetchedAt:new Date().toISOString()}));
   if(req.method==='POST'){
-   try{const body=await readJSONBody(req);return send(res,200,await cloudUpsertHoldings(body.holdings))}catch(e){return send(res,400,{ok:false,error:e.message})}
+   try{const body=await readJSONBody(req);return send(res,200,await cloudUpsertHoldings(body.holdings,body.expectedUpdatedAt))}catch(e){return send(res,400,{ok:false,error:e.message})}
   }
  }
  if(u.pathname==='/api/dividend-auto'){
