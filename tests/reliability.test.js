@@ -207,6 +207,40 @@ test('complete formal models render all four ETFs, history and 45 validation slo
  assert.match(c.nodes.get('validationSummary').innerHTML,/交易核心/);
 });
 
+test('B risk banner warns when A allows an entry but B rejects it, without mutating official A',()=>{
+ const c=client(),m={status:'TREND_BUY',score:97,shadowB:{status:'WAIT_CHASE',reason:'突破距離過大'}};
+ c.ctx.sample=m;
+ const before=JSON.stringify(m),h=c.run('trendShadowAdvisory(sample)');
+ assert.match(h,/風險分歧/);
+ assert.match(h,/突破距離過大/);
+ assert.match(h,/暫緩/);
+ assert.equal(JSON.stringify(m),before);
+ assert.equal(c.run('sample.status'),'TREND_BUY');
+});
+
+test('B candidate aligned, missing B and A not ready are clearly differentiated',()=>{
+ const c=client();
+ c.ctx.pass={status:'TREND_BUY',shadowB:{status:'B_CANDIDATE',reason:'符合條件'}};
+ c.ctx.unknown={status:'TREND_BUY'};
+ c.ctx.incomplete={status:'TREND_BUY',shadowB:{status:'DATA_INCOMPLETE',reason:'缺當日開盤'}};
+ c.ctx.noA={status:'WAIT_BREAKOUT',shadowB:{status:'B_CANDIDATE',reason:'不可信'}};
+ assert.match(c.run('trendShadowAdvisory(pass)'),/Shadow候選也符合/);
+ assert.match(c.run('trendShadowAdvisory(unknown)'),/狀態未取得/);
+ assert.match(c.run('trendShadowAdvisory(incomplete)'),/不得把資料缺漏當成否決或通過/);
+ assert.equal(c.run('trendShadowAdvisory(noA)'),'');
+});
+
+test('B advice cannot insert unsafe HTML and remains next to A buying status',()=>{
+ const c=client();
+ c.ctx.bad={status:'TREND_BUY',shadowB:{status:'WAIT_CANDLE',reason:'<img src=x onerror=alert(1)>'}};
+ assert.doesNotMatch(c.run('trendShadowAdvisory(bad)'),/<img/);
+ assert.match(c.run('trendShadowAdvisory(bad)'),/&lt;img/);
+ c.run("lastTrendBuy={models:{'0050':{ok:true,price:100,score:97,status:'TREND_BUY',statusText:'可小額加碼',action:'A版可小額',levels:{breakout20:99,maxChase:101},trend:{},shadowB:{status:'WAIT_CHASE',reason:'突破過遠'},backtest:{}}}};renderTrendBuy();");
+ const h=c.nodes.get('trendBuyCards').innerHTML;
+ assert.match(h,/A版訊號成立｜B版風險分歧/);
+ assert.match(h,/記錄強勢加碼買入/); // Formal A trade permissions remain exactly as before.
+});
+
 test('trend live prices update independently while score, entry band and model timestamp stay fixed',()=>{
  const c=client();c.run(`$('trendBuyPage').classList.add('on');lastTrendBuy={fetchedAt:'old-model-time',models:{'0050':{ok:true,price:100,score:93,status:'TREND_BUY',levels:{entryLow:99,entryHigh:101},trend:{},backtest:{}}}};lastLive={quotes:{'0050':{last:100,prevClose:99}}};renderTrendBuy();lastLive.quotes['0050'].last=102;refreshTrendLiveQuotes();`);
  assert.match(c.nodes.get('trendLivePrice-0050').textContent,/102\.00/);
