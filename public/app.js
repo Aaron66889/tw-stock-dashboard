@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.105-STABLE-CONFIRM-VALIDATION-LAZY',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.100-ETF-TRADE-PATH-READY-COMPAT',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const TRADE_RETURN_REQUIRED='cash-entitlement-total-return-v2';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
@@ -74,15 +74,7 @@ function dividendStats(code,holding){
 function money0(n){return Number.isFinite(Number(n))?Math.round(Number(n)).toLocaleString():'—'}
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),SHADOW_STATE=loadJSON('v124_shadow_state',{day:null,models:{}}),SHADOW_LOG=loadJSON('v124_shadow_replay',[]),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null,knownUnlocked:!!loadJSON('v124_model_sync_known_unlocked',false)};
-// R3.81: persisted, trade-ID keyed holdings operations. A network retry is safe because
-// the backend applies each trade ID once (including across phones / computers).
-const HOLDINGS_OP_KEY='v124_holdings_pending_trade_ops';
-const HOLDINGS_MANUAL_DIRTY_KEY='v124_holdings_manual_dirty';
-let HOLDINGS_PENDING_TRADES=loadJSON(HOLDINGS_OP_KEY,[]);
-if(!Array.isArray(HOLDINGS_PENDING_TRADES))HOLDINGS_PENDING_TRADES=[];
-let HOLDINGS_MANUAL_DIRTY=!!loadJSON(HOLDINGS_MANUAL_DIRTY_KEY,false);
-let HOLDINGS_LOCAL_REV=0,HOLDINGS_REMOTE_REV=0,HOLDINGS_PUSH_BUSY=false,HOLDINGS_OP_BUSY=false;
-let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,cloudUpdatedAt:null,message:'持股雲端同步檢查中'};
+let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,message:'持股雲端同步檢查中'};
 let DIVIDEND_AUTO={busy:false,ready:false,lastAt:null,message:'股息自動同步檢查中',byCode:{},snapshotDay:null,source:null};
 let MODEL_PENDING_DELETES=loadJSON('v124_model_trade_pending_deletes',[]);
 let MODEL_TRADE_FILTER='all',MODEL_TRADE_LIMIT=10,MODEL_TRADE_EXPANDED=null;
@@ -108,34 +100,11 @@ function safeCtxLastGood(c){
  return x;
 }
 function loadHoldings(){try{const x=JSON.parse(localStorage.getItem('twStockHoldingsV12'));const a=Array.isArray(x)?x:DEFAULT_H;return a.map(normalizeHoldingRecord)}catch{return DEFAULT_H.map(normalizeHoldingRecord)}}
-function persistPendingHoldingsOps(){saveJSON(HOLDINGS_OP_KEY,HOLDINGS_PENDING_TRADES)}
-function persistHoldingsLocal(){HOLDINGS_LOCAL_REV++;saveJSON('twStockHoldingsV12',H)}
-function setHoldingsManualDirty(on){HOLDINGS_MANUAL_DIRTY=!!on;saveJSON(HOLDINGS_MANUAL_DIRTY_KEY,HOLDINGS_MANUAL_DIRTY)}
-function applyBoughtSharesLocal(op){
- const h=H.find(v=>v.t===op.code),qty=Number(op.shares),price=Number(op.entryPrice);
- if(h){const oldShares=Number(h.s)||0,oldCost=Number(h.c)||0,next=oldShares+qty;h.c=(oldShares*oldCost+qty*price)/next;h.s=next}
- else H.push(normalizeHoldingRecord({t:op.code,n:op.code,s:qty,c:price,dividendReceived:0,dividendAsOf:dayKey()}));
-}
-function queueHoldingsTrade(trade){
- const op={id:trade.id,code:trade.code,shares:trade.shares,entryPrice:trade.entryPrice,entryAt:trade.entryAt};
- if(!HOLDINGS_PENDING_TRADES.some(x=>x.id===op.id)){
-  // Save the operation BEFORE modifying local holdings; a failed request can be replayed.
-  HOLDINGS_PENDING_TRADES.push(op);persistPendingHoldingsOps();
-  applyBoughtSharesLocal(op);persistHoldingsLocal();
- }
- HOLDINGS_SYNC.message=`持股有 ${HOLDINGS_PENDING_TRADES.length} 筆成交待雲端確認；本機股數已更新`;
- if(MODEL_SYNC.ready)void flushPendingHoldingsTrades();
-}
-function saveHoldings(){
- // Manual adjustment: never silently download old cloud holdings on top of an offline edit.
- persistHoldingsLocal();setHoldingsManualDirty(true);
- if(MODEL_SYNC?.ready&&HOLDINGS_SYNC?.ready&&!HOLDINGS_PENDING_TRADES.length)void pushHoldingsCloud();
- else HOLDINGS_SYNC.message='此裝置持股有尚未上傳的手動變更；同步恢復後請確認並上傳';
-}
+function saveHoldings(){saveJSON('twStockHoldingsV12',H);if(MODEL_SYNC?.ready&&HOLDINGS_SYNC?.ready)pushHoldingsCloud()}
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
 function dayKey(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date())}
 function fresh(ts,ms=90000){return ts&&Date.now()-Date.parse(ts)<ms}
-function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false);if(id==='trendBuyPage')loadTrendBuy(false);if(id==='model'){loadHistoryStatus();refreshTradePerformanceWhenNeeded();}}
+function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false);if(id==='trendBuyPage')loadTrendBuy(false)}
 document.querySelectorAll('.navb').forEach(b=>b.onclick=()=>setPage(b.dataset.page));
 function setMode(){const d=taipeiNow(),m=d.getHours()*60+d.getMinutes(),day=d.getDay();let a,b,c;if(day===0||day===6){a='週末模式';b='市場休市，整理全歷史與下一交易日環境';c='現貨維持最近交易日，夜盤／海外依交易時段更新'}else if(m>=537&&m<540){a='08:57盤前';b='盤前三層正在收斂';c='08:59:30鎖定盤前基準'}else if(m>=540&&m<=810){a='● 盤中模式';b='今天有沒有合理買點？';c='價格10秒｜模型30秒'}else if(m>810&&m<900){a='收盤模式';b='今天收盤結構與下一交易日環境';c='檢查今日買點歷史與市場廣度'}else if(m>=900||m<300){a='🌙 夜間模式';b='夜盤與海外正在怎麼影響下一交易日？';c='夜盤10秒更新；正負號自行重算'}else{a='盤前模式';b='開盤前先看海外與台指期日盤';c=m>=525?'08:45台指期先行訊號累積中｜08:57開始三層收斂':'等待08:45台指期日盤'}$('mode').textContent=a;$('modeTitle').textContent=b;$('modeNote').textContent=c}
 function addEvent(text,kind='info'){const last=EVENTS.at(-1);if(last&&last.text===text&&Date.now()-Date.parse(last.at)<60000)return;EVENTS.push({at:new Date().toISOString(),text,kind});EVENTS=EVENTS.slice(-160);saveJSON('v124_events',EVENTS);renderEvents()}
@@ -296,10 +265,7 @@ async function loadEtfLive(){
    renderHoldings();
    renderHomeRanking();
    renderBuyCards();
-   // R3.83: live-trade current P&L follows the same 5s ETF quote owner immediately.
-   // Path analytics (MAE/MFE/layer reach) remain backend-owned.
-   if($('model')?.classList.contains('on'))renderModelTrades();
-   if(selectedETF)renderDetailBuy();if(VALIDATION&&validationVisible())renderSpecs(false);
+   if(selectedETF)renderDetailBuy();if(VALIDATION)renderSpecs();
   }
  }catch(e){console.warn('[ETF-LIVE]',e?.message||e)}
  etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?5000:10000);
@@ -307,11 +273,11 @@ async function loadEtfLive(){
 async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);
  const yahooETF={};for(const c of ETF)if(lastLive?.quotes?.[c]?.last>0)yahooETF[c]=lastLive.quotes[c];
  lastLive={...d,quotes:{...(d.quotes||{}),...yahooETF}};
- saveLastGood('market',d);renderMarket();renderHoldings();if(VALIDATION&&validationVisible())renderSpecs(false);$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){
+ saveLastGood('market',d);renderMarket();renderHoldings();if(VALIDATION)renderSpecs();$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){
   const yahooETF={};for(const code of ETF)if(lastLive?.quotes?.[code]?.last>0)yahooETF[code]=lastLive.quotes[code];
-  lastLive={...c.data,quotes:{...(c.data.quotes||{}),...yahooETF}};renderMarket();renderHoldings();if(VALIDATION&&validationVisible())renderSpecs(false);$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}console.warn('[MARKET]',e?.message||e)}marketTimer=setTimeout(loadMarket,10000)}
-async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();if(VALIDATION&&validationVisible())renderSpecs(false);slowTimer=setTimeout(loadSlow,30000)}
-async function loadNight(){clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();if(VALIDATION&&validationVisible())renderSpecs(false);nightTimer=setTimeout(loadNight,10000)}
+  lastLive={...c.data,quotes:{...(c.data.quotes||{}),...yahooETF}};renderMarket();renderHoldings();if(VALIDATION)renderSpecs();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}console.warn('[MARKET]',e?.message||e)}marketTimer=setTimeout(loadMarket,10000)}
+async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();if(VALIDATION)renderSpecs();slowTimer=setTimeout(loadSlow,30000)}
+async function loadNight(){clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();if(VALIDATION)renderSpecs();nightTimer=setTimeout(loadNight,10000)}
 async function loadBuy(){clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){const bad=ETF.filter(c=>d.modelFreshByCode&&d.modelFreshByCode[c]===false);$('freshPill').textContent=bad.length?`● 部分模型資料降級：${bad.join('/')}`:'● 模型資料降級';$('freshPill').className='pill warn'}updateState();renderAllModel();loadServerPreopen();if(VALIDATION)renderSpecs()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
 
 function renderMarket(){
@@ -342,7 +308,7 @@ async function loadServerPreopen(){
   if(PREOPEN.day!==s.day)PREOPEN={day:s.day,draft:null,locked:null};
   const local={at:s.at,models:s.models||{},txfLead:s.txfLead||null,server:true};
   if(s.locked)PREOPEN.locked=local;else if(!PREOPEN.locked&&(!PREOPEN.draft||Date.parse(local.at)>=Date.parse(PREOPEN.draft.at||0)))PREOPEN.draft=local;
-  saveJSON('v124_preopen',PREOPEN);renderPreopen();if(VALIDATION&&validationVisible())renderSpecs(false);
+  saveJSON('v124_preopen',PREOPEN);renderPreopen();if(VALIDATION)renderSpecs();
  }catch(_){ }
 }
 function handlePreopen(){
@@ -375,39 +341,6 @@ function normalizeLayerRuntime(L){
  if(!('gateBlockedReason' in L))L.gateBlockedReason=null;
  return L;
 }
-// A confirmed entry is market history, not a disposable calibration-cache entry.
-// Keep a separate same-day write-once ledger so a deploy / page reload cannot erase it.
-const CONFIRM_LEDGER_KEY='v124_first_confirm_ledger_v1';
-let CONFIRM_LEDGER=loadJSON(CONFIRM_LEDGER_KEY,{});
-if(!CONFIRM_LEDGER||typeof CONFIRM_LEDGER!=='object'||Array.isArray(CONFIRM_LEDGER))CONFIRM_LEDGER={};
-function confirmLedgerId(code,layer){return `${dayKey()}|${code}|${layer+1}`}
-function captureFirstConfirm(code,layer,L){
- if(!L?.confirmedZone||!L?.confirmedAt)return;
- const key=confirmLedgerId(code,layer);
- if(CONFIRM_LEDGER[key])return; // first confirmation wins, never overwrite it
- CONFIRM_LEDGER[key]={day:dayKey(),code,layer:layer+1,at:L.confirmedAt,zone:{...L.confirmedZone},price:L.confirmedPrice??null,observationKey:L.confirmedObservationKey??null,executionLow:Number.isFinite(L.executionLow)?L.executionLow:null,executionHigh:Number.isFinite(L.executionHigh)?L.executionHigh:null};
- saveJSON(CONFIRM_LEDGER_KEY,CONFIRM_LEDGER);
-}
-function restoreFirstConfirm(code,layer,L){
- const saved=CONFIRM_LEDGER[confirmLedgerId(code,layer)];
- if(!saved?.at||!saved?.zone)return;
- if(L.confirmed&&L.confirmedAt)return; // never overwrite an existing live confirmation
- L.confirmed=true;L.confirmedAt=saved.at;L.confirmedZone={...saved.zone};
- L.confirmedPrice=saved.price;L.confirmedObservationKey=saved.observationKey;
- L.triggeredAt=L.triggeredAt||saved.at;L.touchedAt=L.touchedAt||saved.at;
- if(Number.isFinite(saved.executionLow))L.executionLow=saved.executionLow;
- if(Number.isFinite(saved.executionHigh))L.executionHigh=saved.executionHigh;
- L.forming=false;L.invalid=false;
-}
-function normalizeModelWithoutReset(code,r){
- const calibrationVersion=r.firstLayerCalibration?.version||'legacy';
- let m=STATE.models[code];
- if(!m||!Array.isArray(m.layers)||m.layers.length!==3||m.layers.some(L=>!L?.zone||!Number.isFinite(L.zone.low)||!Number.isFinite(L.zone.high)))m=initModel(code,r);
- m.layers.forEach((L,i)=>{normalizeLayerRuntime(L);captureFirstConfirm(code,i,L);restoreFirstConfirm(code,i,L)});
- // Update metadata, but NEVER recreate layers solely because a version label changed.
- m.calibrationVersion=calibrationVersion;m.confirmationVersion=CONFIRM_RULE_VERSION;
- return m;
-}
 function initModel(code,r){
  const mk=z=>({zone:JSON.parse(JSON.stringify(z)),samples:[],priceSamples:[],confirmed:false,forming:false,fastPass:false,invalid:false,confirmCount:0,badCount:0,triggeredAt:null,touchedAt:null,touchMin:null,touchMinAt:null,stableLowAnchor:null,confirmationReason:null,confirmedZone:null,confirmedAt:null,confirmedPrice:null,confirmedObservationKey:null,executionHigh:null,executionLow:null,gateBlocked:false,gateBlockedReason:null});
  return{layers:[mk(r.raw.first),mk(r.raw.second),mk(r.raw.third)],calibrationVersion:r.firstLayerCalibration?.version||'legacy',confirmationVersion:CONFIRM_RULE_VERSION,prevEnv:r.environmentScore,prevHealth:r.health?.score??null,lastPrice:r.price,lastObservationKey:null,lastAt:new Date().toISOString()}
@@ -431,12 +364,13 @@ function markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,reason){
  const cz=L.confirmedZone||z;L.executionLow=cz.low;L.executionHigh=cz.high+executionUpAllowance(atr,i);
  L.confirmationReason=`${reason}｜可接受成交上限 ${L.executionHigh.toFixed(2)}`;
  STATE.noSignalDays=STATE.noSignalDays||{};STATE.noSignalDays[code]=0;
- captureFirstConfirm(code,i,L);
  addEvent(`${code} 第${i+1}層正式確認：${ztxt(cz)}，現價${px.toFixed(2)}｜${L.confirmationReason}`,'buy');
 }
 function updateOne(code,r){
  if(r.error)return;
- let m=normalizeModelWithoutReset(code,r);
+ const calibrationVersion=r.firstLayerCalibration?.version||'legacy';let m=STATE.models[code];
+ if(!m||m.calibrationVersion!==calibrationVersion||m.confirmationVersion!==CONFIRM_RULE_VERSION)m=initModel(code,r);
+ m.confirmationVersion=CONFIRM_RULE_VERSION;m.layers.forEach(normalizeLayerRuntime);
  let atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
  let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);
  if(days>=15&&r.history.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}
@@ -731,108 +665,9 @@ function clientValidation(base){const c={...(base||{})};const now=taipeiNow(),m=
  c[36]={status:'PASS',evidence:'ETF盤中5秒（非盤中10秒）｜大盤10秒｜夜盤10秒｜環境30秒｜模型30秒'};
  // Added 3 core controls
  c.core={participation:{status:ETF.every(x=>'noSignalDays' in STATE)?'PASS':'PASS',evidence:'連續無訊號日數＋中樞重錨機制已接'},downEscape:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'買點下修需環境/成分惡化證據'},hysteresis:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'確認狀態保存，不因10秒離區直接取消'}};return c}
-const TRADE_CORE_VALIDATION=[
- {label:'即時行情',ids:['quote']},
- {label:'昨收／除權息基準',ids:['reference']},
- {label:'ATR／歷史資料',ids:['atr','history']},
- {label:'三層結構',ids:['layers']},
- {label:'防追高校準',ids:['chase-calibration']},
- {label:'Hard Gate',overall:true},
- {label:'必要成分健康',ids:['constituent-health']}
-];
-// These seven legacy validation slots are the closest 45-item counterparts of the
-// live Critical Gate categories above. They are excluded only from the AUX count;
-// the original 45 detail cards remain untouched below.
-const CORE_SPEC_IDS=new Set([9,10,13,14,21,34,40]);
-function tradeCoreValidation(){
- const items=TRADE_CORE_VALIDATION.map(def=>{
-  let pass=0,fail=0,wait=0;const evidence=[];
-  ETF.forEach(code=>{
-   const g=lastBuy?.models?.[code]?.criticalGate;
-   if(!g){wait++;evidence.push(`${code}:WAIT`);return}
-   let ok=null;
-   if(def.overall)ok=g.pass===true;
-   else{
-    const checks=Array.isArray(g.checks)?g.checks:[];
-    const need=def.ids.map(id=>checks.find(x=>x?.id===id));
-    if(need.some(x=>!x)){wait++;evidence.push(`${code}:WAIT`);return}
-    ok=need.every(x=>x.ok===true);
-   }
-   if(ok){pass++;evidence.push(`${code}:PASS`)}else{fail++;evidence.push(`${code}:FAIL`)}
-  });
-  const status=fail?'FAIL':pass===ETF.length?'PASS':pass?'PARTIAL':'WAIT';
-  return{...def,status,evidence:evidence.join('｜')};
- });
- return{items,pass:items.filter(x=>x.status==='PASS').length,fail:items.filter(x=>x.status==='FAIL').length,partial:items.filter(x=>x.status==='PARTIAL').length,wait:items.filter(x=>x.status==='WAIT').length};
-}
-function validationVisible(){
- const el=$('validationCenter');if(!el||!$('model')?.classList.contains('on'))return false;
- const r=el.getBoundingClientRect();return r.top<innerHeight+300&&r.bottom>-300;
-}
-function renderSpecs(detailed=true){
- if(!VALIDATION){
-  $('validationSummary').innerHTML='<div class="box"><span class="k">驗證中心</span><b class="amber">等待載入</b><small>捲動至此區才執行45項驗證，不影響即時買點。</small></div>';
-  $('validationOverall').textContent='驗證尚未讀取；交易買點以各ETF當下的正式 Gate 為準。';
-  return;
- }
-
- const checks=clientValidation(VALIDATION?.checks||{}),counts={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};
- SPEC.forEach(x=>counts[checks[x[0]]?.status||'WAIT']++);
- const core=tradeCoreValidation();
- const aux={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};
- SPEC.filter(x=>!CORE_SPEC_IDS.has(x[0])).forEach(x=>aux[checks[x[0]]?.status||'WAIT']++);
- const totalPass=core.pass+aux.PASS,totalPartial=core.partial+aux.PARTIAL,totalFail=core.fail+aux.FAIL,totalWait=core.wait+aux.WAIT; // Stable 7-core + 38-aux headline, original 45 detail cards remain visible.
- const liveModelReady=!!(lastBuy?.models&&ETF.some(code=>lastBuy.models[code]?.criticalGate));
- const tradeState=!liveModelReady?'等待正式模型':core.fail?'受影響':core.pass===7?'可用':'核心資料建立中';
- const tradeClass=liveModelReady&&core.fail?'downc':liveModelReady&&core.pass===7?'upc':'amber';
- $('validationSummary').innerHTML=`<div class="box"><span class="k">交易狀態</span><b class="${tradeClass}">${tradeState}</b><small>${core.fail?'核心Gate有FAIL':core.pass===7?'正式交易核心完整':'等待核心資料齊全'}</small></div><div class="box"><span class="k">交易核心</span><b>${liveModelReady?core.pass:'—'}/7 PASS</b><small>${core.fail?`FAIL ${core.fail}｜`:''}${core.partial?`PARTIAL ${core.partial}｜`:''}${core.wait?`WAIT ${core.wait}`:'Critical Gate'}</small></div><div class="box"><span class="k">輔助驗證</span><b>${aux.PASS}/38</b><small>PARTIAL ${aux.PARTIAL}｜FAIL ${aux.FAIL}｜WAIT ${aux.WAIT}</small></div><div class="box"><span class="k">總驗證</span><b>${liveModelReady?totalPass:'—'}/45</b><small>PARTIAL ${totalPartial}｜FAIL ${totalFail}｜WAIT ${totalWait}</small></div>`;
- if(!liveModelReady){
-  $('validationOverall').innerHTML='<b class="amber">等待正式模型資料：</b>目前不能依 0/7 判斷 Hard Gate 失敗，先等買點 API 回傳。';
- }else if(core.fail){
-  const bad=core.items.filter(x=>x.status==='FAIL').map(x=>x.label).join('、');
-  $('validationOverall').innerHTML=`<b class="downc">🔴 正式交易訊號受影響：</b>交易核心 ${core.pass}/7，FAIL：${bad}。<br><span class="note">核心Gate未恢復前，不應把輔助驗證亮燈當成可交易依據。</span>`;
- }else if(core.pass===7){
-  $('validationOverall').innerHTML=`<b class="upc">🟢 交易核心 7/7 PASS｜交易機制可用。</b> ${aux.PASS===38?'輔助驗證亦全部通過。':`輔助驗證 ${aux.PASS}/38；未全亮不會阻擋正式買點。`}<br><span class="note">總驗證 ${totalPass}/45；45項明細仍保留在下方供診斷與回測追蹤。</span>`;
- }else{
-  const waiting=core.items.filter(x=>x.status!=='PASS').map(x=>`${x.label}:${x.status}`).join('｜');
-  $('validationOverall').innerHTML=`<b class="amber">🟡 交易核心尚未齊全：</b>${core.pass}/7 PASS。${waiting}<br><span class="note">常見於剛開盤或資料尚在建立；先看核心Gate，不必等待所有輔助燈全亮。</span>`;
- }
- if(!detailed)return; // Keep heavy 45-card DOM unchanged during frequent quote updates.
- $('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');
- const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('')
-}
-
-let validationBusy=false,validationLoadedAt=0;
-async function loadValidation(deep=false){
- if(validationBusy||(!deep&&VALIDATION&&Date.now()-validationLoadedAt<120000))return;
- validationBusy=true;
- try{const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);
-  if(!d.ok){$('validationOverall').textContent='驗證API錯誤：'+(d.error||'未知');return}
-  VALIDATION=d;validationLoadedAt=Date.now();renderSpecs(true);
- }catch(e){$('validationOverall').textContent='驗證中心連線錯誤：'+e.message}
- finally{validationBusy=false}
-}
-function initLazyValidation(){
- if(!('IntersectionObserver' in window)){return}
- const section=$('validationCenter');if(!section)return;
- const obs=new IntersectionObserver(entries=>{
-  if(entries.some(entry=>entry.isIntersecting)){renderSpecs(!!VALIDATION);void loadValidation(false)}
- },{rootMargin:'250px 0px',threshold:0});
- obs.observe(section);
- setInterval(()=>{if(validationVisible()&&Date.now()-validationLoadedAt>120000)void loadValidation(false)},30000);
-}
-
-async function runDeepValidation(){
- if(validationBusy)return;
- $('deepValidateBtn').disabled=true;
- try{
-  await get('/api/history-warm?all=1',30000);
-  await loadValidation(true);
-  const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;
-  if(ready<4)$('validationOverall').insertAdjacentHTML('beforeend','<div class="note">完整回測歷史仍在背景建立。請稍後按一次「執行完整驗證」更新；不會每3秒重跑。</div>');
- }catch(e){$('validationOverall').textContent='完整驗證啟動失敗：'+e.message}
- finally{$('deepValidateBtn').disabled=false}
-}
+function renderSpecs(){const checks=clientValidation(VALIDATION?.checks||{}),counts={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};SPEC.forEach(x=>counts[checks[x[0]]?.status||'WAIT']++);$('validationSummary').innerHTML=`<div class="box"><span class="k">🟢 PASS</span><b>${counts.PASS}</b></div><div class="box"><span class="k">🟡 PARTIAL</span><b>${counts.PARTIAL}</b></div><div class="box"><span class="k">🔴 FAIL</span><b>${counts.FAIL}</b></div><div class="box"><span class="k">⚪ WAIT</span><b>${counts.WAIT}</b></div><div class="box"><span class="k">完整通過</span><b>${counts.PASS}/45</b></div>`;$('validationOverall').innerHTML=counts.PASS===45?'<b class="upc">🟢 V12.4 FINAL 45/45 驗收完成</b>':'<b class="downc">目前不得視為45/45完成。</b> 每一格只有實際證據PASS才亮綠燈。';$('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('')}
+let validationPoll=null;async function loadValidation(deep=false){try{const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);if(!d.ok){$('validationOverall').innerHTML='<b class="downc">驗證API錯誤：</b>'+(d.error||'未知');return}VALIDATION=d;renderSpecs()}catch(e){$('validationOverall').innerHTML='<b class="downc">驗證中心連線錯誤：</b>'+e.message}}
+async function runDeepValidation(){clearTimeout(validationPoll);$('deepValidateBtn').disabled=true;try{await get('/api/history-warm?all=1');await loadValidation(true);const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;if(ready<4){$('validationOverall').innerHTML+=`<br><span class="note">完整回測歷史背景建立中：${hp.map(x=>x.code+' '+x.percent+'%').join('｜')}</span>`;validationPoll=setTimeout(runDeepValidation,3000)}}finally{$('deepValidateBtn').disabled=false}}
 
 
 
@@ -866,7 +701,7 @@ async function loadDividendAuto(force=false){
 function modelSyncBar(){
  const st=MODEL_SYNC.status,synced=st==='ready',degraded=st==='degraded',usable=MODEL_SYNC.ready,locked=st==='locked',setup=st==='setup',err=st==='error',pending=MODEL_TRADES.filter(t=>t._syncDirty).length+MODEL_PENDING_DELETES.length;
  const tag=synced?'🟢 已同步':degraded?'🟡 自動重試中':locked?'🔒 未解鎖':setup?'🟡 尚未設定':'🟡 '+(err?'同步異常':'連線中');
- const htag=HOLDINGS_PENDING_TRADES.length?`｜持股🟡待同步${HOLDINGS_PENDING_TRADES.length}筆`:HOLDINGS_MANUAL_DIRTY?'｜持股🟡本機變更待確認':HOLDINGS_SYNC.ready?'｜持股🟢':'｜持股⚪';
+ const htag=HOLDINGS_SYNC.ready?'｜持股🟢':'｜持股⚪';
  const dtag=DIVIDEND_AUTO.ready?'｜股息🟢':'｜股息⚪';
  const at=MODEL_SYNC.lastAt?`｜${new Date(MODEL_SYNC.lastAt).toLocaleTimeString('zh-TW',{hour12:false})}`:'';
  const pend=pending?`｜待同步 ${pending}筆`:'';
@@ -876,56 +711,19 @@ function modelSyncBar(){
  return `<div class="notice"><div class="row"><div><b>模型實戰雲端：${tag}${htag}${dtag}</b><div class="note">${MODEL_SYNC.message||''}${pend}${HOLDINGS_SYNC.message?'｜'+HOLDINGS_SYNC.message:''}${DIVIDEND_AUTO.message?'｜'+DIVIDEND_AUTO.message:''}${at}</div></div>${buttons}</div></div>`;
 }
 
-async function flushPendingHoldingsTrades(){
- if(HOLDINGS_OP_BUSY||!MODEL_SYNC.ready||!HOLDINGS_PENDING_TRADES.length)return;
- HOLDINGS_OP_BUSY=true;
- try{
-  while(HOLDINGS_PENDING_TRADES.length&&MODEL_SYNC.ready){
-   const op=HOLDINGS_PENDING_TRADES[0];
-   const d=await modelSyncFetch('/api/holdings-sync/apply-trade',{method:'POST',body:JSON.stringify({trade:op})});
-   if(!d.ok||!d.applied)throw Error(d.error||'伺服器未確認這筆持股增量');
-   // Commit acknowledgement separately from the model-trade store; retry is idempotent.
-   HOLDINGS_PENDING_TRADES=HOLDINGS_PENDING_TRADES.filter(x=>x.id!==op.id);
-   persistPendingHoldingsOps();HOLDINGS_REMOTE_REV++;
-  }
-  HOLDINGS_SYNC.message='成交持股增量已送達雲端；正在校對最新股數';
- }catch(e){
-  HOLDINGS_SYNC.ready=false;
-  HOLDINGS_SYNC.message=`尚有 ${HOLDINGS_PENDING_TRADES.length} 筆持股待同步，本機股數已保留：${e.message||'暫時無法連線'}`;
- }finally{
-  HOLDINGS_OP_BUSY=false;
-  // Refresh the canonical cloud portfolio promptly after the queue is acknowledged.
-  if(!HOLDINGS_PENDING_TRADES.length&&MODEL_SYNC.ready&&!HOLDINGS_SYNC.busy)void syncHoldingsCloud(true);
- }
-}
 async function syncHoldingsCloud(force=false){
  if(HOLDINGS_SYNC.busy||!MODEL_SYNC.ready)return;
  HOLDINGS_SYNC.busy=true;
  try{
-  await flushPendingHoldingsTrades();
-  if(HOLDINGS_PENDING_TRADES.length){
-   HOLDINGS_SYNC.ready=false;
-   HOLDINGS_SYNC.message=`持股尚有 ${HOLDINGS_PENDING_TRADES.length} 筆成交待同步；保留本機股數，避免被舊雲端資料覆蓋`;
-   return;
-  }
-  if(HOLDINGS_MANUAL_DIRTY){
-   HOLDINGS_SYNC.ready=false;
-   HOLDINGS_SYNC.message='本機持股有手動修改尚未確認上傳，為避免覆蓋已暫停雲端下載；請核對後按「上傳此裝置持股」';
-   return;
-  }
-  const atRevision=HOLDINGS_LOCAL_REV,remoteRevision=HOLDINGS_REMOTE_REV;
   const d=await modelSyncFetch('/api/holdings-sync');
-  if(HOLDINGS_LOCAL_REV!==atRevision||HOLDINGS_REMOTE_REV!==remoteRevision||HOLDINGS_PENDING_TRADES.length||HOLDINGS_MANUAL_DIRTY){
-   HOLDINGS_SYNC.message='同步期間有新持股變更，已保留本機資料；下一輪重試';
-   return;
-  }
-  if(!d.ok)throw Error(d.error||'雲端持股讀取失敗');
   if(!d.initialized){
    HOLDINGS_SYNC.ready=false;
    HOLDINGS_SYNC.message='雲端尚無持股；請在持股正確的裝置按「上傳此裝置持股」';
   }else{
    H=(Array.isArray(d.holdings)?d.holdings:[]).map(normalizeHoldingRecord);
-   persistHoldingsLocal();renderHoldings();HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
+   saveJSON('twStockHoldingsV12',H);
+   renderHoldings();
+   HOLDINGS_SYNC.ready=true;
    const h50=H.find(x=>x.t==='0050');
    HOLDINGS_SYNC.message='持股已從雲端載入'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
    await loadDividendAuto(force);
@@ -938,16 +736,10 @@ async function syncHoldingsCloud(force=false){
 
 async function uploadThisHoldingsToCloud(){
  if(!MODEL_SYNC.ready)return alert('請先設定同步碼');
- await flushPendingHoldingsTrades();
- if(HOLDINGS_PENDING_TRADES.length)return alert('仍有模型交易正在等待同步，為避免重複加股，請待交易完成後再上傳整份持股。');
  const h50=H.find(x=>x.t==='0050'),label=h50?`0050 ${Number(h50.s).toLocaleString()}股／均價 ${Number(h50.c).toFixed(2)}`:'目前沒有0050';
  if(!confirm(`將「這台裝置」的持股覆蓋到雲端。\\n${label}\\n\\n確定嗎？`))return;
  try{
-  const revision=HOLDINGS_LOCAL_REV;
-  const d=await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H,expectedUpdatedAt:HOLDINGS_SYNC.cloudUpdatedAt})});
-  if(!d.ok)throw Error(d.error||'雲端未確認上傳');
-  HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
-  if(HOLDINGS_LOCAL_REV===revision&&!HOLDINGS_PENDING_TRADES.length)setHoldingsManualDirty(false);
+  await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H})});
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='已以上傳的這台裝置持股覆蓋雲端';
   await loadDividendAuto(true);
   await syncHoldingsCloud(true);renderModelTrades();
@@ -956,14 +748,11 @@ async function uploadThisHoldingsToCloud(){
 }
 async function downloadCloudHoldings(){
  if(!MODEL_SYNC.ready)return alert('請先設定同步碼');
- if(HOLDINGS_PENDING_TRADES.length||HOLDINGS_MANUAL_DIRTY)return alert('這台裝置還有尚未同步的持股變更，不能下載舊雲端資料覆蓋。請先完成同步或確認上傳。');
  try{
-  const revision=HOLDINGS_LOCAL_REV,remoteRevision=HOLDINGS_REMOTE_REV;
   const d=await modelSyncFetch('/api/holdings-sync');
   if(!d.initialized)return alert('雲端還沒有持股資料。請先在桌機按「上傳此裝置持股」。');
-  if(!d.ok||HOLDINGS_PENDING_TRADES.length||HOLDINGS_MANUAL_DIRTY||HOLDINGS_LOCAL_REV!==revision||HOLDINGS_REMOTE_REV!==remoteRevision)return alert('同步期間持股有變更，已中止覆蓋。');
   H=(Array.isArray(d.holdings)?d.holdings:[]).map(normalizeHoldingRecord);
-  persistHoldingsLocal();renderHoldings();HOLDINGS_REMOTE_REV++;HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;
+  saveJSON('twStockHoldingsV12',H);renderHoldings();
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();
   const h50=H.find(x=>x.t==='0050');
   HOLDINGS_SYNC.message='已手動下載雲端持股'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
@@ -974,18 +763,12 @@ async function downloadCloudHoldings(){
 }
 
 async function pushHoldingsCloud(){
- if(!MODEL_SYNC.ready||HOLDINGS_PUSH_BUSY||HOLDINGS_PENDING_TRADES.length)return;
- HOLDINGS_PUSH_BUSY=true;
- const revision=HOLDINGS_LOCAL_REV,snapshot=JSON.parse(JSON.stringify(H));
+ if(!MODEL_SYNC.ready)return;
  try{
-  const d=await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:snapshot,expectedUpdatedAt:HOLDINGS_SYNC.cloudUpdatedAt})});
-  if(!d.ok)throw Error(d.error||'雲端未確認上傳');
-  HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
-  if(HOLDINGS_LOCAL_REV===revision&&!HOLDINGS_PENDING_TRADES.length)setHoldingsManualDirty(false);
+  await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H})});
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='持股已同步';
   await loadDividendAuto(true);
- }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股上傳失敗，本機修改保留；請核對雲端持股後重新上傳'}
- finally{HOLDINGS_PUSH_BUSY=false}
+ }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股同步失敗，本機仍保留'}
 }
 async function syncAllCloud(force=false){
  if(CLOUD_SYNC_ALL_BUSY)return;CLOUD_SYNC_ALL_BUSY=true;
@@ -1103,45 +886,35 @@ function saveModelTrade(){
  }
  const trade={id:'mt_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),code,name:NAME[code],tradeType,modelFamily,layer,entryAt:new Date().toISOString(),entryDate:dayKey(),entryPrice:price,shares,snapshot,exitAt:null,exitPrice:null,perf:null};
  markModelTradeDirty(trade);MODEL_TRADES.push(trade);modelSyncSaveLocal();
- // Persist an idempotent holdings operation rather than replacing the entire cloud portfolio.
- queueHoldingsTrade(trade);
- closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncModelTrades(true);
+ const h=H.find(v=>v.t===code);
+ if(h){const oldShares=Number(h.s)||0,oldCost=Number(h.c)||0,newShares=oldShares+shares;h.c=((oldShares*oldCost)+(shares*price))/newShares;h.s=newShares}
+ else H.push(normalizeHoldingRecord({t:code,n:code,s:shares,c:price,dividendReceived:0,dividendAsOf:dayKey()}));
+ saveHoldings();closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncModelTrades(true);
  if(manual)addEvent(`${code} 已記錄自主買入（未觸發模型）：${shares}股 @ ${price.toFixed(2)}｜當下模型：${signalText}`,'trade');
  else if(trendMode)addEvent(`${code} 已記錄強勢加碼實戰並同步持股：${shares}股 @ ${price.toFixed(2)}｜${signalText}`,'trade');
  else addEvent(`${code} 已記錄合理買點模型第${layer}層實戰並同步持股：${shares}股 @ ${price.toFixed(2)}`,'trade');
  setPage('model')
 }
 
-let MODEL_PERF_REFRESHING=false,MODEL_PERF_CURSOR=0,MODEL_PERF_LAST=0;
-function refreshTradePerformanceWhenNeeded(){if(Date.now()-MODEL_PERF_LAST>75000)void refreshModelTradePerformance()}
 async function refreshModelTradePerformance(){
- if(MODEL_PERF_REFRESHING||!$('model')?.classList.contains('on'))return;
- MODEL_PERF_REFRESHING=true;MODEL_PERF_LAST=Date.now();
  let changed=false;
- try{
-  // Newest trades first so a just-entered position never waits behind the whole history.
-  const all=[...MODEL_TRADES].filter(t=>!t.exitAt).sort((a,b)=>String(b.entryAt||'').localeCompare(String(a.entryAt||'')));
-  const open=Array.from({length:Math.min(5,all.length)},(_,i)=>all[(MODEL_PERF_CURSOR+i)%all.length]);
-  MODEL_PERF_CURSOR=all.length?(MODEL_PERF_CURSOR+open.length)%all.length:0;
-  const one=async t=>{
-   try{
-    const z=t.snapshot?.zones||[],qs=new URLSearchParams({code:t.code,entryDate:t.entryDate,entryPrice:String(t.entryPrice),layer2Low:String(z[1]?.low??''),layer3Low:String(z[2]?.low??''),layer1High:String(z[0]?.high??'')});
-    const p=await get('/api/trade-performance?'+qs.toString());
-    if(!p?.ok)return;
+ for(const t of MODEL_TRADES){
+  if(t.exitAt)continue;
+  try{
+   const z=t.snapshot?.zones||[],qs=new URLSearchParams({code:t.code,entryDate:t.entryDate,entryPrice:String(t.entryPrice),layer2Low:String(z[1]?.low??''),layer3Low:String(z[2]?.low??''),layer1High:String(z[0]?.high??'')});
+   const p=await get('/api/trade-performance?'+qs.toString());
+   if(p?.ok){
     const prev=t.perf&&typeof t.perf==='object'?t.perf:{};
-    // If the path endpoint temporarily lacks a field, preserve the last valid path value.
+    // 盤後/跨日若資料源暫時沒有 currentPrice，不准把最後有效損益洗成空值。
     if(!Number.isFinite(Number(p.currentPrice))&&Number.isFinite(Number(prev.currentPrice)))p.currentPrice=prev.currentPrice;
     if(!Number.isFinite(Number(p.currentReturnPct))&&Number.isFinite(Number(prev.currentReturnPct)))p.currentReturnPct=prev.currentReturnPct;
     if(!Number.isFinite(Number(p.currentPnLPerShare))&&Number.isFinite(Number(prev.currentPnLPerShare)))p.currentPnLPerShare=prev.currentPnLPerShare;
-    t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true;
-   }catch(_){}
-  };
-  // Small batches avoid request pile-ups while making recent cards update promptly.
-  for(let i=0;i<open.length;i+=3){await Promise.all(open.slice(i,i+3).map(one));modelSyncSaveLocal();renderModelTrades()}
-  if(changed)syncModelTrades(false);
- }finally{MODEL_PERF_REFRESHING=false}
+    t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true
+   }
+  }catch(_){}
+ }
+ modelSyncSaveLocal();renderModelTrades();if(changed)syncModelTrades(false)
 }
-
 function closeTrackedTrade(id){
  const t=MODEL_TRADES.find(x=>x.id===id);if(!t)return;const px=Number(lastLive?.quotes?.[t.code]?.last??t.perf?.currentPrice);
  if(t.exitAt)return;
@@ -1206,8 +979,7 @@ function modelNetMetrics(t){
  const p=t?.perf,entry=Number(t?.entryPrice),shares=Number(t?.shares);
  const rawPerfPx=p?.currentPrice,perfPx=(rawPerfPx==null||rawPerfPx==='')?null:Number(rawPerfPx);
  const rawLivePx=lastLive?.quotes?.[t?.code]?.last,livePx=(rawLivePx==null||rawLivePx==='')?null:Number(rawLivePx);
- // R3.83: current economic P&L is a live metric. Never let an older path snapshot override the 5s ETF quote.
- const px=Number.isFinite(livePx)&&livePx>0?livePx:(Number.isFinite(perfPx)&&perfPx>0?perfPx:null);
+ const px=Number.isFinite(perfPx)&&perfPx>0?perfPx:(Number.isFinite(livePx)&&livePx>0?livePx:null);
  if(t?.exitAt){
   const gross=Number(t.realizedPnL);
   const exit=Number(t.exitPrice);
@@ -1217,8 +989,8 @@ function modelNetMetrics(t){
   return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null};
  }
  const base=entry*shares,divPerShare=modelTradeDividendPerShare(t),totalRet=Number(p?.currentTotalReturnPct);
- const gross=Number.isFinite(px)&&Number.isFinite(entry)?(px+divPerShare-entry)*shares:
-   (Number.isFinite(totalRet)&&base>0?totalRet/100*base:null);
+ const gross=Number.isFinite(totalRet)&&base>0?totalRet/100*base:
+   (Number.isFinite(px)&&Number.isFinite(entry)?(px+divPerShare-entry)*shares:null);
  const cost=fubonEstimatedTradeCost(entry,shares,px);
  const net=Number.isFinite(gross)&&Number.isFinite(cost)?gross-cost:null;
  return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null,dividendPerShare:divPerShare};
@@ -1294,7 +1066,7 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();initLazyValidation();setInterval(()=>{if($('model')?.classList.contains('on')){loadHistoryStatus();refreshTradePerformanceWhenNeeded()}},90000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy()}
+function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();loadValidation(false)}
 migrate1689Existing0050Trade();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if($('trendBuyPage')?.classList.contains('on'))loadTrendBuy(false);syncAllCloud(false)}})
 setInterval(()=>{
