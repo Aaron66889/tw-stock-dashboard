@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.101-HOLDINGS-TRADE-ID-SYNC',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.102-VALIDATION-CORE-AUX-SPLIT',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const TRADE_RETURN_REQUIRED='cash-entitlement-total-return-v2';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
@@ -696,7 +696,63 @@ function clientValidation(base){const c={...(base||{})};const now=taipeiNow(),m=
  c[36]={status:'PASS',evidence:'ETF盤中5秒（非盤中10秒）｜大盤10秒｜夜盤10秒｜環境30秒｜模型30秒'};
  // Added 3 core controls
  c.core={participation:{status:ETF.every(x=>'noSignalDays' in STATE)?'PASS':'PASS',evidence:'連續無訊號日數＋中樞重錨機制已接'},downEscape:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'買點下修需環境/成分惡化證據'},hysteresis:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'確認狀態保存，不因10秒離區直接取消'}};return c}
-function renderSpecs(){const checks=clientValidation(VALIDATION?.checks||{}),counts={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};SPEC.forEach(x=>counts[checks[x[0]]?.status||'WAIT']++);$('validationSummary').innerHTML=`<div class="box"><span class="k">🟢 PASS</span><b>${counts.PASS}</b></div><div class="box"><span class="k">🟡 PARTIAL</span><b>${counts.PARTIAL}</b></div><div class="box"><span class="k">🔴 FAIL</span><b>${counts.FAIL}</b></div><div class="box"><span class="k">⚪ WAIT</span><b>${counts.WAIT}</b></div><div class="box"><span class="k">完整通過</span><b>${counts.PASS}/45</b></div>`;$('validationOverall').innerHTML=counts.PASS===45?'<b class="upc">🟢 V12.4 FINAL 45/45 驗收完成</b>':'<b class="downc">目前不得視為45/45完成。</b> 每一格只有實際證據PASS才亮綠燈。';$('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('')}
+const TRADE_CORE_VALIDATION=[
+ {label:'即時行情',ids:['quote']},
+ {label:'昨收／除權息基準',ids:['reference']},
+ {label:'ATR／歷史資料',ids:['atr','history']},
+ {label:'三層結構',ids:['layers']},
+ {label:'防追高校準',ids:['chase-calibration']},
+ {label:'Hard Gate',overall:true},
+ {label:'必要成分健康',ids:['constituent-health']}
+];
+// These seven legacy validation slots are the closest 45-item counterparts of the
+// live Critical Gate categories above. They are excluded only from the AUX count;
+// the original 45 detail cards remain untouched below.
+const CORE_SPEC_IDS=new Set([9,10,13,14,21,34,40]);
+function tradeCoreValidation(){
+ const items=TRADE_CORE_VALIDATION.map(def=>{
+  let pass=0,fail=0,wait=0;const evidence=[];
+  ETF.forEach(code=>{
+   const g=lastBuy?.models?.[code]?.criticalGate;
+   if(!g){wait++;evidence.push(`${code}:WAIT`);return}
+   let ok=null;
+   if(def.overall)ok=g.pass===true;
+   else{
+    const checks=Array.isArray(g.checks)?g.checks:[];
+    const need=def.ids.map(id=>checks.find(x=>x?.id===id));
+    if(need.some(x=>!x)){wait++;evidence.push(`${code}:WAIT`);return}
+    ok=need.every(x=>x.ok===true);
+   }
+   if(ok){pass++;evidence.push(`${code}:PASS`)}else{fail++;evidence.push(`${code}:FAIL`)}
+  });
+  const status=fail?'FAIL':pass===ETF.length?'PASS':pass?'PARTIAL':'WAIT';
+  return{...def,status,evidence:evidence.join('｜')};
+ });
+ return{items,pass:items.filter(x=>x.status==='PASS').length,fail:items.filter(x=>x.status==='FAIL').length,partial:items.filter(x=>x.status==='PARTIAL').length,wait:items.filter(x=>x.status==='WAIT').length};
+}
+function renderSpecs(){
+ const checks=clientValidation(VALIDATION?.checks||{}),counts={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};
+ SPEC.forEach(x=>counts[checks[x[0]]?.status||'WAIT']++);
+ const core=tradeCoreValidation();
+ const aux={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};
+ SPEC.filter(x=>!CORE_SPEC_IDS.has(x[0])).forEach(x=>aux[checks[x[0]]?.status||'WAIT']++);
+ const totalPass=core.pass+aux.PASS,totalPartial=core.partial+aux.PARTIAL,totalFail=core.fail+aux.FAIL,totalWait=core.wait+aux.WAIT;
+ const tradeState=core.fail?'受影響':core.pass===7?'可用':'核心資料建立中';
+ const tradeClass=core.fail?'downc':core.pass===7?'upc':'amber';
+ $('validationSummary').innerHTML=`<div class="box"><span class="k">交易狀態</span><b class="${tradeClass}">${tradeState}</b><small>${core.fail?'核心Gate有FAIL':core.pass===7?'正式交易核心完整':'等待核心資料齊全'}</small></div><div class="box"><span class="k">交易核心</span><b>${core.pass}/7 PASS</b><small>${core.fail?`FAIL ${core.fail}｜`:''}${core.partial?`PARTIAL ${core.partial}｜`:''}${core.wait?`WAIT ${core.wait}`:'Critical Gate'}</small></div><div class="box"><span class="k">輔助驗證</span><b>${aux.PASS}/38</b><small>PARTIAL ${aux.PARTIAL}｜FAIL ${aux.FAIL}｜WAIT ${aux.WAIT}</small></div><div class="box"><span class="k">總驗證</span><b>${totalPass}/45</b><small>PARTIAL ${totalPartial}｜FAIL ${totalFail}｜WAIT ${totalWait}</small></div>`;
+ if(core.fail){
+  const bad=core.items.filter(x=>x.status==='FAIL').map(x=>x.label).join('、');
+  $('validationOverall').innerHTML=`<b class="downc">🔴 正式交易訊號受影響：</b>交易核心 ${core.pass}/7，FAIL：${bad}。<br><span class="note">核心Gate未恢復前，不應把輔助驗證亮燈當成可交易依據。</span>`;
+ }else if(core.pass===7){
+  $('validationOverall').innerHTML=`<b class="upc">🟢 交易核心 7/7 PASS｜交易機制可用。</b> ${aux.PASS===38?'輔助驗證亦全部通過。':`輔助驗證 ${aux.PASS}/38；未全亮不會阻擋正式買點。`}<br><span class="note">總驗證 ${totalPass}/45；45項明細仍保留在下方供診斷與回測追蹤。</span>`;
+ }else{
+  const waiting=core.items.filter(x=>x.status!=='PASS').map(x=>`${x.label}:${x.status}`).join('｜');
+  $('validationOverall').innerHTML=`<b class="amber">🟡 交易核心尚未齊全：</b>${core.pass}/7 PASS。${waiting}<br><span class="note">常見於剛開盤或資料尚在建立；先看核心Gate，不必等待所有輔助燈全亮。</span>`;
+ }
+ $('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');
+ const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('')
+}
+
 let validationPoll=null;async function loadValidation(deep=false){try{const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);if(!d.ok){$('validationOverall').innerHTML='<b class="downc">驗證API錯誤：</b>'+(d.error||'未知');return}VALIDATION=d;renderSpecs()}catch(e){$('validationOverall').innerHTML='<b class="downc">驗證中心連線錯誤：</b>'+e.message}}
 async function runDeepValidation(){clearTimeout(validationPoll);$('deepValidateBtn').disabled=true;try{await get('/api/history-warm?all=1');await loadValidation(true);const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;if(ready<4){$('validationOverall').innerHTML+=`<br><span class="note">完整回測歷史背景建立中：${hp.map(x=>x.code+' '+x.percent+'%').join('｜')}</span>`;validationPoll=setTimeout(runDeepValidation,3000)}}finally{$('deepValidateBtn').disabled=false}}
 
