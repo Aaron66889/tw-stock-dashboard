@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.100-ETF-TRADE-PATH-READY-COMPAT',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.100-ETF-TRADE-PATH-READY-COMPAT-VALIDATION-LAZY',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const TRADE_RETURN_REQUIRED='cash-entitlement-total-return-v2';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
@@ -104,7 +104,7 @@ function saveHoldings(){saveJSON('twStockHoldingsV12',H);if(MODEL_SYNC?.ready&&H
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
 function dayKey(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date())}
 function fresh(ts,ms=90000){return ts&&Date.now()-Date.parse(ts)<ms}
-function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false);if(id==='trendBuyPage')loadTrendBuy(false)}
+function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false);if(id==='trendBuyPage')loadTrendBuy(false);if(id==='model'){renderSpecs(false);loadValidation(false)}}
 document.querySelectorAll('.navb').forEach(b=>b.onclick=()=>setPage(b.dataset.page));
 function setMode(){const d=taipeiNow(),m=d.getHours()*60+d.getMinutes(),day=d.getDay();let a,b,c;if(day===0||day===6){a='週末模式';b='市場休市，整理全歷史與下一交易日環境';c='現貨維持最近交易日，夜盤／海外依交易時段更新'}else if(m>=537&&m<540){a='08:57盤前';b='盤前三層正在收斂';c='08:59:30鎖定盤前基準'}else if(m>=540&&m<=810){a='● 盤中模式';b='今天有沒有合理買點？';c='價格10秒｜模型30秒'}else if(m>810&&m<900){a='收盤模式';b='今天收盤結構與下一交易日環境';c='檢查今日買點歷史與市場廣度'}else if(m>=900||m<300){a='🌙 夜間模式';b='夜盤與海外正在怎麼影響下一交易日？';c='夜盤10秒更新；正負號自行重算'}else{a='盤前模式';b='開盤前先看海外與台指期日盤';c=m>=525?'08:45台指期先行訊號累積中｜08:57開始三層收斂':'等待08:45台指期日盤'}$('mode').textContent=a;$('modeTitle').textContent=b;$('modeNote').textContent=c}
 function addEvent(text,kind='info'){const last=EVENTS.at(-1);if(last&&last.text===text&&Date.now()-Date.parse(last.at)<60000)return;EVENTS.push({at:new Date().toISOString(),text,kind});EVENTS=EVENTS.slice(-160);saveJSON('v124_events',EVENTS);renderEvents()}
@@ -630,7 +630,7 @@ function drawHistory(a){const svg=$('historyChart');if(!a.length){svg.innerHTML=
 function renderBacktestTabs(){$('backtestTabs').innerHTML=ETF.map(c=>`<button class="btn etftab ${c===selectedBacktest?'on':''}" onclick="selectBacktest('${c}')">${c}</button>`).join('')}
 function selectBacktest(c){selectedBacktest=c;renderBacktestTabs();$('backtestResult').innerHTML='尚未執行 '+c+' 全歷史回測。'}
 let backtestPoll=null;
-async function runBacktest(){clearTimeout(backtestPoll);$('runBacktestBtn').disabled=true;$('backtestResult').innerHTML='正在建立TWSE官方上市日至今歷史…';try{await get('/api/history-warm?code='+selectedBacktest);const b=await get('/api/backtest?code='+selectedBacktest,30000);if(!b.ok){$('backtestResult').innerHTML=`<b class="downc">資料源錯誤：</b>${b.error||'未知錯誤'}`;return}if(!b.ready){if(b.status==='WARMING'){const p=b.progress||{};$('backtestResult').innerHTML=`<b class="amber">🟡 完整回測歷史建立中</b><br>${selectedBacktest}：${p.doneMonths||0}/${p.totalMonths||0}個月份（${p.percent||0}%）<br><span class="note">這次不會再把兩百多個月塞進同一支HTTP請求；背景完成後自動執行回測。</span>`;backtestPoll=setTimeout(runBacktest,2500);return}$('backtestResult').innerHTML=`<b class="downc">🔴 回測驗證未通過：</b>${b.error||b.status}<br><span class="note">${b.validation?`實際第一筆 ${b.validation.first||'—'}｜官方掛牌 ${b.validation.listed}｜樣本 ${b.validation.rows||0}`:''}</span>`;return}const m=b.slices.full,on=b.ab.antiChaseOn,off=b.ab.antiChaseOff,w=b.walkForward.metrics,v=b.validation,wc=m.worstCase;$('backtestResult').innerHTML=`<b>${b.code} ${b.name}｜回測資料起始 ${b.firstDate}｜資料截止 ${b.lastDate}｜${b.historyDays}日</b><br><span class="note">官方掛牌 ${b.listed}${b.code==='0050'&&b.firstDate>b.listed?'｜本模型以實際取得的長期日K樣本回測，不強求追溯至2003':''}</span><br><span class="${v.fullHistoryPass?'upc':'downc'}">${v.fullHistoryPass?'🟢 完整回測歷史PASS':'🔴 全歷史FAIL'}</span>｜OHLC覆蓋 ${fmt(v.ohlcCoveragePct)}%｜${v.precision}<br>${b.scope}${Number.isFinite(b.computeMs)?`<br><span class="note">本次價格核心計算 ${b.computeMs} ms（同一批指標／分位數共用，不改公式）</span>`:''}<div class="grid4"><div class="box"><span class="k">價格核心訊號</span><b>${m.signals}</b></div><div class="box"><span class="k">20日平均／中位</span><b>${fmt(m.avg20)}% / ${fmt(m.median20)}%</b><small>20日正報酬率 ${fmt(m.win20)}%</small></div><div class="box"><span class="k">60日最差MAE</span><b>${fmt(m.worstMAE60)}%</b><small>${wc?`${wc.signalDate}→${wc.lowDate} (${wc.precision})`:''}</small></div><div class="box"><span class="k">真正多頭參與率</span><b>${fmt(m.participationRate)}%</b><small>${m.participatedBullWindows||0}/${m.bullWindows||0}個60日多頭窗</small></div></div><div class="grid4"><div class="box"><span class="k">5/20/60日正報酬率</span><b>${fmt(m.win5)} / ${fmt(m.win20)} / ${fmt(m.win60)}%</b></div><div class="box"><span class="k">平均MAE / MFE</span><b>${fmt(m.avgMAE60)}% / ${fmt(m.avgMFE60)}%</b><small>訊號後60交易日</small></div><div class="box"><span class="k">錯失多頭窗</span><b>${m.missedUpsideWindows||0}</b><small>${fmt(m.missedBullRate)}%｜共 ${m.bullWindows||0} 個</small></div><div class="box"><span class="k">最長無訊號</span><b>${m.maxNoSignalDays??'—'}日</b><small>用來監控模型是否過度保守</small></div></div><table class="table"><thead><tr><th>區間</th><th>訊號</th><th>20日平均</th><th>60日平均</th><th>高位買入率</th><th>最長無訊號</th></tr></thead><tbody>${Object.entries(b.slices).map(([k,x])=>`<tr><td>${{full:'全歷史',y10:'近10年',y5:'近5年',y2:'近2年',y1:'近1年'}[k]}${x.signals===m.signals&&k!=='full'?'（同全歷史）':''}</td><td>${x.signals||0}</td><td>${fmt(x.avg20)}%</td><td>${fmt(x.avg60)}%</td><td>${fmt(x.highEntryRate)}%</td><td>${x.maxNoSignalDays??'—'}日</td></tr>`).join('')}</tbody></table><div class="reading"><b>防追高A/B：</b>ON 高位買入 ${fmt(on.highEntryRate)}%、真正參與率 ${fmt(on.participationRate)}%；OFF 高位買入 ${fmt(off.highEntryRate)}%、真正參與率 ${fmt(off.participationRate)}%。<br><b>價格核心回測 WF：</b>未看資料合併訊號 ${w.signals||0}，20日平均 ${fmt(w.avg20)}%，真正參與率 ${fmt(w.participationRate)}%。<br><b>防追高門檻 WF 校準：</b>${b.chaseCalibration?.ready?`警戒 ${b.chaseCalibration.warningThreshold}｜硬線 ${b.chaseCalibration.hardThreshold}｜穩定區間 ${b.chaseCalibration.stableLow}–${b.chaseCalibration.stableHigh}｜可信度 ${b.chaseCalibration.confidence}｜樣本 ${b.chaseCalibration.observations}`:`歷史樣本不足，暫用硬線 ${b.chaseCalibration?.hardThreshold??88}`}。<br><b>參與率保護：</b>候選門檻必須保留至少 ${b.chaseCalibration?.participationGuard??85}% 的追價觀察機會；價格真的回到第一層後，不再因同一個中期高檔分數重複否決。<br><b>錯失監控：</b>全歷史 ${m.missedUpsideWindows||0}/${m.bullWindows||0} 個60日多頭窗未及時參與（${fmt(m.missedBullRate)}%）；這是觀察模型是否過度保守，不會反向放寬現有Gate。${wc?`<br><b>最差案例：</b>${wc.signalDate} 買點 ${fmt(wc.entry)}，${wc.lowDate} 最低 ${fmt(wc.lowPrice)}，MAE ${fmt(wc.mae60)}%。`:''}</div>`;loadValidation(true)}catch(e){$('backtestResult').innerHTML='<b class="downc">回測資料連線錯誤：</b>'+e.message}finally{$('runBacktestBtn').disabled=false}}
+async function runBacktest(){clearTimeout(backtestPoll);$('runBacktestBtn').disabled=true;$('backtestResult').innerHTML='正在建立TWSE官方上市日至今歷史…';try{await get('/api/history-warm?code='+selectedBacktest);const b=await get('/api/backtest?code='+selectedBacktest,30000);if(!b.ok){$('backtestResult').innerHTML=`<b class="downc">資料源錯誤：</b>${b.error||'未知錯誤'}`;return}if(!b.ready){if(b.status==='WARMING'){const p=b.progress||{};$('backtestResult').innerHTML=`<b class="amber">🟡 完整回測歷史建立中</b><br>${selectedBacktest}：${p.doneMonths||0}/${p.totalMonths||0}個月份（${p.percent||0}%）<br><span class="note">這次不會再把兩百多個月塞進同一支HTTP請求；背景完成後自動執行回測。</span>`;backtestPoll=setTimeout(runBacktest,2500);return}$('backtestResult').innerHTML=`<b class="downc">🔴 回測驗證未通過：</b>${b.error||b.status}<br><span class="note">${b.validation?`實際第一筆 ${b.validation.first||'—'}｜官方掛牌 ${b.validation.listed}｜樣本 ${b.validation.rows||0}`:''}</span>`;return}const m=b.slices.full,on=b.ab.antiChaseOn,off=b.ab.antiChaseOff,w=b.walkForward.metrics,v=b.validation,wc=m.worstCase;$('backtestResult').innerHTML=`<b>${b.code} ${b.name}｜回測資料起始 ${b.firstDate}｜資料截止 ${b.lastDate}｜${b.historyDays}日</b><br><span class="note">官方掛牌 ${b.listed}${b.code==='0050'&&b.firstDate>b.listed?'｜本模型以實際取得的長期日K樣本回測，不強求追溯至2003':''}</span><br><span class="${v.fullHistoryPass?'upc':'downc'}">${v.fullHistoryPass?'🟢 完整回測歷史PASS':'🔴 全歷史FAIL'}</span>｜OHLC覆蓋 ${fmt(v.ohlcCoveragePct)}%｜${v.precision}<br>${b.scope}${Number.isFinite(b.computeMs)?`<br><span class="note">本次價格核心計算 ${b.computeMs} ms（同一批指標／分位數共用，不改公式）</span>`:''}<div class="grid4"><div class="box"><span class="k">價格核心訊號</span><b>${m.signals}</b></div><div class="box"><span class="k">20日平均／中位</span><b>${fmt(m.avg20)}% / ${fmt(m.median20)}%</b><small>20日正報酬率 ${fmt(m.win20)}%</small></div><div class="box"><span class="k">60日最差MAE</span><b>${fmt(m.worstMAE60)}%</b><small>${wc?`${wc.signalDate}→${wc.lowDate} (${wc.precision})`:''}</small></div><div class="box"><span class="k">真正多頭參與率</span><b>${fmt(m.participationRate)}%</b><small>${m.participatedBullWindows||0}/${m.bullWindows||0}個60日多頭窗</small></div></div><div class="grid4"><div class="box"><span class="k">5/20/60日正報酬率</span><b>${fmt(m.win5)} / ${fmt(m.win20)} / ${fmt(m.win60)}%</b></div><div class="box"><span class="k">平均MAE / MFE</span><b>${fmt(m.avgMAE60)}% / ${fmt(m.avgMFE60)}%</b><small>訊號後60交易日</small></div><div class="box"><span class="k">錯失多頭窗</span><b>${m.missedUpsideWindows||0}</b><small>${fmt(m.missedBullRate)}%｜共 ${m.bullWindows||0} 個</small></div><div class="box"><span class="k">最長無訊號</span><b>${m.maxNoSignalDays??'—'}日</b><small>用來監控模型是否過度保守</small></div></div><table class="table"><thead><tr><th>區間</th><th>訊號</th><th>20日平均</th><th>60日平均</th><th>高位買入率</th><th>最長無訊號</th></tr></thead><tbody>${Object.entries(b.slices).map(([k,x])=>`<tr><td>${{full:'全歷史',y10:'近10年',y5:'近5年',y2:'近2年',y1:'近1年'}[k]}${x.signals===m.signals&&k!=='full'?'（同全歷史）':''}</td><td>${x.signals||0}</td><td>${fmt(x.avg20)}%</td><td>${fmt(x.avg60)}%</td><td>${fmt(x.highEntryRate)}%</td><td>${x.maxNoSignalDays??'—'}日</td></tr>`).join('')}</tbody></table><div class="reading"><b>防追高A/B：</b>ON 高位買入 ${fmt(on.highEntryRate)}%、真正參與率 ${fmt(on.participationRate)}%；OFF 高位買入 ${fmt(off.highEntryRate)}%、真正參與率 ${fmt(off.participationRate)}%。<br><b>價格核心回測 WF：</b>未看資料合併訊號 ${w.signals||0}，20日平均 ${fmt(w.avg20)}%，真正參與率 ${fmt(w.participationRate)}%。<br><b>防追高門檻 WF 校準：</b>${b.chaseCalibration?.ready?`警戒 ${b.chaseCalibration.warningThreshold}｜硬線 ${b.chaseCalibration.hardThreshold}｜穩定區間 ${b.chaseCalibration.stableLow}–${b.chaseCalibration.stableHigh}｜可信度 ${b.chaseCalibration.confidence}｜樣本 ${b.chaseCalibration.observations}`:`歷史樣本不足，暫用硬線 ${b.chaseCalibration?.hardThreshold??88}`}。<br><b>參與率保護：</b>候選門檻必須保留至少 ${b.chaseCalibration?.participationGuard??85}% 的追價觀察機會；價格真的回到第一層後，不再因同一個中期高檔分數重複否決。<br><b>錯失監控：</b>全歷史 ${m.missedUpsideWindows||0}/${m.bullWindows||0} 個60日多頭窗未及時參與（${fmt(m.missedBullRate)}%）；這是觀察模型是否過度保守，不會反向放寬現有Gate。${wc?`<br><b>最差案例：</b>${wc.signalDate} 買點 ${fmt(wc.entry)}，${wc.lowDate} 最低 ${fmt(wc.lowPrice)}，MAE ${fmt(wc.mae60)}%。`:''}</div>`;if(validationPageVisible())loadValidation(false)}catch(e){$('backtestResult').innerHTML='<b class="downc">回測資料連線錯誤：</b>'+e.message}finally{$('runBacktestBtn').disabled=false}}
 const SPEC=[
 [1,'保留V12.3原功能','大盤、持股、明日環境、判斷說明保留'],[2,'夜盤正負號','成交－參考價自行重算'],[3,'夜盤資訊重定義','相對參考價／距今晚最高分離'],[4,'夜盤1/3/5/15分動能','短線方向與高檔回落／低檔反彈'],[5,'08:45→08:57盤前','08:45台指期日盤先行＋08:59:30鎖定'],[6,'盤前置頂','08:57–09:00提高優先'],[7,'允許今日無買點','不每天硬生買價'],[8,'四檔獨立模型','各自參數與歷史'],[9,'第一動態買點區','區間、30秒重估'],[10,'三層價格','第一／理想／強力'],[11,'評分制','價格、環境、健康、追高綜合'],[12,'三層買進行為','分批而非全有全無'],[13,'硬Gate','資料失效／嚴重追高／急殺'],[14,'防追高','5/20/60/120/250與乖離漲速'],[15,'買點漂移','買點上修限速'],[16,'新高重新定錨','中樞慢速確認'],[17,'歷史動態買價','30秒底層紀錄'],[18,'同步市場實價','抓追高／下逃'],[19,'重複買點去重','UI折疊、維持時間保留'],[20,'主要買點區','近7日時間加權'],[21,'完整成分引擎','不足覆蓋就不計分'],[22,'成分熱力格','名稱＋漲跌＋ETF權重'],[23,'成分健康度','每ETF獨立'],[24,'分歧／背離','權重式判斷'],[25,'健康度放ETF下面','與標的一體'],[26,'成分自動換版','新有效日保存版本'],[27,'歷史成分有效日','無版本就不倒灌今天成分'],[28,'市場廣度','母體＋漲跌平＋比例'],[29,'海外風險層','NASDAQ／SOX／TSM ADR／台指夜盤'],[30,'環境避免偏科','多來源共同計分，單一市場不主導'],[31,'我的持股保留','股數成本市值損益報酬'],[32,'持股與買點分離','最新需求：私人頁不塞買點'],[33,'持股10秒更新','同步市值損益'],[34,'資料逾時保護','逾時硬Gate'],[35,'回前景刷新','visibilitychange立即抓'],[36,'不同更新頻率','行情10秒／模型30秒'],[37,'四檔全歷史回測','上市日起'],[38,'歷史切片','10/5/2/1年只作檢查'],[39,'價格核心回測 WF','訓練選參數→下一年驗證'],[40,'除息／還原權息','調整後OHLC避免假跌'],[41,'防追高A/B','ON/OFF全歷史比較'],[42,'回測多KPI','5/20/60、MAE、參與率、錯過上漲'],[43,'可信度','樣本長度與資料覆蓋'],[44,'台股顏色','紅漲綠跌'],[45,'版本文字','全站V12.4']
 ];
@@ -665,10 +665,97 @@ function clientValidation(base){const c={...(base||{})};const now=taipeiNow(),m=
  c[36]={status:'PASS',evidence:'ETF盤中5秒（非盤中10秒）｜大盤10秒｜夜盤10秒｜環境30秒｜模型30秒'};
  // Added 3 core controls
  c.core={participation:{status:ETF.every(x=>'noSignalDays' in STATE)?'PASS':'PASS',evidence:'連續無訊號日數＋中樞重錨機制已接'},downEscape:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'買點下修需環境/成分惡化證據'},hysteresis:{status:STATE.models&&Object.keys(STATE.models).length?'PASS':'WAIT',evidence:'確認狀態保存，不因10秒離區直接取消'}};return c}
-function renderSpecs(){const checks=clientValidation(VALIDATION?.checks||{}),counts={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};SPEC.forEach(x=>counts[checks[x[0]]?.status||'WAIT']++);$('validationSummary').innerHTML=`<div class="box"><span class="k">🟢 PASS</span><b>${counts.PASS}</b></div><div class="box"><span class="k">🟡 PARTIAL</span><b>${counts.PARTIAL}</b></div><div class="box"><span class="k">🔴 FAIL</span><b>${counts.FAIL}</b></div><div class="box"><span class="k">⚪ WAIT</span><b>${counts.WAIT}</b></div><div class="box"><span class="k">完整通過</span><b>${counts.PASS}/45</b></div>`;$('validationOverall').innerHTML=counts.PASS===45?'<b class="upc">🟢 V12.4 FINAL 45/45 驗收完成</b>':'<b class="downc">目前不得視為45/45完成。</b> 每一格只有實際證據PASS才亮綠燈。';$('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('')}
-let validationPoll=null;async function loadValidation(deep=false){try{const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);if(!d.ok){$('validationOverall').innerHTML='<b class="downc">驗證API錯誤：</b>'+(d.error||'未知');return}VALIDATION=d;renderSpecs()}catch(e){$('validationOverall').innerHTML='<b class="downc">驗證中心連線錯誤：</b>'+e.message}}
-async function runDeepValidation(){clearTimeout(validationPoll);$('deepValidateBtn').disabled=true;try{await get('/api/history-warm?all=1');await loadValidation(true);const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;if(ready<4){$('validationOverall').innerHTML+=`<br><span class="note">完整回測歷史背景建立中：${hp.map(x=>x.code+' '+x.percent+'%').join('｜')}</span>`;validationPoll=setTimeout(runDeepValidation,3000)}}finally{$('deepValidateBtn').disabled=false}}
-
+// The official /api/buy-model output does NOT contain shadow-only criticalGate.
+// Read the exact formal model fields instead; no Shadow verdict is used here.
+const CORE_SPEC_IDS=new Set([34,40,9,10,14,13,21]);
+const TRADE_CORE_VALIDATION=[
+ {label:'即時行情',slot:34,test:(r,code)=>{
+   if(!(Number(r.price)>0))return ['WAIT','正式現價未取得'];
+   if(lastBuy?.modelFreshByCode?.[code]===false)return ['WAIT','正式行情已降級'];
+   return ['PASS','正式模型現價可用'];
+ }},
+ {label:'昨收／除息基準',slot:40,test:r=>r.corporateActionReferenceMissing===true||r.referenceReliable===false?['FAIL','除權息參考價不可靠']:Number(r.effectivePrevClose??r.prevClose)>0?['PASS','正式參考價可用']:['WAIT','正式昨收未建立']},
+ {label:'ATR／歷史資料',slot:9,test:r=>Number(r.reachability?.atr)>0&&r.history?.atr14>0?['PASS','ATR與歷史指標可用']:['WAIT','ATR或歷史資料建立中']},
+ {label:'三層結構',slot:10,test:r=>{
+   const a=['first','second','third'].map(k=>r.raw?.[k]);
+   if(a.some(z=>!z))return ['WAIT','三層價格尚未建立'];
+   const good=a.every(z=>Number.isFinite(z.low)&&Number.isFinite(z.high)&&z.low>0&&z.high>=z.low)&&a[0].high>a[1].high&&a[1].high>a[2].high;
+   return good?['PASS','三層價格順序與區間正常']:['FAIL','正式三層價格結構異常'];
+ }},
+ {label:'防追高校準',slot:14,test:r=>{
+   const c=r.chaseCalibration;
+   if(!Number.isFinite(r.chaseRisk)||!Number.isFinite(r.chaseHardThreshold))return ['WAIT','追高風險／硬線尚未建立'];
+   if(c?.lockStatus==='LOCKED'||c?.lockedDate||c?.ready===true)return ['PASS','正式追價門檻校準可用'];
+   return ['WAIT','正式追價校準尚未就緒'];
+ }},
+ {label:'Hard Gate',slot:13,test:r=>r.hardVeto===true||r.decisionGate?.type==='HARD'?['FAIL',r.hardVetoReason||r.decisionGate?.reason||'正式硬Gate阻擋']:r.hardVeto===false?['PASS','正式Hard Gate未阻擋（不代表已達買入條件）']:['WAIT','正式Gate尚未計算']},
+ {label:'成分健康安全處置',slot:21,test:r=>{
+   if(!r.health||typeof r.health.usable!=='boolean')return ['WAIT','正式健康資料狀態未取得'];
+   if(r.health.usable&&!Number.isFinite(r.health.score))return ['FAIL','健康資料可用但分數異常'];
+   return r.health.usable?['PASS','完整健康資料納入正式計算']:['PASS','資料不足，正式模型已安全排除健康分'];
+ }}
+];
+function validationPageVisible(){return !!$('model')?.classList.contains('on')}
+function tradeCoreValidation(){
+ const items=TRADE_CORE_VALIDATION.map(def=>{
+  const verdicts=ETF.map(code=>{
+   const r=lastBuy?.models?.[code];
+   if(!r||r.error)return{code,status:'WAIT',reason:r?.error||'正式模型尚未到達'};
+   const [status,reason]=def.test(r,code);return{code,status,reason};
+  });
+  const fail=verdicts.some(x=>x.status==='FAIL'),allPass=verdicts.every(x=>x.status==='PASS'),somePass=verdicts.some(x=>x.status==='PASS');
+  return{...def,status:fail?'FAIL':allPass?'PASS':somePass?'PARTIAL':'WAIT',evidence:verdicts.map(v=>`${v.code}:${v.status}（${v.reason}）`).join('｜')};
+ });
+ return{items,pass:items.filter(x=>x.status==='PASS').length,fail:items.filter(x=>x.status==='FAIL').length,partial:items.filter(x=>x.status==='PARTIAL').length,wait:items.filter(x=>x.status==='WAIT').length};
+}
+function renderSpecs(includeDetails=false){
+ if(!validationPageVisible())return;
+ const checks=clientValidation(VALIDATION?.checks||{});
+ const core=tradeCoreValidation();
+ // Seven of the existing 45 detailed slots are populated with formal live model
+ // findings, giving exactly 7 core + 38 auxiliary. Never claim 45 PASS if the
+ // official model is unavailable.
+ core.items.forEach(v=>{checks[v.slot]={status:v.status,evidence:`正式模型｜${v.evidence}`}});
+ const aux={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};
+ SPEC.filter(x=>!CORE_SPEC_IDS.has(x[0])).forEach(x=>aux[checks[x[0]]?.status||'WAIT']++);
+ const totalPass=core.pass+aux.PASS,totalPartial=core.partial+aux.PARTIAL,totalFail=core.fail+aux.FAIL,totalWait=core.wait+aux.WAIT;
+ $('validationSummary').innerHTML=`<div class="box"><span class="k">交易核心</span><b class="${core.fail?'downc':core.pass===7?'upc':'amber'}">${core.pass}/7</b><small>PASS ${core.pass}｜PARTIAL ${core.partial}｜FAIL ${core.fail}｜WAIT ${core.wait}</small></div><div class="box"><span class="k">輔助驗證</span><b>${aux.PASS}/38</b><small>PARTIAL ${aux.PARTIAL}｜FAIL ${aux.FAIL}｜WAIT ${aux.WAIT}</small></div><div class="box"><span class="k">總驗證</span><b>${totalPass}/45</b><small>PARTIAL ${totalPartial}｜FAIL ${totalFail}｜WAIT ${totalWait}</small></div>`;
+ if(core.fail){
+  const bad=core.items.filter(x=>x.status==='FAIL').map(x=>`${x.label}：${x.evidence}`).join('；');
+  $('validationOverall').innerHTML=`<b class="downc">正式買點部分標的受影響：</b>${bad}。<br><span class="note">請以各ETF正式買點頁的硬Gate、分數與確認狀態為準；輔助燈亮不代表可以下單。</span>`;
+ }else if(core.pass===7){
+  $('validationOverall').innerHTML=`<b class="upc">交易核心 7/7 PASS｜核心資料可用。</b>輔助驗證 ${aux.PASS}/38、總驗證 ${totalPass}/45。<br><span class="note">核心資料通過不代表價格已達買點；仍須各ETF正式L1/L2/L3確認、分數與執行區間通過。</span>`;
+ }else{
+  const pending=core.items.filter(x=>x.status!=='PASS').map(x=>`${x.label}:${x.status}`).join('｜');
+  $('validationOverall').innerHTML=`<b class="amber">交易核心未齊全：</b>${core.pass}/7 PASS｜${pending}。<br><span class="note">驗證摘要從正式買點資料讀取，不使用Shadow Gate。詳細證據見下方45項。</span>`;
+ }
+ if(!includeDetails)return; // Price/model refresh must never rebuild 45 detail cards.
+ $('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');
+ const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('');
+}
+let validationPoll=null,validationRequest=null;
+async function loadValidation(deep=false){
+ if(!validationPageVisible())return;
+ if(validationRequest){await validationRequest;if(!deep)return}
+ validationRequest=(async()=>{
+  try{
+   const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);
+   if(!d.ok){$('validationOverall').innerHTML='<b class="downc">驗證API錯誤：</b>'+(d.error||'未知');return}
+   VALIDATION=d;renderSpecs(true);
+  }catch(e){$('validationOverall').innerHTML='<b class="downc">驗證中心連線錯誤：</b>'+e.message}
+ })();
+ try{await validationRequest}finally{validationRequest=null}
+}
+async function runDeepValidation(){
+ if(!validationPageVisible())return;
+ clearTimeout(validationPoll);$('deepValidateBtn').disabled=true;
+ try{
+  await get('/api/history-warm?all=1');
+  await loadValidation(true);
+  const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;
+  if(ready<4){$('validationOverall').innerHTML+=`<br><span class="note">完整回測歷史背景建立中：${hp.map(x=>x.code+' '+x.percent+'%').join('｜')}</span>`;validationPoll=setTimeout(runDeepValidation,3000)}
+ }finally{$('deepValidateBtn').disabled=false}
+}
 
 
 function modelSyncSaveLocal(){saveJSON('v124_model_trades',MODEL_TRADES);saveJSON('v124_model_trade_pending_deletes',MODEL_PENDING_DELETES)}
@@ -1066,7 +1153,7 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();loadValidation(false)}
+function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy()}
 migrate1689Existing0050Trade();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if($('trendBuyPage')?.classList.contains('on'))loadTrendBuy(false);syncAllCloud(false)}})
 setInterval(()=>{
