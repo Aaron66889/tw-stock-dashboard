@@ -1,0 +1,23 @@
+name: AB validation safety checks
+on:
+  push:
+    branches:
+      - feature/ab-performance-validation-20261013
+  pull_request:
+    paths:
+      - 'public/model-ab.js'
+      - 'public/index.html'
+      - 'tests/model-ab.test.js'
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm install
+      - run: npm run check
+      - run: npm test
