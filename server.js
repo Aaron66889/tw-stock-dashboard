@@ -4,6 +4,7 @@ const fs=require('fs');
 const path=require('path');
 const crypto=require('crypto');
 const {URL}=require('url');
+const TREND_SHADOW_B=require('./trend-shadow-b');
 let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 
 const PORT=process.env.PORT||3000;
@@ -2382,7 +2383,11 @@ function trendEntryOne(code,q,hist,marketHist,marketQuote){
  }else if(px<br20){status='WAIT_BREAKOUT';statusText='等待有效突破';action='突破20日高點後再評估'}
  else{status='WAIT_RETEST';statusText='突破成立／等待回踩';action='不追目前價格，等回到執行帶'}
  const bt=trendBacktest(hist?.rows||[],marketHist?.rows||[]);
- return{ok:true,code,name:META[code].name,price:px,prevClose:Number(q?.effectivePrevClose||q?.prevClose)||null,changePct:Number(q?.effectivePrevClose||q?.prevClose)>0?(px/Number(q?.effectivePrevClose||q?.prevClose)-1)*100:null,score,scoreLabel:'ETF趨勢強度',scoreGroups,status,statusText,action,levels:{breakout20:br20,breakout55:br55,entryLow,entryHigh,maxChase},trend:{sma20:s20,sma60:s60,sma120:s120,sma250:s250,weekly20:w20,weekly40:w40,momentum20:mom20,momentum60:mom60,marketMomentum20:marketMom20,marketMomentum60:marketMom60,relative20,relative60,atr,distBreakAtr,distSma20Atr,brokeToday},regime:{allTimeHigh,priorAllTimeHigh,athDistancePct,athBasis,athDataAvailable},parts,backtest:bt,historySource:hist?.source||null,historyOfficial:!!hist?.validation?.fullHistoryPass,historyDays:hist?.rows?.length||0,marketHistorySource:marketHist?.source||null};
+ // Read-only Shadow B; never changes official TREND_BUY, score, action or saved trade state.
+ const trendBase={status,score,price:px,levels:{breakout20:br20,entryLow,entryHigh,maxChase},trend:{atr}};
+ const shadowB=TREND_SHADOW_B.live(trendBase,q);
+ const abPriceCore=TREND_SHADOW_B.compare(hist?.rows||[]);
+ return{ok:true,code,name:META[code].name,price:px,prevClose:Number(q?.effectivePrevClose||q?.prevClose)||null,changePct:Number(q?.effectivePrevClose||q?.prevClose)>0?(px/Number(q?.effectivePrevClose||q?.prevClose)-1)*100:null,score,scoreLabel:'ETF趨勢強度',scoreGroups,status,statusText,action,levels:{breakout20:br20,breakout55:br55,entryLow,entryHigh,maxChase},trend:{sma20:s20,sma60:s60,sma120:s120,sma250:s250,weekly20:w20,weekly40:w40,momentum20:mom20,momentum60:mom60,marketMomentum20:marketMom20,marketMomentum60:marketMom60,relative20,relative60,atr,distBreakAtr,distSma20Atr,brokeToday},regime:{allTimeHigh,priorAllTimeHigh,athDistancePct,athBasis,athDataAvailable},parts,backtest:bt,shadowB,abPriceCore,historySource:hist?.source||null,historyOfficial:!!hist?.validation?.fullHistoryPass,historyDays:hist?.rows?.length||0,marketHistorySource:marketHist?.source||null};
 }
 async function trendEntryModel(){
  let quotes=null,quoteSource='';const bm=RUNTIME.bm,age=bm?.fetchedAt?Date.now()-Date.parse(bm.fetchedAt):Infinity;
