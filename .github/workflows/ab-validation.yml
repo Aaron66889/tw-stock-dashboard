@@ -3,10 +3,13 @@ on:
   push:
     branches:
       - feature/ab-performance-validation-20261013
+      - fix/trend-b-advisory-20261013
   pull_request:
     paths:
       - 'public/model-ab.js'
       - 'public/index.html'
+      - 'public/app.js'
+      - 'tests/reliability.test.js'
       - 'tests/model-ab.test.js'
       - 'trend-shadow-b.js'
       - 'public/trend-shadow-b-ui.js'
