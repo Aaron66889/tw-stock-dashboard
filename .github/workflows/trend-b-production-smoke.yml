@@ -25,12 +25,27 @@ jobs:
           if (!health.ok) throw Error('health not ok: ' + JSON.stringify(health));
           console.log('HEALTH', JSON.stringify({ok:health.ok,build:health.build,status:health.status}));
           const html = await (await get('/')).text();
-          for (const v of ['id="trendShadowB"', '/trend-shadow-b-ui.js', '/model-ab.js']) {
+          for (const v of ['id="trendShadowB"', '/trend-shadow-b-ui.js', '/model-ab.js', 'id="trendForwardLedger"','/trend-forward-ui.js']) {
             if (!html.includes(v)) throw Error('HTML missing ' + v);
           }
           const script = await (await get('/trend-shadow-b-ui.js')).text();
           if (!script.includes('Shadow') || !script.includes('abPriceCore')) throw Error('frontend code not deployed');
           console.log('HTML and frontend script: PASS');
+          const state = await (await get('/api/model-sync/status')).json();
+          if (!state.supabaseConfigured) throw Error('Supabase not configured: persistent forward ledger unavailable');
+          const forward = await (await get('/api/trend-ab-forward', 55000)).json();
+          if (!forward.ok || forward.storageReady!==true || !Array.isArray(forward.events) || !forward.summary)
+            throw Error('Forward ledger invalid: '+JSON.stringify(forward).slice(0,450));
+          if (!forward.version || !forward.version.startsWith('trend-forward-ledger'))
+            throw Error('Incorrect forward ledger version');
+          if (typeof forward.eventCount!=='number' || forward.eventCount<0)
+            throw Error('Invalid forward event count');
+          console.log('FORWARD_LEDGER',JSON.stringify({storageReady:forward.storageReady,
+            eventCount:forward.eventCount,version:forward.version,lastScanAt:forward.lastScanAt,
+            asOf:forward.asOf,source:forward.source,summary:forward.summary.events}));
+          const ledgerUI=await (await get('/trend-forward-ui.js')).text();
+          if(!ledgerUI.includes('trendForwardLedger'))throw Error('Forward UI script not deployed');
+
           let result = null, err = null;
           for (let attempt=1;attempt<=3;attempt++) {
             try {
