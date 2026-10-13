@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.104-GAP-DOWN-REBOUND-L1',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.105-STABLE-CONFIRM-VALIDATION-LAZY',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const TRADE_RETURN_REQUIRED='cash-entitlement-total-return-v2';
 const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
@@ -135,7 +135,7 @@ function saveHoldings(){
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
 function dayKey(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date())}
 function fresh(ts,ms=90000){return ts&&Date.now()-Date.parse(ts)<ms}
-function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false);if(id==='trendBuyPage')loadTrendBuy(false)}
+function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false);if(id==='trendBuyPage')loadTrendBuy(false);if(id==='model'){loadHistoryStatus();refreshTradePerformanceWhenNeeded();}}
 document.querySelectorAll('.navb').forEach(b=>b.onclick=()=>setPage(b.dataset.page));
 function setMode(){const d=taipeiNow(),m=d.getHours()*60+d.getMinutes(),day=d.getDay();let a,b,c;if(day===0||day===6){a='週末模式';b='市場休市，整理全歷史與下一交易日環境';c='現貨維持最近交易日，夜盤／海外依交易時段更新'}else if(m>=537&&m<540){a='08:57盤前';b='盤前三層正在收斂';c='08:59:30鎖定盤前基準'}else if(m>=540&&m<=810){a='● 盤中模式';b='今天有沒有合理買點？';c='價格10秒｜模型30秒'}else if(m>810&&m<900){a='收盤模式';b='今天收盤結構與下一交易日環境';c='檢查今日買點歷史與市場廣度'}else if(m>=900||m<300){a='🌙 夜間模式';b='夜盤與海外正在怎麼影響下一交易日？';c='夜盤10秒更新；正負號自行重算'}else{a='盤前模式';b='開盤前先看海外與台指期日盤';c=m>=525?'08:45台指期先行訊號累積中｜08:57開始三層收斂':'等待08:45台指期日盤'}$('mode').textContent=a;$('modeTitle').textContent=b;$('modeNote').textContent=c}
 function addEvent(text,kind='info'){const last=EVENTS.at(-1);if(last&&last.text===text&&Date.now()-Date.parse(last.at)<60000)return;EVENTS.push({at:new Date().toISOString(),text,kind});EVENTS=EVENTS.slice(-160);saveJSON('v124_events',EVENTS);renderEvents()}
@@ -158,7 +158,7 @@ function moveZone(cur,target,maxDown,maxUp,allowDown=true){if(!cur)return JSON.p
 function moveZoneTimed(cur,target,maxDown30,maxUp30,allowDown=true,elapsedSec=30){if(!cur)return JSON.parse(JSON.stringify(target));const scale=Math.max(.15,Math.min(4,Number(elapsedSec||30)/30)),c=center(cur),t=center(target),half=(cur.high-cur.low)/2,maxDown=maxDown30*scale,maxUp=maxUp30*scale;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
 function cashSessionOpen(code){const d=taipeiNow(),wd=d.getDay(),m=d.getHours()*60+d.getMinutes(),o=Number(lastLive?.quotes?.[code]?.open);return wd>=1&&wd<=5&&m>=540&&o>0?o:null}
 function shiftZoneCenter(z,c){const half=(z.high-z.low)/2;return{low:c-half,high:c+half,center:c}}
-function enforceCashOpenCeiling(code,zones,atr,openPolicy=null){const o=cashSessionOpen(code);if(!(o>0)||!Array.isArray(zones)||zones.length<3)return zones;const policyCap=Number(openPolicy?.maxFirstZoneHigh),cap=openPolicy?.exceptionActive&&Number.isFinite(policyCap)&&policyCap>o?policyCap:o;const out=zones.map(z=>JSON.parse(JSON.stringify(z)));if(out[0].high>cap){const w=out[0].high-out[0].low;out[0]={low:cap-w,high:cap,center:cap-w/2}}const prev=Number(lastLive?.quotes?.[code]?.prevClose)||o,g12=Math.max(atr*.35,prev*.004),g23=Math.max(atr*.45,prev*.006);let c0=center(out[0]),c1=center(out[1]),c2=center(out[2]);if(c1>c0-g12){c1=c0-g12;out[1]=shiftZoneCenter(out[1],c1)}if(c2>c1-g23){c2=c1-g23;out[2]=shiftZoneCenter(out[2],c2)}return out}
+function enforceCashOpenCeiling(code,zones,atr){const o=cashSessionOpen(code);if(!(o>0)||!Array.isArray(zones)||zones.length<3)return zones;const out=zones.map(z=>JSON.parse(JSON.stringify(z)));if(out[0].high>o){const w=out[0].high-out[0].low;out[0]={low:o-w,high:o,center:o-w/2}}const prev=Number(lastLive?.quotes?.[code]?.prevClose)||o,g12=Math.max(atr*.35,prev*.004),g23=Math.max(atr*.45,prev*.006);let c0=center(out[0]),c1=center(out[1]),c2=center(out[2]);if(c1>c0-g12){c1=c0-g12;out[1]=shiftZoneCenter(out[1],c1)}if(c2>c1-g23){c2=c1-g23;out[2]=shiftZoneCenter(out[2],c2)}return out}
 function executionUpAllowance(atr,i=0){return Math.max(.03,Number(atr||0)*([.10,.08,.06][i]??.08))}
 function executionDownAllowance(atr,i=0){return Math.max(.02,Number(atr||0)*([.08,.07,.06][i]??.07))}
 function ensureExecutionEnvelope(L,atr,i=0){
@@ -296,7 +296,10 @@ async function loadEtfLive(){
    renderHoldings();
    renderHomeRanking();
    renderBuyCards();
-   if(selectedETF)renderDetailBuy();if(VALIDATION)renderSpecs();
+   // R3.83: live-trade current P&L follows the same 5s ETF quote owner immediately.
+   // Path analytics (MAE/MFE/layer reach) remain backend-owned.
+   if($('model')?.classList.contains('on'))renderModelTrades();
+   if(selectedETF)renderDetailBuy();if(VALIDATION&&validationVisible())renderSpecs(false);
   }
  }catch(e){console.warn('[ETF-LIVE]',e?.message||e)}
  etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?5000:10000);
@@ -304,11 +307,11 @@ async function loadEtfLive(){
 async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);
  const yahooETF={};for(const c of ETF)if(lastLive?.quotes?.[c]?.last>0)yahooETF[c]=lastLive.quotes[c];
  lastLive={...d,quotes:{...(d.quotes||{}),...yahooETF}};
- saveLastGood('market',d);renderMarket();renderHoldings();if(VALIDATION)renderSpecs();$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){
+ saveLastGood('market',d);renderMarket();renderHoldings();if(VALIDATION&&validationVisible())renderSpecs(false);$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){
   const yahooETF={};for(const code of ETF)if(lastLive?.quotes?.[code]?.last>0)yahooETF[code]=lastLive.quotes[code];
-  lastLive={...c.data,quotes:{...(c.data.quotes||{}),...yahooETF}};renderMarket();renderHoldings();if(VALIDATION)renderSpecs();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}console.warn('[MARKET]',e?.message||e)}marketTimer=setTimeout(loadMarket,10000)}
-async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();if(VALIDATION)renderSpecs();slowTimer=setTimeout(loadSlow,30000)}
-async function loadNight(){clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();if(VALIDATION)renderSpecs();nightTimer=setTimeout(loadNight,10000)}
+  lastLive={...c.data,quotes:{...(c.data.quotes||{}),...yahooETF}};renderMarket();renderHoldings();if(VALIDATION&&validationVisible())renderSpecs(false);$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}console.warn('[MARKET]',e?.message||e)}marketTimer=setTimeout(loadMarket,10000)}
+async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();if(VALIDATION&&validationVisible())renderSpecs(false);slowTimer=setTimeout(loadSlow,30000)}
+async function loadNight(){clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();if(VALIDATION&&validationVisible())renderSpecs(false);nightTimer=setTimeout(loadNight,10000)}
 async function loadBuy(){clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){const bad=ETF.filter(c=>d.modelFreshByCode&&d.modelFreshByCode[c]===false);$('freshPill').textContent=bad.length?`● 部分模型資料降級：${bad.join('/')}`:'● 模型資料降級';$('freshPill').className='pill warn'}updateState();renderAllModel();loadServerPreopen();if(VALIDATION)renderSpecs()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
 
 function renderMarket(){
@@ -339,7 +342,7 @@ async function loadServerPreopen(){
   if(PREOPEN.day!==s.day)PREOPEN={day:s.day,draft:null,locked:null};
   const local={at:s.at,models:s.models||{},txfLead:s.txfLead||null,server:true};
   if(s.locked)PREOPEN.locked=local;else if(!PREOPEN.locked&&(!PREOPEN.draft||Date.parse(local.at)>=Date.parse(PREOPEN.draft.at||0)))PREOPEN.draft=local;
-  saveJSON('v124_preopen',PREOPEN);renderPreopen();if(VALIDATION)renderSpecs();
+  saveJSON('v124_preopen',PREOPEN);renderPreopen();if(VALIDATION&&validationVisible())renderSpecs(false);
  }catch(_){ }
 }
 function handlePreopen(){
@@ -372,6 +375,39 @@ function normalizeLayerRuntime(L){
  if(!('gateBlockedReason' in L))L.gateBlockedReason=null;
  return L;
 }
+// A confirmed entry is market history, not a disposable calibration-cache entry.
+// Keep a separate same-day write-once ledger so a deploy / page reload cannot erase it.
+const CONFIRM_LEDGER_KEY='v124_first_confirm_ledger_v1';
+let CONFIRM_LEDGER=loadJSON(CONFIRM_LEDGER_KEY,{});
+if(!CONFIRM_LEDGER||typeof CONFIRM_LEDGER!=='object'||Array.isArray(CONFIRM_LEDGER))CONFIRM_LEDGER={};
+function confirmLedgerId(code,layer){return `${dayKey()}|${code}|${layer+1}`}
+function captureFirstConfirm(code,layer,L){
+ if(!L?.confirmedZone||!L?.confirmedAt)return;
+ const key=confirmLedgerId(code,layer);
+ if(CONFIRM_LEDGER[key])return; // first confirmation wins, never overwrite it
+ CONFIRM_LEDGER[key]={day:dayKey(),code,layer:layer+1,at:L.confirmedAt,zone:{...L.confirmedZone},price:L.confirmedPrice??null,observationKey:L.confirmedObservationKey??null,executionLow:Number.isFinite(L.executionLow)?L.executionLow:null,executionHigh:Number.isFinite(L.executionHigh)?L.executionHigh:null};
+ saveJSON(CONFIRM_LEDGER_KEY,CONFIRM_LEDGER);
+}
+function restoreFirstConfirm(code,layer,L){
+ const saved=CONFIRM_LEDGER[confirmLedgerId(code,layer)];
+ if(!saved?.at||!saved?.zone)return;
+ if(L.confirmed&&L.confirmedAt)return; // never overwrite an existing live confirmation
+ L.confirmed=true;L.confirmedAt=saved.at;L.confirmedZone={...saved.zone};
+ L.confirmedPrice=saved.price;L.confirmedObservationKey=saved.observationKey;
+ L.triggeredAt=L.triggeredAt||saved.at;L.touchedAt=L.touchedAt||saved.at;
+ if(Number.isFinite(saved.executionLow))L.executionLow=saved.executionLow;
+ if(Number.isFinite(saved.executionHigh))L.executionHigh=saved.executionHigh;
+ L.forming=false;L.invalid=false;
+}
+function normalizeModelWithoutReset(code,r){
+ const calibrationVersion=r.firstLayerCalibration?.version||'legacy';
+ let m=STATE.models[code];
+ if(!m||!Array.isArray(m.layers)||m.layers.length!==3||m.layers.some(L=>!L?.zone||!Number.isFinite(L.zone.low)||!Number.isFinite(L.zone.high)))m=initModel(code,r);
+ m.layers.forEach((L,i)=>{normalizeLayerRuntime(L);captureFirstConfirm(code,i,L);restoreFirstConfirm(code,i,L)});
+ // Update metadata, but NEVER recreate layers solely because a version label changed.
+ m.calibrationVersion=calibrationVersion;m.confirmationVersion=CONFIRM_RULE_VERSION;
+ return m;
+}
 function initModel(code,r){
  const mk=z=>({zone:JSON.parse(JSON.stringify(z)),samples:[],priceSamples:[],confirmed:false,forming:false,fastPass:false,invalid:false,confirmCount:0,badCount:0,triggeredAt:null,touchedAt:null,touchMin:null,touchMinAt:null,stableLowAnchor:null,confirmationReason:null,confirmedZone:null,confirmedAt:null,confirmedPrice:null,confirmedObservationKey:null,executionHigh:null,executionLow:null,gateBlocked:false,gateBlockedReason:null});
  return{layers:[mk(r.raw.first),mk(r.raw.second),mk(r.raw.third)],calibrationVersion:r.firstLayerCalibration?.version||'legacy',confirmationVersion:CONFIRM_RULE_VERSION,prevEnv:r.environmentScore,prevHealth:r.health?.score??null,lastPrice:r.price,lastObservationKey:null,lastAt:new Date().toISOString()}
@@ -395,20 +431,19 @@ function markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,reason){
  const cz=L.confirmedZone||z;L.executionLow=cz.low;L.executionHigh=cz.high+executionUpAllowance(atr,i);
  L.confirmationReason=`${reason}｜可接受成交上限 ${L.executionHigh.toFixed(2)}`;
  STATE.noSignalDays=STATE.noSignalDays||{};STATE.noSignalDays[code]=0;
+ captureFirstConfirm(code,i,L);
  addEvent(`${code} 第${i+1}層正式確認：${ztxt(cz)}，現價${px.toFixed(2)}｜${L.confirmationReason}`,'buy');
 }
 function updateOne(code,r){
  if(r.error)return;
- const calibrationVersion=r.firstLayerCalibration?.version||'legacy';let m=STATE.models[code];
- if(!m||m.calibrationVersion!==calibrationVersion||m.confirmationVersion!==CONFIRM_RULE_VERSION)m=initModel(code,r);
- m.confirmationVersion=CONFIRM_RULE_VERSION;m.layers.forEach(normalizeLayerRuntime);
+ let m=normalizeModelWithoutReset(code,r);
  let atr=r.history.atr14||r.price*.012,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthNow=r.health?.score,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
  let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);
  if(days>=15&&r.history.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}
- targets=enforceCashOpenCeiling(code,targets,atr,r.firstLayerCalibration?.sessionOpenPolicy);
+ targets=enforceCashOpenCeiling(code,targets,atr);
  const downCap=Math.max(.018,atr*.055),layerUpCap=Math.max(.018,atr*.055);
  m.layers.forEach((L,i)=>{L.zone=moveZone(L.zone,targets[i],downCap,layerUpCap,allowDown)});
- const cappedNow=enforceCashOpenCeiling(code,m.layers.map(L=>L.zone),atr,r.firstLayerCalibration?.sessionOpenPolicy);m.layers.forEach((L,i)=>{L.zone=cappedNow[i];L.samples.push(center(L.zone));L.samples=L.samples.slice(-6)});
+ const cappedNow=enforceCashOpenCeiling(code,m.layers.map(L=>L.zone),atr);m.layers.forEach((L,i)=>{L.zone=cappedNow[i];L.samples.push(center(L.zone));L.samples=L.samples.slice(-6)});
  const px=Number(lastLive?.quotes?.[code]?.last??r.price),rapid=m.lastPrice&&px<m.lastPrice-atr*.75&&px<m.layers[0].zone.low,nowIso=new Date().toISOString();
  const observationKey=liveObservationKey(code,r,px),newObservation=!!observationKey&&observationKey!==m.lastObservationKey;
  m.layers.forEach((L,i)=>{
@@ -467,8 +502,8 @@ function initShadowModel(code,r){const m=initModel(code,r);m.confirmationVersion
 function updateShadowOne(code,r){
  if(!r||r.error)return;const calibrationVersion=(r.firstLayerCalibration?.version||'legacy')+'|shadow|'+(r?.shadowPolicy?.selectedId||'baseline'),rules=shadowRules(r);let m=SHADOW_STATE.models[code];if(!m||m.calibrationVersion!==calibrationVersion)m=initShadowModel(code,r);m.calibrationVersion=calibrationVersion;m.confirmationVersion=SHADOW_CONFIRM_VERSION;m.layers.forEach(normalizeLayerRuntime);
  const nowIso=new Date().toISOString(),elapsedSec=Math.max(1,Math.min(120,(Date.now()-Date.parse(m.lastAt||nowIso))/1000||30)),atr=r.history?.atr14||r.price*.012,healthNow=r.health?.score,envWorse=r.environmentScore<(m.prevEnv??r.environmentScore)-3,healthWorse=Number.isFinite(healthNow)&&Number.isFinite(m.prevHealth)&&healthNow<m.prevHealth-3,allowDown=envWorse||healthWorse||r.hardVeto;
- let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);if(days>=15&&r.history?.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}targets=enforceCashOpenCeiling(code,targets,atr,r.firstLayerCalibration?.sessionOpenPolicy);
- const downCap30=Math.max(.018,atr*.055),upCap30=Math.max(.018,atr*.055);m.layers.forEach((L,i)=>{L.zone=moveZoneTimed(L.zone,targets[i],downCap30,upCap30,allowDown,elapsedSec)});const cappedNow=enforceCashOpenCeiling(code,m.layers.map(L=>L.zone),atr,r.firstLayerCalibration?.sessionOpenPolicy);m.layers.forEach((L,i)=>{L.zone=cappedNow[i];L.samples.push(center(L.zone));L.samples=L.samples.slice(-8)});
+ let targets=[r.raw.first,r.raw.second,r.raw.third].map(x=>JSON.parse(JSON.stringify(x))),days=Number(STATE.noSignalDays?.[code]||0);if(days>=15&&r.history?.bullStructure){const bump=Math.min(atr*.18,atr*.015*(days-14));targets=targets.map((z,i)=>({low:z.low+bump*(1-i*.2),high:z.high+bump*(1-i*.2),center:z.center+bump*(1-i*.2)}))}targets=enforceCashOpenCeiling(code,targets,atr);
+ const downCap30=Math.max(.018,atr*.055),upCap30=Math.max(.018,atr*.055);m.layers.forEach((L,i)=>{L.zone=moveZoneTimed(L.zone,targets[i],downCap30,upCap30,allowDown,elapsedSec)});const cappedNow=enforceCashOpenCeiling(code,m.layers.map(L=>L.zone),atr);m.layers.forEach((L,i)=>{L.zone=cappedNow[i];L.samples.push(center(L.zone));L.samples=L.samples.slice(-8)});
  const px=Number(lastLive?.quotes?.[code]?.last??r.price),rapid=m.lastPrice&&px<m.lastPrice-atr*.75&&px<m.layers[0].zone.low,observationKey=liveObservationKey(code,r,px),newObservation=!!observationKey&&observationKey!==m.lastObservationKey,criticalPass=r?.criticalGate?.pass===true;
  m.layers.forEach((L,i)=>{const z=L.zone,priceReached=px<=z.high,sd=L.samples.length>=4?Math.sqrt(L.samples.reduce((s,v)=>s+(v-L.samples.reduce((a,b)=>a+b,0)/L.samples.length)**2,0)/L.samples.length):999,zoneStable=sd<=atr*.08,rule=rules[i];if(priceReached){L.touchedAt=L.touchedAt||nowIso;L.touchMin=Number.isFinite(L.touchMin)?Math.min(L.touchMin,px):px;if(newObservation){L.priceSamples.push(px);L.priceSamples=L.priceSamples.slice(-8)}}
   if(r.hardVeto||!criticalPass){L.invalid=true;L.forming=false;L.fastPass=false;L.confirmCount=0;L.confirmationReason=!criticalPass?`Critical Gate BLOCKED：${(r?.criticalGate?.failed||[]).join('/')}`:(r.hardVetoReason||'Hard Gate');return}L.invalid=false;if(L.confirmed)return;if(rapid&&i===0){L.fastPass=true;L.forming=false;L.confirmCount=0;return}else L.fastPass=false;
@@ -496,9 +531,9 @@ function renderHomeRanking(){
  $('homeBuyRanking').innerHTML=a.map(([c,x])=>`<div class="card buycard"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div><div class="score">${x.r.score}<small>/100</small></div></div>${noBuyWithoutTouch(x)?`<div class="notice"><b>今日暫無合理買點：</b>${x.r.noBuyReason}<br>參考合理區仍保留：① ${ztxt(x.m.layers[0].zone)} ② ${ztxt(x.m.layers[1].zone)} ③ ${ztxt(x.m.layers[2].zone)}</div>`:`<div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(c)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一買點',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b>${confirmSnapshotText(x.m.layers[0])?`<small>${confirmSnapshotText(x.m.layers[0])}</small>`:''}</div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想買點',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力買點',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div>`}${x.r.noBuyToday&&deepestTouchedLayer(x)>=0?`<div class="notice"><b>已觸價但尚未確認：</b>${x.r.noBuyReason||'目前 Gate 尚未通過。'}</div>`:''}${shadowPanel(c)}<button class="btn" onclick="openDetail('${c}')">成分股／歷史買點</button> <button class="btn primary" onclick="openModelTrade('${c}',${x.activeLayer+1})">記錄模型買入</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div>`).join('')||'模型載入中';
  const ev=EVENTS.at(-1);$('homeModelEvent').innerHTML='<b>戰情：</b>'+(ev?ev.text:'尚無重大模型事件。')
 }
-function explain(c,x){const touched=deepestTouchedLayer(x),activeL=x.m?.layers?.[x.activeLayer];if(x.activeStatus==='CONFIRMED_BLOCKED')return`第${x.activeLayer+1}層價格確認快照已保留，但目前 ${activeL?.gateBlockedReason||'Gate/分數條件'} 暫停執行；條件恢復後若仍在執行區可再分批。`;if(x.activeStatus==='FORMING'&&activeL?.confirmationReason)return`第${x.activeLayer+1}層已觸價，${activeL.confirmationReason}。`;if(x.statuses[0]==='CONFIRMED_IN')return`第一筆分批條件成立；確認後允許小幅反彈成交，但仍有執行上限，不代表最低點。`;if(touched>=0&&x.r.noBuyToday&&!activeL?.confirmed)return`第${touched+1}層價格已觸及，但目前尚未確認：${x.r.noBuyReason}`;if(x.r.noBuyToday&&!activeL?.confirmed)return x.r.noBuyReason;if(x.statuses[0]==='CONFIRMED_ABOVE')return`第一層先前已確認，但現價已超過確認後執行上限；不追價，等回測。`;if(x.statuses[0]==='CONFIRMED_BELOW')return`第一層確認快照保留，但價格已跌破確認區；暫停第一層執行並開始觀察第二層。`;if(x.statuses[0]==='FAST_PASS')return`快速穿透保護：不一次打滿三層，先等重新收斂。`;if(x.statuses[0]==='FORMING')return`價格已觸及第一層；現在等待至少20秒、最低反彈幅度，並用有效破低容忍帶過濾正常tick雜訊；不再要求連續3筆觀測。`;if(x.px<=x.m.layers[0].zone.high)return`價格已達第一層門檻；正在等待穩定度／分數確認，跌穿區間不會被當成「沒碰到」。`;{const op=x.r?.firstLayerCalibration?.sessionOpenPolicy;if(op?.exceptionActive)return`尚未達第一層；今日符合「跳空下跌後止跌回彈」例外，第一層可有限高於開盤，但最高仍鎖在 ${fmt(op.maxFirstZoneHigh)}（最多開盤價上方 0.40 ATR），且仍須通過分數與 Gate。`;return`尚未達第一層；一般盤中第一層上緣不高於今日開盤價。只有明顯跳空下跌、已自低點反彈、現價仍低於昨收且未達追價硬線時，才允許有限上移。`}}
+function explain(c,x){const touched=deepestTouchedLayer(x),activeL=x.m?.layers?.[x.activeLayer];if(x.activeStatus==='CONFIRMED_BLOCKED')return`第${x.activeLayer+1}層價格確認快照已保留，但目前 ${activeL?.gateBlockedReason||'Gate/分數條件'} 暫停執行；條件恢復後若仍在執行區可再分批。`;if(x.activeStatus==='FORMING'&&activeL?.confirmationReason)return`第${x.activeLayer+1}層已觸價，${activeL.confirmationReason}。`;if(x.statuses[0]==='CONFIRMED_IN')return`第一筆分批條件成立；確認後允許小幅反彈成交，但仍有執行上限，不代表最低點。`;if(touched>=0&&x.r.noBuyToday&&!activeL?.confirmed)return`第${touched+1}層價格已觸及，但目前尚未確認：${x.r.noBuyReason}`;if(x.r.noBuyToday&&!activeL?.confirmed)return x.r.noBuyReason;if(x.statuses[0]==='CONFIRMED_ABOVE')return`第一層先前已確認，但現價已超過確認後執行上限；不追價，等回測。`;if(x.statuses[0]==='CONFIRMED_BELOW')return`第一層確認快照保留，但價格已跌破確認區；暫停第一層執行並開始觀察第二層。`;if(x.statuses[0]==='FAST_PASS')return`快速穿透保護：不一次打滿三層，先等重新收斂。`;if(x.statuses[0]==='FORMING')return`價格已觸及第一層；現在等待至少20秒、最低反彈幅度，並用有效破低容忍帶過濾正常tick雜訊；不再要求連續3筆觀測。`;if(x.px<=x.m.layers[0].zone.high)return`價格已達第一層門檻；正在等待穩定度／分數確認，跌穿區間不會被當成「沒碰到」。`;return`尚未達第一層；即時買點可隨盤勢漂移，但盤中第一層上緣不會高於今日開盤價。`}
 
-function decisionTransparency(x){const b=x?.r?.scoreBreakdown||{},g=x?.r?.decisionGate||{},op=x?.r?.firstLayerCalibration?.sessionOpenPolicy||{};const parts=[];if(Number.isFinite(b.base))parts.push(`基礎 ${fmt(b.base)}`);if(Number.isFinite(b.priceFit))parts.push(`價格 ${b.priceFit>=0?'+':''}${fmt(b.priceFit)}`);if(Number.isFinite(b.chase))parts.push(`追高 ${b.chase>=0?'+':''}${fmt(b.chase)}`);if(Number.isFinite(b.environment))parts.push(`環境 ${b.environment>=0?'+':''}${fmt(b.environment)}`);if(Number.isFinite(b.health))parts.push(`健康 ${b.health>=0?'+':''}${fmt(b.health)}`);const gate=g.status==='FAIL'?`硬Gate FAIL：${g.reason||x.r.hardVetoReason||'—'}`:g.status==='WAIT'?`暫不確認：${g.reason||x.r.noBuyReason||'—'}`:'Gate PASS';const openPolicy=op.exceptionActive?`｜跳空回彈例外 ON（L1上限 ${fmt(op.maxFirstZoneHigh)}）`:'';return `${parts.join('｜')} → <b>${x.r.score}/100</b>｜${gate}${openPolicy}`}
+function decisionTransparency(x){const b=x?.r?.scoreBreakdown||{},g=x?.r?.decisionGate||{};const parts=[];if(Number.isFinite(b.base))parts.push(`基礎 ${fmt(b.base)}`);if(Number.isFinite(b.priceFit))parts.push(`價格 ${b.priceFit>=0?'+':''}${fmt(b.priceFit)}`);if(Number.isFinite(b.chase))parts.push(`追高 ${b.chase>=0?'+':''}${fmt(b.chase)}`);if(Number.isFinite(b.environment))parts.push(`環境 ${b.environment>=0?'+':''}${fmt(b.environment)}`);if(Number.isFinite(b.health))parts.push(`健康 ${b.health>=0?'+':''}${fmt(b.health)}`);const gate=g.status==='FAIL'?`硬Gate FAIL：${g.reason||x.r.hardVetoReason||'—'}`:g.status==='WAIT'?`暫不確認：${g.reason||x.r.noBuyReason||'—'}`:'Gate PASS';return `${parts.join('｜')} → <b>${x.r.score}/100</b>｜${gate}`}
 function reachabilityText(x){const q=x?.r?.reachability;if(!q)return'尚無可觸及性資料';if(q.touchedToday)return`<b>已觸及</b>｜今日低點 ${fmt(q.todayLow)} 已到目前第一層上緣 ${fmt(q.firstZoneHigh)}`;const need=Number.isFinite(q.dropNeededPct)?q.dropNeededPct:null,au=Number.isFinite(q.atrUnits)?q.atrUnits:null;return `<b>${q.label||'—'}</b>｜距第一層還需回檔 ${need==null?'—':fmt(need)+'%'}${au==null?'':`｜約 ${fmt(au)} ATR`}｜ATR ${Number.isFinite(q.atrPct)?fmt(q.atrPct)+'%':'—'}`}
 function etfPriceClass(code,px){
  const q=lastLive?.quotes?.[code],last=Number(px??q?.last),prev=Number(q?.effectivePrevClose??q?.prevClose);
@@ -730,17 +765,30 @@ function tradeCoreValidation(){
  });
  return{items,pass:items.filter(x=>x.status==='PASS').length,fail:items.filter(x=>x.status==='FAIL').length,partial:items.filter(x=>x.status==='PARTIAL').length,wait:items.filter(x=>x.status==='WAIT').length};
 }
-function renderSpecs(){
+function validationVisible(){
+ const el=$('validationCenter');if(!el||!$('model')?.classList.contains('on'))return false;
+ const r=el.getBoundingClientRect();return r.top<innerHeight+300&&r.bottom>-300;
+}
+function renderSpecs(detailed=true){
+ if(!VALIDATION){
+  $('validationSummary').innerHTML='<div class="box"><span class="k">驗證中心</span><b class="amber">等待載入</b><small>捲動至此區才執行45項驗證，不影響即時買點。</small></div>';
+  $('validationOverall').textContent='驗證尚未讀取；交易買點以各ETF當下的正式 Gate 為準。';
+  return;
+ }
+
  const checks=clientValidation(VALIDATION?.checks||{}),counts={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};
  SPEC.forEach(x=>counts[checks[x[0]]?.status||'WAIT']++);
  const core=tradeCoreValidation();
  const aux={PASS:0,PARTIAL:0,FAIL:0,WAIT:0};
  SPEC.filter(x=>!CORE_SPEC_IDS.has(x[0])).forEach(x=>aux[checks[x[0]]?.status||'WAIT']++);
- const totalPass=core.pass+aux.PASS,totalPartial=core.partial+aux.PARTIAL,totalFail=core.fail+aux.FAIL,totalWait=core.wait+aux.WAIT;
- const tradeState=core.fail?'受影響':core.pass===7?'可用':'核心資料建立中';
- const tradeClass=core.fail?'downc':core.pass===7?'upc':'amber';
- $('validationSummary').innerHTML=`<div class="box"><span class="k">交易狀態</span><b class="${tradeClass}">${tradeState}</b><small>${core.fail?'核心Gate有FAIL':core.pass===7?'正式交易核心完整':'等待核心資料齊全'}</small></div><div class="box"><span class="k">交易核心</span><b>${core.pass}/7 PASS</b><small>${core.fail?`FAIL ${core.fail}｜`:''}${core.partial?`PARTIAL ${core.partial}｜`:''}${core.wait?`WAIT ${core.wait}`:'Critical Gate'}</small></div><div class="box"><span class="k">輔助驗證</span><b>${aux.PASS}/38</b><small>PARTIAL ${aux.PARTIAL}｜FAIL ${aux.FAIL}｜WAIT ${aux.WAIT}</small></div><div class="box"><span class="k">總驗證</span><b>${totalPass}/45</b><small>PARTIAL ${totalPartial}｜FAIL ${totalFail}｜WAIT ${totalWait}</small></div>`;
- if(core.fail){
+ const totalPass=core.pass+aux.PASS,totalPartial=core.partial+aux.PARTIAL,totalFail=core.fail+aux.FAIL,totalWait=core.wait+aux.WAIT; // Stable 7-core + 38-aux headline, original 45 detail cards remain visible.
+ const liveModelReady=!!(lastBuy?.models&&ETF.some(code=>lastBuy.models[code]?.criticalGate));
+ const tradeState=!liveModelReady?'等待正式模型':core.fail?'受影響':core.pass===7?'可用':'核心資料建立中';
+ const tradeClass=liveModelReady&&core.fail?'downc':liveModelReady&&core.pass===7?'upc':'amber';
+ $('validationSummary').innerHTML=`<div class="box"><span class="k">交易狀態</span><b class="${tradeClass}">${tradeState}</b><small>${core.fail?'核心Gate有FAIL':core.pass===7?'正式交易核心完整':'等待核心資料齊全'}</small></div><div class="box"><span class="k">交易核心</span><b>${liveModelReady?core.pass:'—'}/7 PASS</b><small>${core.fail?`FAIL ${core.fail}｜`:''}${core.partial?`PARTIAL ${core.partial}｜`:''}${core.wait?`WAIT ${core.wait}`:'Critical Gate'}</small></div><div class="box"><span class="k">輔助驗證</span><b>${aux.PASS}/38</b><small>PARTIAL ${aux.PARTIAL}｜FAIL ${aux.FAIL}｜WAIT ${aux.WAIT}</small></div><div class="box"><span class="k">總驗證</span><b>${liveModelReady?totalPass:'—'}/45</b><small>PARTIAL ${totalPartial}｜FAIL ${totalFail}｜WAIT ${totalWait}</small></div>`;
+ if(!liveModelReady){
+  $('validationOverall').innerHTML='<b class="amber">等待正式模型資料：</b>目前不能依 0/7 判斷 Hard Gate 失敗，先等買點 API 回傳。';
+ }else if(core.fail){
   const bad=core.items.filter(x=>x.status==='FAIL').map(x=>x.label).join('、');
   $('validationOverall').innerHTML=`<b class="downc">🔴 正式交易訊號受影響：</b>交易核心 ${core.pass}/7，FAIL：${bad}。<br><span class="note">核心Gate未恢復前，不應把輔助驗證亮燈當成可交易依據。</span>`;
  }else if(core.pass===7){
@@ -749,12 +797,42 @@ function renderSpecs(){
   const waiting=core.items.filter(x=>x.status!=='PASS').map(x=>`${x.label}:${x.status}`).join('｜');
   $('validationOverall').innerHTML=`<b class="amber">🟡 交易核心尚未齊全：</b>${core.pass}/7 PASS。${waiting}<br><span class="note">常見於剛開盤或資料尚在建立；先看核心Gate，不必等待所有輔助燈全亮。</span>`;
  }
+ if(!detailed)return; // Keep heavy 45-card DOM unchanged during frequent quote updates.
  $('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');
  const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('')
 }
 
-let validationPoll=null;async function loadValidation(deep=false){try{const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);if(!d.ok){$('validationOverall').innerHTML='<b class="downc">驗證API錯誤：</b>'+(d.error||'未知');return}VALIDATION=d;renderSpecs()}catch(e){$('validationOverall').innerHTML='<b class="downc">驗證中心連線錯誤：</b>'+e.message}}
-async function runDeepValidation(){clearTimeout(validationPoll);$('deepValidateBtn').disabled=true;try{await get('/api/history-warm?all=1');await loadValidation(true);const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;if(ready<4){$('validationOverall').innerHTML+=`<br><span class="note">完整回測歷史背景建立中：${hp.map(x=>x.code+' '+x.percent+'%').join('｜')}</span>`;validationPoll=setTimeout(runDeepValidation,3000)}}finally{$('deepValidateBtn').disabled=false}}
+let validationBusy=false,validationLoadedAt=0;
+async function loadValidation(deep=false){
+ if(validationBusy||(!deep&&VALIDATION&&Date.now()-validationLoadedAt<120000))return;
+ validationBusy=true;
+ try{const d=await get('/api/validation'+(deep?'?deep=1':''),deep?30000:12000);
+  if(!d.ok){$('validationOverall').textContent='驗證API錯誤：'+(d.error||'未知');return}
+  VALIDATION=d;validationLoadedAt=Date.now();renderSpecs(true);
+ }catch(e){$('validationOverall').textContent='驗證中心連線錯誤：'+e.message}
+ finally{validationBusy=false}
+}
+function initLazyValidation(){
+ if(!('IntersectionObserver' in window)){return}
+ const section=$('validationCenter');if(!section)return;
+ const obs=new IntersectionObserver(entries=>{
+  if(entries.some(entry=>entry.isIntersecting)){renderSpecs(!!VALIDATION);void loadValidation(false)}
+ },{rootMargin:'250px 0px',threshold:0});
+ obs.observe(section);
+ setInterval(()=>{if(validationVisible()&&Date.now()-validationLoadedAt>120000)void loadValidation(false)},30000);
+}
+
+async function runDeepValidation(){
+ if(validationBusy)return;
+ $('deepValidateBtn').disabled=true;
+ try{
+  await get('/api/history-warm?all=1',30000);
+  await loadValidation(true);
+  const hp=VALIDATION?.historyProgress||[],ready=hp.filter(x=>x.status==='READY').length;
+  if(ready<4)$('validationOverall').insertAdjacentHTML('beforeend','<div class="note">完整回測歷史仍在背景建立。請稍後按一次「執行完整驗證」更新；不會每3秒重跑。</div>');
+ }catch(e){$('validationOverall').textContent='完整驗證啟動失敗：'+e.message}
+ finally{$('deepValidateBtn').disabled=false}
+}
 
 
 
@@ -1034,25 +1112,36 @@ function saveModelTrade(){
  setPage('model')
 }
 
+let MODEL_PERF_REFRESHING=false,MODEL_PERF_CURSOR=0,MODEL_PERF_LAST=0;
+function refreshTradePerformanceWhenNeeded(){if(Date.now()-MODEL_PERF_LAST>75000)void refreshModelTradePerformance()}
 async function refreshModelTradePerformance(){
+ if(MODEL_PERF_REFRESHING||!$('model')?.classList.contains('on'))return;
+ MODEL_PERF_REFRESHING=true;MODEL_PERF_LAST=Date.now();
  let changed=false;
- for(const t of MODEL_TRADES){
-  if(t.exitAt)continue;
-  try{
-   const z=t.snapshot?.zones||[],qs=new URLSearchParams({code:t.code,entryDate:t.entryDate,entryPrice:String(t.entryPrice),layer2Low:String(z[1]?.low??''),layer3Low:String(z[2]?.low??''),layer1High:String(z[0]?.high??'')});
-   const p=await get('/api/trade-performance?'+qs.toString());
-   if(p?.ok){
+ try{
+  // Newest trades first so a just-entered position never waits behind the whole history.
+  const all=[...MODEL_TRADES].filter(t=>!t.exitAt).sort((a,b)=>String(b.entryAt||'').localeCompare(String(a.entryAt||'')));
+  const open=Array.from({length:Math.min(5,all.length)},(_,i)=>all[(MODEL_PERF_CURSOR+i)%all.length]);
+  MODEL_PERF_CURSOR=all.length?(MODEL_PERF_CURSOR+open.length)%all.length:0;
+  const one=async t=>{
+   try{
+    const z=t.snapshot?.zones||[],qs=new URLSearchParams({code:t.code,entryDate:t.entryDate,entryPrice:String(t.entryPrice),layer2Low:String(z[1]?.low??''),layer3Low:String(z[2]?.low??''),layer1High:String(z[0]?.high??'')});
+    const p=await get('/api/trade-performance?'+qs.toString());
+    if(!p?.ok)return;
     const prev=t.perf&&typeof t.perf==='object'?t.perf:{};
-    // 盤後/跨日若資料源暫時沒有 currentPrice，不准把最後有效損益洗成空值。
+    // If the path endpoint temporarily lacks a field, preserve the last valid path value.
     if(!Number.isFinite(Number(p.currentPrice))&&Number.isFinite(Number(prev.currentPrice)))p.currentPrice=prev.currentPrice;
     if(!Number.isFinite(Number(p.currentReturnPct))&&Number.isFinite(Number(prev.currentReturnPct)))p.currentReturnPct=prev.currentReturnPct;
     if(!Number.isFinite(Number(p.currentPnLPerShare))&&Number.isFinite(Number(prev.currentPnLPerShare)))p.currentPnLPerShare=prev.currentPnLPerShare;
-    t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true
-   }
-  }catch(_){}
- }
- modelSyncSaveLocal();renderModelTrades();if(changed)syncModelTrades(false)
+    t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true;
+   }catch(_){}
+  };
+  // Small batches avoid request pile-ups while making recent cards update promptly.
+  for(let i=0;i<open.length;i+=3){await Promise.all(open.slice(i,i+3).map(one));modelSyncSaveLocal();renderModelTrades()}
+  if(changed)syncModelTrades(false);
+ }finally{MODEL_PERF_REFRESHING=false}
 }
+
 function closeTrackedTrade(id){
  const t=MODEL_TRADES.find(x=>x.id===id);if(!t)return;const px=Number(lastLive?.quotes?.[t.code]?.last??t.perf?.currentPrice);
  if(t.exitAt)return;
@@ -1117,7 +1206,8 @@ function modelNetMetrics(t){
  const p=t?.perf,entry=Number(t?.entryPrice),shares=Number(t?.shares);
  const rawPerfPx=p?.currentPrice,perfPx=(rawPerfPx==null||rawPerfPx==='')?null:Number(rawPerfPx);
  const rawLivePx=lastLive?.quotes?.[t?.code]?.last,livePx=(rawLivePx==null||rawLivePx==='')?null:Number(rawLivePx);
- const px=Number.isFinite(perfPx)&&perfPx>0?perfPx:(Number.isFinite(livePx)&&livePx>0?livePx:null);
+ // R3.83: current economic P&L is a live metric. Never let an older path snapshot override the 5s ETF quote.
+ const px=Number.isFinite(livePx)&&livePx>0?livePx:(Number.isFinite(perfPx)&&perfPx>0?perfPx:null);
  if(t?.exitAt){
   const gross=Number(t.realizedPnL);
   const exit=Number(t.exitPrice);
@@ -1127,8 +1217,8 @@ function modelNetMetrics(t){
   return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null};
  }
  const base=entry*shares,divPerShare=modelTradeDividendPerShare(t),totalRet=Number(p?.currentTotalReturnPct);
- const gross=Number.isFinite(totalRet)&&base>0?totalRet/100*base:
-   (Number.isFinite(px)&&Number.isFinite(entry)?(px+divPerShare-entry)*shares:null);
+ const gross=Number.isFinite(px)&&Number.isFinite(entry)?(px+divPerShare-entry)*shares:
+   (Number.isFinite(totalRet)&&base>0?totalRet/100*base:null);
  const cost=fubonEstimatedTradeCost(entry,shares,px);
  const net=Number.isFinite(gross)&&Number.isFinite(cost)?gross-cost:null;
  return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null,dividendPerShare:divPerShare};
@@ -1204,7 +1294,7 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();loadValidation(false)}
+function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderSpecs();renderEvents();renderModelTrades();initLazyValidation();setInterval(()=>{if($('model')?.classList.contains('on')){loadHistoryStatus();refreshTradePerformanceWhenNeeded()}},90000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy()}
 migrate1689Existing0050Trade();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if($('trendBuyPage')?.classList.contains('on'))loadTrendBuy(false);syncAllCloud(false)}})
 setInterval(()=>{
