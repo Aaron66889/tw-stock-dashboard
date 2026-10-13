@@ -74,7 +74,15 @@ function dividendStats(code,holding){
 function money0(n){return Number.isFinite(Number(n))?Math.round(Number(n)).toLocaleString():'—'}
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),SHADOW_STATE=loadJSON('v124_shadow_state',{day:null,models:{}}),SHADOW_LOG=loadJSON('v124_shadow_replay',[]),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null,knownUnlocked:!!loadJSON('v124_model_sync_known_unlocked',false)};
-let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,message:'持股雲端同步檢查中'};
+// R3.81: persisted, trade-ID keyed holdings operations. A network retry is safe because
+// the backend applies each trade ID once (including across phones / computers).
+const HOLDINGS_OP_KEY='v124_holdings_pending_trade_ops_r3802';
+const HOLDINGS_MANUAL_DIRTY_KEY='v124_holdings_manual_dirty_r3802';
+let HOLDINGS_PENDING_TRADES=loadJSON(HOLDINGS_OP_KEY,[]);
+if(!Array.isArray(HOLDINGS_PENDING_TRADES))HOLDINGS_PENDING_TRADES=[];
+let HOLDINGS_MANUAL_DIRTY=!!loadJSON(HOLDINGS_MANUAL_DIRTY_KEY,false);
+let HOLDINGS_LOCAL_REV=0,HOLDINGS_REMOTE_REV=0,HOLDINGS_PUSH_BUSY=false,HOLDINGS_OP_BUSY=false;
+let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,cloudUpdatedAt:null,message:'持股雲端同步檢查中'};
 let DIVIDEND_AUTO={busy:false,ready:false,lastAt:null,message:'股息自動同步檢查中',byCode:{},snapshotDay:null,source:null};
 let MODEL_PENDING_DELETES=loadJSON('v124_model_trade_pending_deletes',[]);
 let MODEL_TRADE_FILTER='all',MODEL_TRADE_LIMIT=10,MODEL_TRADE_EXPANDED=null;
@@ -100,7 +108,30 @@ function safeCtxLastGood(c){
  return x;
 }
 function loadHoldings(){try{const x=JSON.parse(localStorage.getItem('twStockHoldingsV12'));const a=Array.isArray(x)?x:DEFAULT_H;return a.map(normalizeHoldingRecord)}catch{return DEFAULT_H.map(normalizeHoldingRecord)}}
-function saveHoldings(){saveJSON('twStockHoldingsV12',H);if(MODEL_SYNC?.ready&&HOLDINGS_SYNC?.ready)pushHoldingsCloud()}
+function persistPendingHoldingsOps(){saveJSON(HOLDINGS_OP_KEY,HOLDINGS_PENDING_TRADES)}
+function persistHoldingsLocal(){HOLDINGS_LOCAL_REV++;saveJSON('twStockHoldingsV12',H)}
+function setHoldingsManualDirty(on){HOLDINGS_MANUAL_DIRTY=!!on;saveJSON(HOLDINGS_MANUAL_DIRTY_KEY,HOLDINGS_MANUAL_DIRTY)}
+function applyBoughtSharesLocal(op){
+ const h=H.find(v=>v.t===op.code),qty=Number(op.shares),price=Number(op.entryPrice);
+ if(h){const oldShares=Number(h.s)||0,oldCost=Number(h.c)||0,next=oldShares+qty;h.c=(oldShares*oldCost+qty*price)/next;h.s=next}
+ else H.push(normalizeHoldingRecord({t:op.code,n:op.code,s:qty,c:price,dividendReceived:0,dividendAsOf:dayKey()}));
+}
+function queueHoldingsTrade(trade){
+ const op={id:trade.id,code:trade.code,shares:trade.shares,entryPrice:trade.entryPrice,entryAt:trade.entryAt};
+ if(!HOLDINGS_PENDING_TRADES.some(x=>x.id===op.id)){
+  // Save the operation BEFORE modifying local holdings; a failed request can be replayed.
+  HOLDINGS_PENDING_TRADES.push(op);persistPendingHoldingsOps();
+  applyBoughtSharesLocal(op);persistHoldingsLocal();
+ }
+ HOLDINGS_SYNC.message=`持股有 ${HOLDINGS_PENDING_TRADES.length} 筆成交待雲端確認；本機股數已更新`;
+ if(MODEL_SYNC.ready)void flushPendingHoldingsTrades();
+}
+function saveHoldings(){
+ // Manual adjustment: never silently download old cloud holdings on top of an offline edit.
+ persistHoldingsLocal();setHoldingsManualDirty(true);
+ if(MODEL_SYNC?.ready&&HOLDINGS_SYNC?.ready&&!HOLDINGS_PENDING_TRADES.length)void pushHoldingsCloud();
+ else HOLDINGS_SYNC.message='此裝置持股有尚未上傳的手動變更；同步恢復後請確認並上傳';
+}
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
 function dayKey(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date())}
 function fresh(ts,ms=90000){return ts&&Date.now()-Date.parse(ts)<ms}
@@ -729,6 +760,8 @@ function renderSpecs(includeDetails=false){
   const pending=core.items.filter(x=>x.status!=='PASS').map(x=>`${x.label}:${x.status}`).join('｜');
   $('validationOverall').innerHTML=`<b class="amber">交易核心未齊全：</b>${core.pass}/7 PASS｜${pending}。<br><span class="note">驗證摘要從正式買點資料讀取，不使用Shadow Gate。詳細證據見下方45項。</span>`;
  }
+ // Show the seven official core checks and their latest status without invoking deep validation.
+ $('validationOverall').insertAdjacentHTML('beforeend',`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px" aria-label="交易核心7項明細">${core.items.map((v,i)=>`<span class="tag" style="font-size:12px">${i+1}. ${v.label}：<b class="${v.status==='PASS'?'upc':v.status==='FAIL'?'downc':'amber'}">${v.status}</b></span>`).join('')}</div>`);
  if(!includeDetails)return; // Price/model refresh must never rebuild 45 detail cards.
  $('specGrid').innerHTML=SPEC.map(x=>{const v=checks[x[0]]||{status:'WAIT',evidence:'尚未接到驗證結果'},st=v.status.toLowerCase();return`<div class="spec ${st}"><b>#${x[0]} ${x[1]}</b><small>${x[2]}</small><span class="tag">${light(v.status)}</span><div class="vevidence">${v.evidence||''}</div>${v.detail?`<div class="vdetail">${v.detail}</div>`:''}</div>`}).join('');
  const co=checks.core||{};$('coreValidation').innerHTML=[['買不到／參與率保護',co.participation],['防買點下逃',co.downEscape],['Hysteresis訊號遲滯',co.hysteresis]].map(([n,v])=>`<div class="box"><span class="k">${n}</span><b>${light(v?.status)}</b><small>${v?.evidence||'等待驗證'}</small></div>`).join('');
@@ -788,7 +821,7 @@ async function loadDividendAuto(force=false){
 function modelSyncBar(){
  const st=MODEL_SYNC.status,synced=st==='ready',degraded=st==='degraded',usable=MODEL_SYNC.ready,locked=st==='locked',setup=st==='setup',err=st==='error',pending=MODEL_TRADES.filter(t=>t._syncDirty).length+MODEL_PENDING_DELETES.length;
  const tag=synced?'🟢 已同步':degraded?'🟡 自動重試中':locked?'🔒 未解鎖':setup?'🟡 尚未設定':'🟡 '+(err?'同步異常':'連線中');
- const htag=HOLDINGS_SYNC.ready?'｜持股🟢':'｜持股⚪';
+ const htag=HOLDINGS_PENDING_TRADES.length?`｜持股🟡待同步${HOLDINGS_PENDING_TRADES.length}筆`:HOLDINGS_MANUAL_DIRTY?'｜持股🟡本機調整待確認':HOLDINGS_SYNC.ready?'｜持股🟢':'｜持股⚪';
  const dtag=DIVIDEND_AUTO.ready?'｜股息🟢':'｜股息⚪';
  const at=MODEL_SYNC.lastAt?`｜${new Date(MODEL_SYNC.lastAt).toLocaleTimeString('zh-TW',{hour12:false})}`:'';
  const pend=pending?`｜待同步 ${pending}筆`:'';
@@ -798,19 +831,56 @@ function modelSyncBar(){
  return `<div class="notice"><div class="row"><div><b>模型實戰雲端：${tag}${htag}${dtag}</b><div class="note">${MODEL_SYNC.message||''}${pend}${HOLDINGS_SYNC.message?'｜'+HOLDINGS_SYNC.message:''}${DIVIDEND_AUTO.message?'｜'+DIVIDEND_AUTO.message:''}${at}</div></div>${buttons}</div></div>`;
 }
 
+async function flushPendingHoldingsTrades(){
+ if(HOLDINGS_OP_BUSY||!MODEL_SYNC.ready||!HOLDINGS_PENDING_TRADES.length)return;
+ HOLDINGS_OP_BUSY=true;
+ try{
+  while(HOLDINGS_PENDING_TRADES.length&&MODEL_SYNC.ready){
+   const op=HOLDINGS_PENDING_TRADES[0];
+   const d=await modelSyncFetch('/api/holdings-sync/apply-trade',{method:'POST',body:JSON.stringify({trade:op})});
+   if(!d.ok||!d.applied)throw Error(d.error||'伺服器未確認這筆持股增量');
+   // Commit acknowledgement separately from the model-trade store; retry is idempotent.
+   HOLDINGS_PENDING_TRADES=HOLDINGS_PENDING_TRADES.filter(x=>x.id!==op.id);
+   persistPendingHoldingsOps();HOLDINGS_REMOTE_REV++;
+  }
+  HOLDINGS_SYNC.message='成交持股增量已送達雲端；正在校對最新股數';
+ }catch(e){
+  HOLDINGS_SYNC.ready=false;
+  HOLDINGS_SYNC.message=`尚有 ${HOLDINGS_PENDING_TRADES.length} 筆持股待同步，本機股數已保留：${e.message||'暫時無法連線'}`;
+ }finally{
+  HOLDINGS_OP_BUSY=false;
+  // Refresh the canonical cloud portfolio promptly after the queue is acknowledged.
+  if(!HOLDINGS_PENDING_TRADES.length&&MODEL_SYNC.ready&&!HOLDINGS_SYNC.busy)void syncHoldingsCloud(true);
+ }
+}
 async function syncHoldingsCloud(force=false){
  if(HOLDINGS_SYNC.busy||!MODEL_SYNC.ready)return;
  HOLDINGS_SYNC.busy=true;
  try{
+  await flushPendingHoldingsTrades();
+  if(HOLDINGS_PENDING_TRADES.length){
+   HOLDINGS_SYNC.ready=false;
+   HOLDINGS_SYNC.message=`持股尚有 ${HOLDINGS_PENDING_TRADES.length} 筆成交待同步；保留本機股數，避免被舊雲端資料覆蓋`;
+   return;
+  }
+  if(HOLDINGS_MANUAL_DIRTY){
+   HOLDINGS_SYNC.ready=false;
+   HOLDINGS_SYNC.message='本機持股有手動修改尚未確認上傳，為避免覆蓋已暫停雲端下載；請核對後按「上傳此裝置持股」';
+   return;
+  }
+  const atRevision=HOLDINGS_LOCAL_REV,remoteRevision=HOLDINGS_REMOTE_REV;
   const d=await modelSyncFetch('/api/holdings-sync');
+  if(HOLDINGS_LOCAL_REV!==atRevision||HOLDINGS_REMOTE_REV!==remoteRevision||HOLDINGS_PENDING_TRADES.length||HOLDINGS_MANUAL_DIRTY){
+   HOLDINGS_SYNC.message='同步期間有新持股變更，已保留本機資料；下一輪重試';
+   return;
+  }
+  if(!d.ok)throw Error(d.error||'雲端持股讀取失敗');
   if(!d.initialized){
    HOLDINGS_SYNC.ready=false;
    HOLDINGS_SYNC.message='雲端尚無持股；請在持股正確的裝置按「上傳此裝置持股」';
   }else{
    H=(Array.isArray(d.holdings)?d.holdings:[]).map(normalizeHoldingRecord);
-   saveJSON('twStockHoldingsV12',H);
-   renderHoldings();
-   HOLDINGS_SYNC.ready=true;
+   persistHoldingsLocal();renderHoldings();HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
    const h50=H.find(x=>x.t==='0050');
    HOLDINGS_SYNC.message='持股已從雲端載入'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
    await loadDividendAuto(force);
@@ -823,10 +893,16 @@ async function syncHoldingsCloud(force=false){
 
 async function uploadThisHoldingsToCloud(){
  if(!MODEL_SYNC.ready)return alert('請先設定同步碼');
+ await flushPendingHoldingsTrades();
+ if(HOLDINGS_PENDING_TRADES.length)return alert('仍有模型交易正在等待同步，為避免重複加股，請待交易完成後再上傳整份持股。');
  const h50=H.find(x=>x.t==='0050'),label=h50?`0050 ${Number(h50.s).toLocaleString()}股／均價 ${Number(h50.c).toFixed(2)}`:'目前沒有0050';
  if(!confirm(`將「這台裝置」的持股覆蓋到雲端。\\n${label}\\n\\n確定嗎？`))return;
  try{
-  await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H})});
+  const revision=HOLDINGS_LOCAL_REV;
+  const d=await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H,expectedUpdatedAt:HOLDINGS_SYNC.cloudUpdatedAt})});
+  if(!d.ok)throw Error(d.error||'雲端未確認上傳');
+  HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
+  if(HOLDINGS_LOCAL_REV===revision&&!HOLDINGS_PENDING_TRADES.length)setHoldingsManualDirty(false);
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='已以上傳的這台裝置持股覆蓋雲端';
   await loadDividendAuto(true);
   await syncHoldingsCloud(true);renderModelTrades();
@@ -835,11 +911,14 @@ async function uploadThisHoldingsToCloud(){
 }
 async function downloadCloudHoldings(){
  if(!MODEL_SYNC.ready)return alert('請先設定同步碼');
+ if(HOLDINGS_PENDING_TRADES.length||HOLDINGS_MANUAL_DIRTY)return alert('這台裝置還有尚未同步的持股變更，不能下載舊雲端資料覆蓋。請先完成同步或確認上傳。');
  try{
+  const revision=HOLDINGS_LOCAL_REV,remoteRevision=HOLDINGS_REMOTE_REV;
   const d=await modelSyncFetch('/api/holdings-sync');
   if(!d.initialized)return alert('雲端還沒有持股資料。請先在桌機按「上傳此裝置持股」。');
+  if(!d.ok||HOLDINGS_PENDING_TRADES.length||HOLDINGS_MANUAL_DIRTY||HOLDINGS_LOCAL_REV!==revision||HOLDINGS_REMOTE_REV!==remoteRevision)return alert('同步期間持股有變更，已中止覆蓋。');
   H=(Array.isArray(d.holdings)?d.holdings:[]).map(normalizeHoldingRecord);
-  saveJSON('twStockHoldingsV12',H);renderHoldings();
+  persistHoldingsLocal();renderHoldings();HOLDINGS_REMOTE_REV++;HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();
   const h50=H.find(x=>x.t==='0050');
   HOLDINGS_SYNC.message='已手動下載雲端持股'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
@@ -850,12 +929,18 @@ async function downloadCloudHoldings(){
 }
 
 async function pushHoldingsCloud(){
- if(!MODEL_SYNC.ready)return;
+ if(!MODEL_SYNC.ready||HOLDINGS_PUSH_BUSY||HOLDINGS_PENDING_TRADES.length)return;
+ HOLDINGS_PUSH_BUSY=true;
+ const revision=HOLDINGS_LOCAL_REV,snapshot=JSON.parse(JSON.stringify(H));
  try{
-  await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H})});
+  const d=await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:snapshot,expectedUpdatedAt:HOLDINGS_SYNC.cloudUpdatedAt})});
+  if(!d.ok)throw Error(d.error||'雲端未確認上傳');
+  HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
+  if(HOLDINGS_LOCAL_REV===revision&&!HOLDINGS_PENDING_TRADES.length)setHoldingsManualDirty(false);
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='持股已同步';
   await loadDividendAuto(true);
- }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股同步失敗，本機仍保留'}
+ }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股上傳失敗，本機修改保留；請核對雲端持股後重新上傳'}
+ finally{HOLDINGS_PUSH_BUSY=false}
 }
 async function syncAllCloud(force=false){
  if(CLOUD_SYNC_ALL_BUSY)return;CLOUD_SYNC_ALL_BUSY=true;
@@ -973,10 +1058,9 @@ function saveModelTrade(){
  }
  const trade={id:'mt_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),code,name:NAME[code],tradeType,modelFamily,layer,entryAt:new Date().toISOString(),entryDate:dayKey(),entryPrice:price,shares,snapshot,exitAt:null,exitPrice:null,perf:null};
  markModelTradeDirty(trade);MODEL_TRADES.push(trade);modelSyncSaveLocal();
- const h=H.find(v=>v.t===code);
- if(h){const oldShares=Number(h.s)||0,oldCost=Number(h.c)||0,newShares=oldShares+shares;h.c=((oldShares*oldCost)+(shares*price))/newShares;h.s=newShares}
- else H.push(normalizeHoldingRecord({t:code,n:code,s:shares,c:price,dividendReceived:0,dividendAsOf:dayKey()}));
- saveHoldings();closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncModelTrades(true);
+ // Exactly one local increment + one idempotent cloud operation per NEW trade ID.
+ queueHoldingsTrade(trade);
+ closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncModelTrades(true);
  if(manual)addEvent(`${code} 已記錄自主買入（未觸發模型）：${shares}股 @ ${price.toFixed(2)}｜當下模型：${signalText}`,'trade');
  else if(trendMode)addEvent(`${code} 已記錄強勢加碼實戰並同步持股：${shares}股 @ ${price.toFixed(2)}｜${signalText}`,'trade');
  else addEvent(`${code} 已記錄合理買點模型第${layer}層實戰並同步持股：${shares}股 @ ${price.toFixed(2)}`,'trade');
