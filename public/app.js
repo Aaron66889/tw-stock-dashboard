@@ -212,7 +212,56 @@ function displayModelState(x){
 function noBuyWithoutTouch(x){return!!x?.r?.noBuyToday&&deepestTouchedLayer(x)<0}
 function chaseLockText(cal){const st=cal?.lockStatus;return{LOCKED:'已鎖定',CARRY_FORWARD:'沿用前次鎖定',WAIT_HISTORY:'歷史建立中',PRELOCK_CARRY:'08:30前沿用',PRELOCK_PREVIEW:'08:30前預覽',PRELOCK_FALLBACK:'08:30前等待',FALLBACK_LOCKED:'保守值鎖定'}[st]||st||'—'}
 
-async function get(url,timeoutMs=12000){const c=new AbortController(),timer=setTimeout(()=>c.abort(),timeoutMs);try{const r=await fetch(url,{cache:'no-store',signal:c.signal}),text=await r.text(),t=text.trim();if(!r.ok)throw Error('HTTP '+r.status+'｜'+url);if(!(t.startsWith('{')||t.startsWith('[')))throw Error('來源回傳HTML而非JSON｜'+url+'｜'+t.slice(0,45).replace(/\s+/g,' '));let d;try{d=JSON.parse(t)}catch(e){throw Error('JSON解析失敗｜'+url+'｜'+e.message)}return d}catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(timer)}}
+// R3.80.3: API traffic coordination only. No changes to prices, gates or trading models.
+const API_TRAFFIC={inflight:new Map(),nextSlotAt:0,cooldownUntil:0,strikes:0,lastLimitAt:0,lastWarnAt:0};
+function apiTrafficError(){
+ const wait=Math.max(1,Math.ceil((API_TRAFFIC.cooldownUntil-Date.now())/1000));
+ const e=Error(`API限流保護中，${wait}秒後恢復請求（保留最後有效資料）`);e.status=429;e.limited=true;return e;
+}
+async function apiTrafficPermit(){
+ if(Date.now()<API_TRAFFIC.cooldownUntil)throw apiTrafficError();
+ // Stagger startup and cross-module bursts, while keeping the normal quote polling rate.
+ const now=Date.now(),start=Math.max(now,API_TRAFFIC.nextSlotAt);
+ API_TRAFFIC.nextSlotAt=start+400;
+ if(start>now)await new Promise(resolve=>setTimeout(resolve,start-now));
+ if(Date.now()<API_TRAFFIC.cooldownUntil)throw apiTrafficError();
+}
+function apiTrafficCheckResponse(r,body){
+ const challenge=/(?:<!doctype\s+html|<html)/i.test(body||'')&&/(?:Just a moment|cloudflare|cf-chl-|challenge-platform)/i.test(body||'');
+ if(r.status===429||(challenge&&(r.status===403||r.status===503||r.status===200))){
+  const now=Date.now();
+  if(now-API_TRAFFIC.lastLimitAt>2500){API_TRAFFIC.strikes=now-API_TRAFFIC.lastLimitAt>300000?1:Math.min(API_TRAFFIC.strikes+1,5)}
+  API_TRAFFIC.lastLimitAt=now;
+  const retry=r.headers?.get?.('Retry-After');let wait=Number(retry)*1000;
+  if(!Number.isFinite(wait)||wait<=0){const parsed=Date.parse(retry||'');wait=Number.isFinite(parsed)?parsed-now:0}
+  const delay=Math.min(300000,Math.max(20000,20000*2**(API_TRAFFIC.strikes-1),wait||0));
+  API_TRAFFIC.cooldownUntil=Math.max(API_TRAFFIC.cooldownUntil,now+delay);
+  if(now-API_TRAFFIC.lastWarnAt>45000){console.warn('[API] HTTP 429 / challenge: 暫停新請求並退避',Math.ceil(delay/1000),'秒');API_TRAFFIC.lastWarnAt=now}
+  throw apiTrafficError();
+ }
+ // Only reset escalation after a sustained gap without rate-limit responses.
+ if(API_TRAFFIC.lastLimitAt&&Date.now()-API_TRAFFIC.lastLimitAt>300000)API_TRAFFIC.strikes=0;
+}
+function apiTrafficKey(url){return String(url).replace(/([?&])_=[^&]*/g,'$1').replace(/[?&]$/,'')}
+function get(url,timeoutMs=12000){
+ const key=apiTrafficKey(url),existing=API_TRAFFIC.inflight.get(key);
+ if(existing)return existing;
+ const task=(async()=>{
+  await apiTrafficPermit();
+  const c=new AbortController(),timer=setTimeout(()=>c.abort(),timeoutMs);
+  try{
+   const r=await fetch(url,{cache:'no-store',signal:c.signal}),body=await r.text(),t=body.trim();
+   apiTrafficCheckResponse(r,t);
+   if(!r.ok){const e=Error('HTTP '+r.status+'｜'+url);e.status=r.status;throw e}
+   if(!(t.startsWith('{')||t.startsWith('[')))throw Error('來源回傳HTML而非JSON｜'+url+'｜'+t.slice(0,45).replace(/\s+/g,' '));
+   try{return JSON.parse(t)}catch(e){throw Error('JSON解析失敗｜'+url+'｜'+e.message)}
+  }catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}
+  finally{clearTimeout(timer)}
+ })();
+ API_TRAFFIC.inflight.set(key,task);
+ task.then(()=>{if(API_TRAFFIC.inflight.get(key)===task)API_TRAFFIC.inflight.delete(key)},()=>{if(API_TRAFFIC.inflight.get(key)===task)API_TRAFFIC.inflight.delete(key)});
+ return task;
+}
 
 function twMarketOpenClient(){
  const d=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'})),wd=d.getDay(),m=d.getHours()*60+d.getMinutes();
@@ -273,7 +322,17 @@ async function browserTwseEtfLive(){
  }finally{clearTimeout(timer)}
 }
 
-async function postJSON(url,body,timeoutMs=12000){const c=new AbortController(),timer=setTimeout(()=>c.abort(),timeoutMs);try{const r=await fetch(url,{method:'POST',cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:c.signal}),text=await r.text(),t=text.trim();if(!r.ok)throw Error('HTTP '+r.status+'｜'+url);if(!(t.startsWith('{')||t.startsWith('[')))throw Error('來源回傳HTML而非JSON｜'+url);const d=JSON.parse(t);return d}catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(timer)}}
+async function postJSON(url,body,timeoutMs=12000){
+ await apiTrafficPermit();
+ const c=new AbortController(),timer=setTimeout(()=>c.abort(),timeoutMs);
+ try{
+  const r=await fetch(url,{method:'POST',cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:c.signal}),raw=await r.text(),t=raw.trim();
+  apiTrafficCheckResponse(r,t);
+  if(!r.ok){const e=Error('HTTP '+r.status+'｜'+url);e.status=r.status;throw e}
+  if(!(t.startsWith('{')||t.startsWith('[')))throw Error('來源回傳HTML而非JSON｜'+url);
+  return JSON.parse(t);
+ }catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(timer)}
+}
 
 async function loadEtfLive(){
  clearTimeout(etfLiveTimer);
@@ -795,14 +854,18 @@ function modelSyncSaveLocal(){saveJSON('v124_model_trades',MODEL_TRADES);saveJSO
 function modelTradeClean(t){const x=JSON.parse(JSON.stringify(t));delete x._syncDirty;delete x._cloudUpdatedAt;return x}
 function markModelTradeDirty(t){if(!t)return;t._syncDirty=true;t._syncUpdatedAt=new Date().toISOString()}
 async function modelSyncFetch(url,opts={}){
+ // All holdings/model-trade requests share the same 429 cooldown; failed writes retain their pending IDs.
+ await apiTrafficPermit();
  const c=new AbortController(),tm=setTimeout(()=>c.abort(),10000);
  try{
   const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opts.headers||{})},...opts,signal:c.signal});
-  let d={};try{d=await r.json()}catch(_){}
+  const body=await r.text();apiTrafficCheckResponse(r,body);
+  let d={};try{d=JSON.parse(body)}catch(_){}
   if(!r.ok){const e=Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}
   return d;
- }finally{clearTimeout(tm)}
+ }catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(tm)}
 }
+
 async function loadDividendAuto(force=false){
  if(DIVIDEND_AUTO.busy||!MODEL_SYNC.ready)return;
  if(!force&&DIVIDEND_AUTO.lastAt&&Date.now()-Date.parse(DIVIDEND_AUTO.lastAt)<300000)return;
@@ -993,7 +1056,7 @@ async function syncModelTrades(force=false){
  }catch(e){
   if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.knownUnlocked=false;saveJSON('v124_model_sync_known_unlocked',false);MODEL_SYNC.status='locked';MODEL_SYNC.message='這台裝置尚未輸入同步碼。'}
   else if(e.status===503){MODEL_SYNC.ready=false;MODEL_SYNC.status='setup';MODEL_SYNC.message='Render 尚缺 MODEL_SYNC_KEY / Supabase 環境設定。'}
-  else if(MODEL_SYNC.knownUnlocked){MODEL_SYNC.ready=true;MODEL_SYNC.status='degraded';MODEL_SYNC.message='雲端暫時不穩；本機紀錄保留並每15秒自動重試：'+(e.message||'未知錯誤')}
+  else if(MODEL_SYNC.knownUnlocked){MODEL_SYNC.ready=true;MODEL_SYNC.status='degraded';MODEL_SYNC.message=e.status===429?'API限流保護中；本機紀錄保留，冷卻結束後自動重試':('雲端暫時不穩；本機紀錄保留並每60秒自動重試：'+(e.message||'未知錯誤'))}
   else{MODEL_SYNC.ready=false;MODEL_SYNC.status='error';MODEL_SYNC.message='雲端暫時連不上，本機紀錄仍保留：'+(e.message||'未知錯誤')}
   renderModelTrades();
  }finally{MODEL_SYNC.busy=false}
@@ -1067,7 +1130,11 @@ function saveModelTrade(){
  setPage('model')
 }
 
+let TRADE_PERFORMANCE_REFRESH_ACTIVE=false;
 async function refreshModelTradePerformance(){
+ if(TRADE_PERFORMANCE_REFRESH_ACTIVE||document.visibilityState==='hidden')return;
+ TRADE_PERFORMANCE_REFRESH_ACTIVE=true;
+ try{
  let changed=false;
  for(const t of MODEL_TRADES){
   if(t.exitAt)continue;
@@ -1082,9 +1149,10 @@ async function refreshModelTradePerformance(){
     if(!Number.isFinite(Number(p.currentPnLPerShare))&&Number.isFinite(Number(prev.currentPnLPerShare)))p.currentPnLPerShare=prev.currentPnLPerShare;
     t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true
    }
-  }catch(_){}
+  }catch(e){if(e?.status===429)break}
  }
  modelSyncSaveLocal();renderModelTrades();if(changed)syncModelTrades(false)
+ }finally{TRADE_PERFORMANCE_REFRESH_ACTIVE=false}
 }
 function closeTrackedTrade(id){
  const t=MODEL_TRADES.find(x=>x.id===id);if(!t)return;const px=Number(lastLive?.quotes?.[t.code]?.last??t.perf?.currentPrice);
@@ -1237,11 +1305,24 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(loadHistoryStatus,10000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy()}
+function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(()=>{if(document.visibilityState!=='hidden')loadHistoryStatus()},60000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy()}
 migrate1689Existing0050Trade();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if($('trendBuyPage')?.classList.contains('on'))loadTrendBuy(false);syncAllCloud(false)}})
 setInterval(()=>{
  const p=document.getElementById('constituentPage');
  if(p?.classList.contains('on'))loadConstituentPage(false);
 },30000);
+function apiSingleFlight(fn){
+ let pending=null;
+ return function(...args){
+  if(pending)return pending;
+  pending=Promise.resolve().then(()=>fn(...args)).finally(()=>{pending=null});
+  return pending;
+ };
+}
+loadEtfLive=apiSingleFlight(loadEtfLive);
+loadMarket=apiSingleFlight(loadMarket);
+loadSlow=apiSingleFlight(loadSlow);
+loadNight=apiSingleFlight(loadNight);
+loadBuy=apiSingleFlight(loadBuy);
 setInterval(setMode,30000);boot();
