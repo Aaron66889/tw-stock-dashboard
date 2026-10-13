@@ -11,7 +11,7 @@ function model(status='B_CANDIDATE'){
   trend:{atr:2},shadowB:{status,eligible:status==='B_CANDIDATE',reason:status==='B_CANDIDATE'?'通過':'突破不足',breakoutAtr:.25}};
 }
 const mk=(d=stamp,p=116.5,b='B_CANDIDATE')=>
- l.signalObservation(code,model(b),{...quote,last:p},day,new Date(d));
+ l.signalObservation(code,model(b),{...quote,last:p,serverFetchedAt:new Date(Date.parse(d)-10_000).toISOString()},day,new Date(d));
 const bars=(n=110,entryDayIndex=10)=>{
  const epoch=Date.UTC(2026,9,1);
  return Array.from({length:n},(_,i)=>{
