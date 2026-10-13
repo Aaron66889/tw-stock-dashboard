@@ -27,7 +27,7 @@
 @keyframes priceFlashDown{0%,55%{color:#39c987!important;text-shadow:0 0 9px rgba(57,201,135,.4)}100%{color:inherit;text-shadow:none}}
 </style>
 </head><body><main>
-<div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.80</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
+<div class="top"><div><div class="eyebrow">台股戰情｜V12.4 FINAL R3.81</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
 <nav class="topnav">
 <button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF合理買點</button><button class="navb" data-page="trendBuyPage">ETF強勢加碼</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
 </nav>
@@ -98,7 +98,7 @@
 <section class="card"><div class="sectiontitle">全歷史建立狀態</div><div class="note">服務啟動後自動建立四檔TWSE官方全歷史，不需要按回測才開始。完成前模型會明示使用備援。</div><div id="historyBuildStatus" class="grid4"></div></section>
 <section class="card"><div class="sectiontitle">全歷史價格核心回測</div><div class="note">上市日至今是主結果；近10／5／2／1年只是切片。使用還原權息序列避免除息假跌。這裡驗證價格核心，不等同完整重播盤中環境、成分健康與兩次確認狀態機。</div><div class="etftabs" id="backtestTabs"></div><button class="btn primary" id="runBacktestBtn" onclick="runBacktest()">執行價格核心回測</button><div id="backtestResult" class="reading">尚未執行。</div></section>
 <section class="card"><div class="row"><div class="sectiontitle">今日模型事件</div><button class="btn danger" id="clearModelEventsBtn" onclick="clearModelEvents()">清除事件</button></div><div class="note" style="margin-bottom:8px">事件太多時可清除本機紀錄；後續新模型事件仍會繼續記錄。</div><div id="modelEvents"></div></section>
-<section class="card" id="validationCenter"><div class="row"><div><div class="sectiontitle">45項驗證中心</div><div class="note">不是規格清單：每格接實際功能／資料／回測訊號。PASS才亮綠燈。</div></div><button class="btn primary" id="deepValidateBtn" onclick="runDeepValidation()">執行完整驗證</button></div><div id="validationSummary" class="grid3"></div><div id="validationOverall" class="reading">驗證載入中。</div><div id="specGrid" class="specgrid"></div><div class="sectiontitle" style="margin-top:12px">新增3項核心風控</div><div id="coreValidation" class="grid3"></div></section>
+<section class="card" id="validationCenter"><div class="row"><div><div class="sectiontitle">45項驗證中心</div><div class="note">不是規格清單：每格接實際功能／資料／回測訊號。PASS才亮綠燈。</div></div><button class="btn primary" id="deepValidateBtn" onclick="runDeepValidation()">執行完整驗證</button></div><div id="validationSummary" class="grid5"></div><div id="validationOverall" class="reading">驗證載入中。</div><div id="specGrid" class="specgrid"></div><div class="sectiontitle" style="margin-top:12px">新增3項核心風控</div><div id="coreValidation" class="grid3"></div></section>
 </div>
 
 <div id="logic" class="page">
