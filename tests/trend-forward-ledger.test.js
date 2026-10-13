@@ -80,7 +80,7 @@ test('Historical adjustment respects entry-day factor across a later dividend',(
   Number((((seq[15].adjclose/(at.close*.90))-1)*100-l.COST_PCT).toFixed(3)));
 });
 test('Metrics are computed for A-all, B-only and excluded-A cohorts without fake equal signal counts',()=>{
- const seq=bars(90),a=l.newEvent({...mk(),day:seq[10].date});
+ const seq=bars(90),a=l.newEvent({...mk(stamp,116.5,'WAIT_STRENGTH'),day:seq[10].date});
  a.a.entryPrice=seq[10].close;a.a.breakout20=100;
  const b=l.newEvent({...mk('2026-10-13T03:10:00Z'),day:seq[12].date});
  b.a.entryPrice=seq[12].close;b.a.breakout20=100;
