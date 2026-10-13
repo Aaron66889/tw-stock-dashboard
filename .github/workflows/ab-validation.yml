@@ -4,6 +4,7 @@ on:
     branches:
       - feature/ab-performance-validation-20261013
       - fix/trend-b-advisory-20261013
+      - feature/trend-ab-forward-ledger-20261013
   pull_request:
     paths:
       - 'public/model-ab.js'
@@ -12,6 +13,10 @@ on:
       - 'tests/reliability.test.js'
       - 'tests/model-ab.test.js'
       - 'trend-shadow-b.js'
+      - 'trend-forward-ledger.js'
+      - 'public/trend-forward-ui.js'
+      - 'tests/trend-forward-ledger.test.js'
+      - 'server.js'
       - 'public/trend-shadow-b-ui.js'
       - 'tests/trend-shadow-b.test.js'
 jobs:
@@ -25,5 +30,5 @@ jobs:
           node-version: '22'
       - run: npm install
       - run: npm run check
-      - run: node --check trend-shadow-b.js && node --check public/trend-shadow-b-ui.js
+      - run: node --check trend-shadow-b.js && node --check public/trend-shadow-b-ui.js && node --check trend-forward-ledger.js && node --check public/trend-forward-ui.js
       - run: npm test

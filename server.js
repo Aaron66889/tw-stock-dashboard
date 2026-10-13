@@ -5,6 +5,7 @@ const path=require('path');
 const crypto=require('crypto');
 const {URL}=require('url');
 const TREND_SHADOW_B=require('./trend-shadow-b');
+const TREND_LEDGER=require('./trend-forward-ledger');
 let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 
 const PORT=process.env.PORT||3000;
@@ -2399,7 +2400,10 @@ async function trendEntryModel(){
   deadline(taiexHistory().catch(()=>null),4500,null)
  ]);
  const hs=Object.fromEntries(harr),marketHist=mhLong||mhShort||{ok:false,rows:[],source:'TAIEX unavailable'},marketQuote=bm?.market||RUNTIME.live?.market||null,models={};for(const c of ETF){try{models[c]=trendEntryOne(c,quotes?.[c],hs[c],marketHist,marketQuote)}catch(e){models[c]={ok:false,code:c,name:META[c].name,error:e.message}}}
- return{ok:true,build:BUILD,source:'ETF強勢加碼 v2｜趨勢結構＋突破品質＋相對強弱＋追價安全',quoteSource,marketHistorySource:marketHist?.source||null,fetchedAt:new Date().toISOString(),models};
+ const quoteSnapshots=Object.fromEntries(ETF.map(code=>{const q=quotes?.[code]||{};return[code,{last:q.last??null,date:q.date||null,serverFetchedAt:q.serverFetchedAt||null,
+  realtime:q.realtime===true,lastGoodFallback:q.lastGoodFallback===true,referenceReliable:q.referenceReliable!==false,
+  corporateActionReferenceMissing:q.corporateActionReferenceMissing===true,source:q.source||''}]}));
+ return{ok:true,build:BUILD,source:'ETF強勢加碼 v2｜趨勢結構＋突破品質＋相對強弱＋追價安全',quoteSource,marketHistorySource:marketHist?.source||null,fetchedAt:new Date().toISOString(),models,quoteSnapshots};
 }
 
 /* ---------- Full-history price-core backtest, anti-chase A/B, walk-forward ---------- */
@@ -2817,6 +2821,99 @@ async function conditionalCloudTradeWrite(existing,row){
  }
  try{await supabaseRest('model_trades',{method:'POST',headers:{'Prefer':'return=minimal'},body:[row]});return true}catch(e){if(String(e.message||'').includes('HTTP 409'))return false;throw e}
 }
+/* ---------- Persistent, separate strong-add A/B forward observation ledger ---------- */
+const TREND_LEDGER_CODE='__TREND_AB__',TREND_LEDGER_LEASE='__TREND_AB_SCAN_LEASE__';
+const TREND_LEDGER_INSTANCE=crypto.randomUUID();
+const TREND_LEDGER_STATUS={lastAttemptAt:null,lastSuccessAt:null,error:null,lastWrites:0};
+let TREND_LEDGER_SCANNING=false;
+async function trendLedgerRows(){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return[];
+ const rows=await supabaseRest('model_trades?code=eq.'+encodeURIComponent(TREND_LEDGER_CODE)+
+  '&select=id,code,entry_at,updated_at,payload&order=entry_at.asc&limit=1500',{timeoutMs:11000});
+ return(rows||[]).map(r=>r.payload).filter(p=>p?.version===TREND_LEDGER.VERSION&&ETF.includes(p.code)&&p.id===TREND_LEDGER.eventId(p.code,p.day));
+}
+async function trendLedgerAcquireLease(){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return false;
+ const id=TREND_LEDGER_LEASE,now=Date.now();
+ for(let attempt=0;attempt<3;attempt++){
+  const existing=(await cloudRowsById(id))[0];
+  if(Date.parse(existing?.payload?.expiresAt||'')>now)return false;
+  const lease={owner:TREND_LEDGER_INSTANCE,startedAt:new Date(now).toISOString(),expiresAt:new Date(now+4*60*1000).toISOString(),version:TREND_LEDGER.VERSION};
+  const row={id,code:'__TREND_AB_LEASE__',entry_at:'2000-01-01T00:00:00.000Z',payload:lease};
+  if(await conditionalCloudTradeWrite(existing,row))return true;
+ }
+ return false;
+}
+async function trendLedgerStore(record){
+ const id=record.id;
+ for(let attempt=0;attempt<5;attempt++){
+  const old=(await cloudRowsById(id))[0];
+  const prior=old?.payload?.version===TREND_LEDGER.VERSION?old.payload:null;
+  if(old&&!prior)throw Error('前向訊號資料格式衝突，已暫停寫入');
+  const payload=prior?TREND_LEDGER.updateEvent(prior,record._observation):record;
+  if(prior&&!record._observation)return false;
+  if(prior&&prior.b||prior&&prior.lastBVerdict?.status===record._observation?.b?.status)return false;
+  // No scanner may rewrite the original A entry.
+  const sanitized={...payload};delete sanitized._observation;
+  const row={id,code:TREND_LEDGER_CODE,entry_at:String(sanitized.firstObservedAt),payload:sanitized};
+  if(await conditionalCloudTradeWrite(old,row))return true;
+ }
+ throw Error('A/B訊號併發寫入競爭，稍後重試');
+}
+async function trendLedgerRecord(models,quotes,clock){
+ let records=await trendLedgerRows(),writes=0;
+ for(const code of ETF){
+  const m=models?.[code],q=quotes?.[code];
+  const o=TREND_LEDGER.signalObservation(code,m,q,clock.day);
+  if(!o)continue;
+  // Exact exchange-session dedup, no approximating trading days by calendar days.
+  const hist=await deadline(etfHistory(code),10000,null);
+  const dates=(hist?.rows||[]).map(x=>({date:x.date}));
+  if(dates.length<260)continue;
+  if(!dates.some(x=>x.date===clock.day))dates.push({date:clock.day});
+  const active=TREND_LEDGER.matchEpisode(records,code,clock.day,dates,10);
+  if(active){
+   if(active.b||active.lastBVerdict?.status===o.b.status)continue;
+   const changed=await trendLedgerStore({...active,_observation:o});
+   if(changed){writes++;records=await trendLedgerRows()}
+  }else{
+   const record=TREND_LEDGER.newEvent(o);
+   const changed=await trendLedgerStore(record);
+   if(changed){writes++;records=await trendLedgerRows()}
+  }
+ }
+ return writes;
+}
+async function trendLedgerScan(){
+ const c=taipeiClock();if(!TREND_LEDGER.activeTradingWindow(c)||TREND_LEDGER_SCANNING)return;
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY)){TREND_LEDGER_STATUS.error='Supabase未設定，無法永久儲存';return}
+ TREND_LEDGER_SCANNING=true;TREND_LEDGER_STATUS.lastAttemptAt=new Date().toISOString();
+ try{
+  if(!await trendLedgerAcquireLease())return;
+  const data=await deadline(trendEntryModel(),50000,null);
+  if(!data?.ok||!data.models||!data.quoteSnapshots)throw Error('模型或行情逾時，已安全跳過這一輪');
+  const writes=await trendLedgerRecord(data.models,data.quoteSnapshots,c);
+  TREND_LEDGER_STATUS.lastWrites=writes;TREND_LEDGER_STATUS.lastSuccessAt=new Date().toISOString();TREND_LEDGER_STATUS.error=null;
+ }catch(e){TREND_LEDGER_STATUS.error=String(e?.message||e).slice(0,240);RUNTIME.errors=[...(RUNTIME.errors||[]),'trend-ledger-scan:'+TREND_LEDGER_STATUS.error].slice(-20)}
+ finally{TREND_LEDGER_SCANNING=false}
+}
+async function trendLedgerReport(){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return{ok:true,storageReady:false,error:'Supabase未設定，前向訊號不會持久保存',events:[],summary:TREND_LEDGER.summarize([])};
+ const raw=await trendLedgerRows(),today=ymdTaipei(),byCode={};
+ const needed=[...new Set(raw.map(x=>x.code))];
+ await Promise.all(needed.map(async code=>{
+  const h=await deadline(etfHistory(code).catch(()=>null),9000,null);
+  byCode[code]=Array.isArray(h?.rows)?h.rows:null;
+ }));
+ const events=raw.sort((a,b)=>String(b.firstObservedAt).localeCompare(String(a.firstObservedAt))).slice(0,250).map(e=>
+  byCode[e.code]?TREND_LEDGER.evaluateEvent(e,byCode[e.code],today):{...e,outcomes:{a:null,b:null},dataError:'歷史行情暫不可用，暫不計算績效'});
+ const lease=(await cloudRowsById(TREND_LEDGER_LEASE))[0]?.payload||null;
+ return{ok:true,build:BUILD,version:TREND_LEDGER.VERSION,storageReady:true,source:'Supabase獨立事件帳簿，與正式交易/持股分離',
+  collection:'台灣交易日09:03–13:25，每5分鐘嘗試一次；新訊號以10個交易日視為同一波段。',
+  lastScanAt:lease?.startedAt||null,scanStatus:{...TREND_LEDGER_STATUS},asOf:today,
+  eventCount:raw.length,events,summary:TREND_LEDGER.summarize(events),limitations:'真實盤中模型快照；未來績效以日OHLC含息調整代理，非實際成交。只計下一完整交易日起的日內MAE/MFE；未滿期不算。'};
+}
+
 async function cloudUpsertTrade(input){
  if(!input||typeof input!=='object'||!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(String(input.id||'')))throw Error('invalid trade');
  const incoming=JSON.parse(JSON.stringify(input)),id=String(incoming.id);
@@ -3214,6 +3311,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/night-future')return safeApi(res,'night-future',()=>nightFuture());
  if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(cached('buymodel',8000,buyModel),9500,null);return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'模型外部資料逾時；不阻塞頁面，30秒後自動重試',fetchedAt:new Date().toISOString()}});
  if(u.pathname==='/api/trend-entry')return safeApi(res,'trend-entry',()=>cached('trend-entry',30000,trendEntryModel));
+ if(u.pathname==='/api/trend-ab-forward'&&req.method==='GET')return safeApi(res,'trend-ab-forward',()=>cached('trend-ab-forward',20000,trendLedgerReport));
  if(u.pathname==='/api/etf-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'etf-history',()=>ETF.includes(code)?etfHistory(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituent-dashboard'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'constituent-dashboard',()=>ETF.includes(code)?constituentDashboard(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituents'){const code=u.searchParams.get('code')||'0050',date=u.searchParams.get('date')||null;return safeApi(res,'constituents',()=>ETF.includes(code)?constituents(code,date):Promise.resolve({ok:false,error:'unsupported code'}))}
@@ -3233,6 +3331,9 @@ server.listen(PORT,'0.0.0.0',()=>{
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
  setInterval(refreshRuntime,120000);
+ // A/B forward signal sampling: cloud lease makes exactly one Render instance the scanner per cycle.
+ setTimeout(()=>trendLedgerScan().catch(()=>{}),30000);
+ setInterval(()=>trendLedgerScan().catch(()=>{}),5*60*1000);
  setTimeout(()=>refreshBreadthRuntime(true).catch(()=>{}),8000);
  setInterval(()=>{const t=taipeiClock(),m=t.h*60+t.m;if(['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&m>=540&&BREADTH_RUNTIME.lockedDay!==t.day)refreshBreadthRuntime(false).catch(()=>{})},30000);
  // Dedicated 08:45~08:59:59 TXF sampler. It is idle outside the pre-open window and gives the 08:57/08:58/08:59 model the actual 12-minute day-session path.
