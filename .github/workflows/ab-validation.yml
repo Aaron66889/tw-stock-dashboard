@@ -8,6 +8,9 @@ on:
       - 'public/model-ab.js'
       - 'public/index.html'
       - 'tests/model-ab.test.js'
+      - 'trend-shadow-b.js'
+      - 'public/trend-shadow-b-ui.js'
+      - 'tests/trend-shadow-b.test.js'
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -19,4 +22,5 @@ jobs:
           node-version: '22'
       - run: npm install
       - run: npm run check
+      - run: node --check trend-shadow-b.js && node --check public/trend-shadow-b-ui.js
       - run: npm test

@@ -45,7 +45,8 @@ function client(storage=new Map()){
 
 function backend(){
  const rows=new Map();let requests=0;
- const ctx=vm.createContext({console,process:{env:{}},Buffer,URL,AbortController,fetch,structuredClone,__dirname:root,require,
+ const serverRequire=require('node:module').createRequire(path.join(root,'server.js'));
+ const ctx=vm.createContext({console,process:{env:{}},Buffer,URL,AbortController,fetch,structuredClone,__dirname:root,require:serverRequire,
   setInterval:()=>0,setTimeout:()=>0,clearTimeout:()=>{}});
  const code=fs.readFileSync(path.join(root,'server.js'),'utf8');
  vm.runInContext(code.slice(0,code.indexOf('const server=http.createServer')),ctx,{filename:'server.js'});
