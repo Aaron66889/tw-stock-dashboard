@@ -9,7 +9,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.99-ETF-TRADE-TOTAL-RETURN-CONSISTENCY';
+const BUILD='16.8.101-SYNC-RELIABILITY';
 const TRADE_RETURN_VERSION='cash-entitlement-total-return-v2';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
@@ -2150,6 +2150,10 @@ async function cathayOfficialExcelConstituents(date=null){
  };
 }
 
+function isOfficialHostFor(code,url){
+ const domains={'0050':'yuantaetfs.com','0056':'yuantaetfs.com','00878':'cathaysite.com.tw','00919':'capitalfund.com.tw'};
+ try{const u=new URL(url),domain=domains[code];return !!domain&&u.protocol==='https:'&&(u.hostname===domain||u.hostname.endsWith('.'+domain))}catch(_){return false}
+}
 async function constituents(code,date=null){
  const key='const:r373-live:'+code+':'+(date||'latest'),now=Date.now(),cachedRow=cache.get(key);
  const fullTtl=date?30*60*1000:5*60*1000;
@@ -2727,7 +2731,7 @@ function readJSONBody(req,maxBytes=1024*1024){
  });
 }
 function cookieMap(req){
- const out={};String(req.headers.cookie||'').split(';').forEach(x=>{const i=x.indexOf('=');if(i>0)out[x.slice(0,i).trim()]=decodeURIComponent(x.slice(i+1).trim())});return out;
+ const out={};String(req.headers.cookie||'').split(';').forEach(x=>{const i=x.indexOf('=');if(i>0){try{out[x.slice(0,i).trim()]=decodeURIComponent(x.slice(i+1).trim())}catch(_){}}});return out;
 }
 function digestText(v){return crypto.createHash('sha256').update(String(v)).digest('hex')}
 function safeEqualText(a,b){
@@ -2740,11 +2744,11 @@ function modelSyncAuthorized(req){const v=cookieMap(req).model_sync;return !!(v&
 async function supabaseRest(route,opts={}){
  if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))throw Error('Supabase 尚未設定');
  const headers={'apikey':SUPABASE_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json',...(opts.headers||{})};
- const r=await fetchTimeout(SUPABASE_URL+'/rest/v1/'+route,{method:opts.method||'GET',headers,body:opts.body==null?undefined:JSON.stringify(opts.body)},8000);
+ const r=await fetchTimeout(SUPABASE_URL+'/rest/v1/'+route,{method:opts.method||'GET',headers,body:opts.body==null?undefined:JSON.stringify(opts.body)},opts.timeoutMs||8000);
  const text=await r.text();
  if(!r.ok)throw Error('Supabase HTTP '+r.status+(text?'｜'+text.slice(0,240):''));
  if(!text.trim())return null;
- try{return JSON.parse(text)}catch(_){return text}
+ try{return JSON.parse(text)}catch(_){throw Error('Supabase 回傳非JSON內容')}
 }
 async function operationalMetaCloudPayload(id){
  if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return null;
@@ -2799,51 +2803,51 @@ async function ensureModelSyncMeta(){
  const body=[{id:MODEL_SYNC_META_ID,code:'__META__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:new Date().toISOString(),payload:{meta:true,initializedAt:new Date().toISOString()}}];
  return supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body});
 }
-async function cloudUpsertTrade(input){
- if(!input||typeof input!=='object'||!String(input.id||'').startsWith('mt_'))throw Error('invalid trade');
- const incoming=JSON.parse(JSON.stringify(input)),id=String(incoming.id),existingRows=await cloudRowsById(id),existing=existingRows[0]?.payload&&typeof existingRows[0].payload==='object'?existingRows[0].payload:null;
- if(existing?._deleted)return{ok:true,deleted:true,id};
- const incomingStamp=Date.parse(tradeSyncStamp(incoming))||0,existingStamp=Date.parse(tradeSyncStamp(existing))||0;
- if(existing&&existingStamp>incomingStamp)return{ok:true,keptCloud:true,id};
- let merged=existing?{...existing,...incoming}:incoming;
- // A closed trade is sticky: an old device must not reopen it with a later performance refresh.
- if(existing?.exitAt&&!incoming?.exitAt){
-  for(const k of ['exitAt','exitPrice','realizedReturnPct','realizedPnL'])merged[k]=existing[k];
-  merged._syncUpdatedAt=existing._syncUpdatedAt||existing.exitAt;
+async function conditionalCloudTradeWrite(existing,row){
+ row.updated_at=new Date(Math.max(Date.now(),(Date.parse(existing?.updated_at)||0)+1)).toISOString();
+ if(existing){
+  const route='model_trades?id=eq.'+encodeURIComponent(row.id)+'&updated_at=eq.'+encodeURIComponent(existing.updated_at)+'&select=id';
+  const saved=await supabaseRest(route,{method:'PATCH',headers:{'Prefer':'return=representation'},body:{code:row.code,entry_at:row.entry_at,updated_at:row.updated_at,payload:row.payload}});
+  return Array.isArray(saved)&&saved.length===1;
  }
- merged._syncUpdatedAt=merged._syncUpdatedAt||new Date().toISOString();
- delete merged._syncDirty;delete merged._cloudUpdatedAt;
- const row={id,code:String(merged.code||''),entry_at:merged.entryAt||new Date().toISOString(),updated_at:new Date().toISOString(),payload:merged};
- await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
- await ensureModelSyncMeta();
- return{ok:true,id};
+ try{await supabaseRest('model_trades',{method:'POST',headers:{'Prefer':'return=minimal'},body:[row]});return true}catch(e){if(String(e.message||'').includes('HTTP 409'))return false;throw e}
+}
+async function cloudUpsertTrade(input){
+ if(!input||typeof input!=='object'||!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(String(input.id||'')))throw Error('invalid trade');
+ const incoming=JSON.parse(JSON.stringify(input)),id=String(incoming.id);
+ for(let attempt=0;attempt<10;attempt++){
+  const existingRows=await cloudRowsById(id),row0=existingRows[0],existing=row0?.payload&&typeof row0.payload==='object'?row0.payload:null;
+  if(existing?._deleted)return{ok:true,deleted:true,id};
+  const incomingStamp=Date.parse(tradeSyncStamp(incoming))||0,existingStamp=Date.parse(tradeSyncStamp(existing))||0;
+  if(existing&&existingStamp>incomingStamp)return{ok:true,keptCloud:true,id};
+  const merged=existing?{...existing,...incoming}:JSON.parse(JSON.stringify(incoming));
+  // Closing is sticky even if another device refreshed performance more recently.
+  if(existing?.exitAt&&!incoming?.exitAt){
+   for(const k of ['exitAt','exitPrice','realizedReturnPct','realizedPnL','realizedPricePnL','realizedDividendPnL'])merged[k]=existing[k];
+   merged._syncUpdatedAt=existing._syncUpdatedAt||existing.exitAt;
+  }
+  merged._syncUpdatedAt=merged._syncUpdatedAt||new Date().toISOString();delete merged._syncDirty;delete merged._cloudUpdatedAt;
+  const row={id,code:String(merged.code||''),entry_at:merged.entryAt||new Date().toISOString(),payload:merged};
+  if(await conditionalCloudTradeWrite(row0,row)){await ensureModelSyncMeta();return{ok:true,id}}
+ }
+ throw Error('交易同時被其他裝置更新，請稍後重試');
 }
 async function cloudUpsertTradesBatch(inputs){
  const trades=(Array.isArray(inputs)?inputs:[]).filter(Boolean);if(!trades.length)return{ok:true,count:0,written:0};
- for(const t of trades)if(!t||typeof t!=='object'||!String(t.id||'').startsWith('mt_'))throw Error('invalid trade');
- // Only read real trade rows. The same table also contains very large operational snapshots.
- const rows=await supabaseRest('model_trades?id=like.mt_*&select=id,code,entry_at,updated_at,payload',{timeoutMs:15000})||[],byId=new Map(rows.map(r=>[String(r.id),r])),upserts=[];
- for(const src of trades){
-  const incoming=JSON.parse(JSON.stringify(src)),id=String(incoming.id),row0=byId.get(id),existing=row0?.payload&&typeof row0.payload==='object'?row0.payload:null;
-  if(existing?._deleted)continue;
-  const incomingStamp=Date.parse(tradeSyncStamp(incoming))||0,existingStamp=Date.parse(tradeSyncStamp(existing))||0;
-  if(existing&&existingStamp>incomingStamp)continue;
-  let merged=existing?{...existing,...incoming}:incoming;
-  if(existing?.exitAt&&!incoming?.exitAt){for(const k of ['exitAt','exitPrice','realizedReturnPct','realizedPnL'])merged[k]=existing[k];merged._syncUpdatedAt=existing._syncUpdatedAt||existing.exitAt}
-  merged._syncUpdatedAt=merged._syncUpdatedAt||new Date().toISOString();delete merged._syncDirty;delete merged._cloudUpdatedAt;
-  upserts.push({id,code:String(merged.code||''),entry_at:merged.entryAt||new Date().toISOString(),updated_at:new Date().toISOString(),payload:merged});
- }
- if(upserts.length)await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:upserts});
- await ensureModelSyncMeta();return{ok:true,count:trades.length,written:upserts.length};
+ for(const t of trades)if(!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(String(t?.id||'')))throw Error('invalid trade');
+ const results=await mapLimit(trades,4,cloudUpsertTrade);
+ return{ok:true,count:trades.length,written:results.filter(x=>!x.keptCloud&&!x.deleted).length};
 }
 async function cloudDeleteTrade(id){
- if(!String(id||'').startsWith('mt_'))throw Error('invalid trade id');
- const rows=await cloudRowsById(id),old=rows[0]?.payload&&typeof rows[0].payload==='object'?rows[0].payload:{id,code:'DELETED',entryAt:new Date().toISOString()};
- const tomb={...old,id,_deleted:true,_syncUpdatedAt:new Date().toISOString()};delete tomb._syncDirty;delete tomb._cloudUpdatedAt;
- const row={id,code:String(old.code||'DELETED'),entry_at:old.entryAt||new Date().toISOString(),updated_at:new Date().toISOString(),payload:tomb};
- await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
- await ensureModelSyncMeta();
- return{ok:true,id};
+ if(!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(String(id||'')))throw Error('invalid trade id');
+ for(let attempt=0;attempt<10;attempt++){
+  const rows=await cloudRowsById(id),row0=rows[0],old=row0?.payload&&typeof row0.payload==='object'?row0.payload:{id,code:'DELETED',entryAt:new Date().toISOString()};
+  if(old._deleted)return{ok:true,id};
+  const tomb={...old,id,_deleted:true,_syncUpdatedAt:new Date().toISOString()};delete tomb._syncDirty;delete tomb._cloudUpdatedAt;
+  const row={id,code:String(old.code||'DELETED'),entry_at:old.entryAt||new Date().toISOString(),payload:tomb};
+  if(await conditionalCloudTradeWrite(row0,row)){await ensureModelSyncMeta();return{ok:true,id}}
+ }
+ throw Error('交易同時被其他裝置更新，刪除尚未完成，請稍後重試');
 }
 
 
@@ -2860,7 +2864,7 @@ async function cloudHoldingsState(){
   return h;
  });
  if(corrected){
-  try{const saved=await cloudUpsertHoldings(holdings);holdings=saved.holdings||holdings}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),`00919-cost-migration:${e.message}`].slice(-20)}
+  try{const saved=await cloudUpsertHoldings(holdings,r.updated_at);holdings=saved.holdings||holdings;return{initialized:true,holdings,updatedAt:saved.updatedAt}}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),`00919-cost-migration:${e.message}`].slice(-20)}
  }
  return{initialized:!!p,holdings,updatedAt:r?.updated_at||p?.updatedAt||null};
 }
@@ -2880,15 +2884,28 @@ async function cloudDividendState(){
  return{initialized:!!p,state:normalizeDividendCloudState(p),updatedAt:r?.updated_at||p?.updatedAt||null};
 }
 async function saveCloudDividendState(input){
- const state=normalizeDividendCloudState(input),now=new Date().toISOString();state.updatedAt=now;
- // Snapshots are sparse (only when holdings change / first bootstrap). Keep a generous history.
- state.snapshots=state.snapshots.sort((a,b)=>a.day.localeCompare(b.day)).slice(-2000);
- const row={id:DIVIDEND_SYNC_ID,code:'__DIVIDEND_AUTO__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload:state};
- await supabaseRest('model_trades?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:[row]});
- return state;
+ const incoming=normalizeDividendCloudState(input);
+ for(let attempt=0;attempt<8;attempt++){
+  const rows=await cloudRowsById(DIVIDEND_SYNC_ID),existing=rows[0],state=normalizeDividendCloudState(existing?.payload);
+  // A slow official-source response must not overwrite a newer holdings snapshot.
+  const snapshots=new Map(state.snapshots.map(x=>[x.day,x]));
+  for(const snap of incoming.snapshots){const old=snapshots.get(snap.day);if(!old||String(snap.recordedAt||'')>String(old.recordedAt||''))snapshots.set(snap.day,snap)}
+  state.snapshots=[...snapshots.values()].sort((a,b)=>a.day.localeCompare(b.day)).slice(-2000);
+  for(const [key,lock] of Object.entries(incoming.locked)){const old=state.locked[key];if(!old||String(lock.correctedAt||lock.lockedAt||'')>String(old.correctedAt||old.lockedAt||''))state.locked[key]=lock}
+  const now=new Date(Math.max(Date.now(),(Date.parse(existing?.updated_at)||0)+1)).toISOString();state.updatedAt=now;
+  const row={id:DIVIDEND_SYNC_ID,code:'__DIVIDEND_AUTO__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload:state};
+  if(existing){
+   const saved=await supabaseRest('model_trades?id=eq.'+encodeURIComponent(DIVIDEND_SYNC_ID)+'&updated_at=eq.'+encodeURIComponent(existing.updated_at)+'&select=id',{method:'PATCH',headers:{'Prefer':'return=representation'},body:{updated_at:now,payload:state}});
+   if(Array.isArray(saved)&&saved.length===1)return state;
+  }else{
+   try{await supabaseRest('model_trades',{method:'POST',headers:{'Prefer':'return=minimal'},body:[row]});return state}catch(e){if(!String(e.message||'').includes('HTTP 409'))throw e}
+  }
+ }
+ throw Error('股息快照同時更新，資料已保留，請稍後重試');
 }
 async function recordDividendHoldingsSnapshot(holdings,day=ymdTaipei()){
- const cur=await cloudDividendState(),state=cur.state,map=dividendHoldingMap(holdings),snap={day:String(day),holdings:map,recordedAt:new Date().toISOString()};
+ // Read the latest acknowledged portfolio, including any concurrent device increments.
+ const current=await cloudHoldingsState(),cur=await cloudDividendState(),state=cur.state,map=dividendHoldingMap(current.initialized?current.holdings:holdings),snap={day:String(day),holdings:map,recordedAt:new Date().toISOString()};
  const idx=state.snapshots.findIndex(x=>x.day===snap.day);if(idx>=0)state.snapshots[idx]=snap;else state.snapshots.push(snap);
  return saveCloudDividendState(state);
 }
@@ -2939,34 +2956,39 @@ async function dividendAutoReport(){
 // existing holdings payload, and are preserved by manual portfolio uploads.
 function cleanHoldingsInput(holdings){
  if(!Array.isArray(holdings)||holdings.length>100)throw Error('invalid holdings');
+ const codes=new Set();
+ for(const h of holdings){const code=String(h?.t||'').trim(),s=Number(h?.s),c=Number(h?.c);if(!/^[a-zA-Z0-9.^_-]{1,20}$/.test(code)||codes.has(code)||!Number.isSafeInteger(s)||s<0||!Number.isFinite(c)||c<0||c>1e7)throw Error('持股代號、整數股數或成本不正確');codes.add(code)}
  return holdings.map(h=>({t:String(h?.t||''),n:String(h?.n||h?.t||''),s:Number(h?.s)||0,c:Number(h?.c)||0,dividendReceived:Math.max(0,Number(h?.dividendReceived)||0),dividendAsOf:String(h?.dividendAsOf||'')}))
   .filter(h=>h.t&&h.s>=0&&h.c>=0);
 }
 async function conditionalCloudHoldingsWrite(existingRow,holdings,appliedTradeIds){
- const now=new Date().toISOString(),ids=[...new Set(appliedTradeIds||[])];
+ const now=new Date(Math.max(Date.now(),(Date.parse(existingRow?.updated_at)||0)+1)).toISOString(),ids=[...new Set(appliedTradeIds||[])];
  const payload={holdings,appliedTradeIds:ids,updatedAt:now};
  if(existingRow){
-  const route='model_trades?id=eq.'+encodeURIComponent(HOLDINGS_SYNC_ID)+'&updated_at=eq.'+encodeURIComponent(existingRow.updated_at)+'&select=id';
+  const route='model_trades?id=eq.'+encodeURIComponent(HOLDINGS_SYNC_ID)+'&updated_at=eq.'+encodeURIComponent(existingRow.updated_at)+'&select=id,updated_at,payload';
   const r=await supabaseRest(route,{method:'PATCH',headers:{'Prefer':'return=representation'},body:{updated_at:now,payload}});
-  return Array.isArray(r)&&r.length===1;
+  return Array.isArray(r)&&r.length===1?r[0]:null;
  }
  try{
   // An ordinary insert (no upsert) fails if another device initialized the row.
-  await supabaseRest('model_trades',{method:'POST',headers:{'Prefer':'return=minimal'},body:[{id:HOLDINGS_SYNC_ID,code:'__HOLDINGS__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload}]});
-  return true;
+  const inserted=await supabaseRest('model_trades',{method:'POST',headers:{'Prefer':'return=representation'},body:[{id:HOLDINGS_SYNC_ID,code:'__HOLDINGS__',entry_at:'2000-01-01T00:00:00.000Z',updated_at:now,payload}]});
+  if(!Array.isArray(inserted)||inserted.length!==1)throw Error('雲端未回傳持股寫入確認');
+  return inserted[0];
  }catch(e){if(String(e.message||'').includes('HTTP 409'))return false;throw e}
 }
-async function cloudUpsertHoldings(holdings,expectedUpdatedAt){
+async function cloudUpsertHoldings(holdings,expectedUpdatedAt,includedTradeIds=[]){
  const clean=cleanHoldingsInput(holdings);
+ if(!Array.isArray(includedTradeIds)||includedTradeIds.some(id=>!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(String(id))))throw Error('invalid included trade IDs');
  for(let attempt=0;attempt<8;attempt++){
   const rows=await cloudRowsById(HOLDINGS_SYNC_ID),r=rows[0],p=r?.payload&&typeof r.payload==='object'?r.payload:null;
   const applied=Array.isArray(p?.appliedTradeIds)?p.appliedTradeIds:[];
-  if(expectedUpdatedAt&&r?.updated_at!==expectedUpdatedAt)throw Error('其他裝置已更新雲端持股，為避免覆蓋請重新下載、核對後再上傳');
-  if(await conditionalCloudHoldingsWrite(r,clean,applied)){
+  if((r&&(!expectedUpdatedAt||r.updated_at!==expectedUpdatedAt))||(!r&&expectedUpdatedAt))throw Error('其他裝置已更新雲端持股，為避免覆蓋請重新核對後再上傳');
+  if(r&&includedTradeIds.length)throw Error('雲端持股已初始化，請先完成成交增量同步');
+  const saved=await conditionalCloudHoldingsWrite(r,clean,[...applied,...includedTradeIds]);
+  if(saved){
    let dividendSnapshotRecorded=false,dividendSnapshotError=null;
    try{await recordDividendHoldingsSnapshot(clean,ymdTaipei());dividendSnapshotRecorded=true}catch(e){dividendSnapshotError=e.message||String(e)}
-   const latest=await cloudRowsById(HOLDINGS_SYNC_ID);
-   return{ok:true,holdings:clean,updatedAt:latest[0]?.updated_at||null,dividendSnapshotRecorded,dividendSnapshotError};
+   return{ok:true,holdings:clean,updatedAt:saved.updated_at,includedTradeIds,dividendSnapshotRecorded,dividendSnapshotError};
   }
  }
  throw Error('持股同時被其他裝置更新，請稍後重試');
@@ -3120,9 +3142,9 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/holdings-sync'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'持股雲端同步尚未完成後端設定'});
   if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'持股雲端同步尚未解鎖'});
-  if(req.method==='GET')return safeApi(res,'holdings-sync',async()=>({ok:true,...await cloudHoldingsState(),fetchedAt:new Date().toISOString()}));
+  if(req.method==='GET')return safeApi(res,'holdings-sync',async()=>({ok:true,build:BUILD,...await cloudHoldingsState(),fetchedAt:new Date().toISOString()}));
   if(req.method==='POST'){
-   try{const body=await readJSONBody(req);return send(res,200,await cloudUpsertHoldings(body.holdings,body.expectedUpdatedAt))}catch(e){return send(res,400,{ok:false,error:e.message})}
+   try{const body=await readJSONBody(req);return send(res,200,await cloudUpsertHoldings(body.holdings,body.expectedUpdatedAt,body.includedTradeIds))}catch(e){return send(res,400,{ok:false,error:e.message})}
   }
  }
  if(u.pathname==='/api/dividend-auto'){
@@ -3133,7 +3155,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/model-trades'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'模型雲端同步尚未完成後端設定'});
   if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'模型雲端同步尚未解鎖'});
-  if(req.method==='GET')return safeApi(res,'model-trades',async()=>({ok:true,...await cloudModelState(),fetchedAt:new Date().toISOString()}));
+  if(req.method==='GET')return safeApi(res,'model-trades',async()=>({ok:true,build:BUILD,...await cloudModelState(),fetchedAt:new Date().toISOString()}));
   if(req.method==='POST'){
    try{const body=await readJSONBody(req);const r=await cloudUpsertTrade(body.trade);return send(res,200,r)}catch(e){return send(res,400,{ok:false,error:e.message})}
   }

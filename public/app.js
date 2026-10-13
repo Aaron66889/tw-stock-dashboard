@@ -19,9 +19,10 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.100-ETF-TRADE-PATH-READY-COMPAT-VALIDATION-LAZY',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.101-SYNC-RELIABILITY',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const TRADE_RETURN_REQUIRED='cash-entitlement-total-return-v2';
-const $=id=>document.getElementById(id),fmt=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—',pct=n=>Number.isFinite(Number(n))?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
+const hasNumber=n=>n!==null&&n!==undefined&&n!==''&&Number.isFinite(Number(n));
+const $=id=>document.getElementById(id),fmt=n=>hasNumber(n)?Number(n).toFixed(2):'—',pct=n=>hasNumber(n)?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
 const mean=a=>{const x=(a||[]).filter(Number.isFinite);return x.length?x.reduce((s,v)=>s+v,0)/x.length:null};
 let lastLive=null,lastCtx=null,lastTaiex=null,lastOverseas=null,lastNight=null,lastBuy=null,lastTrendBuy=null;
 let marketTimer,slowTimer,buyTimer,nightTimer,commentaryTimer,trendBuyTimer,selectedETF='0050',selectedBacktest='0050';
@@ -71,9 +72,10 @@ function dividendStats(code,holding){
  return{received,pending,items,lastPaid:null,nextPending:items.find(e=>e.pending&&(!asOf||e.payDate>asOf))||null,upcoming:null,estimatedUpcoming:null,version:DIVIDEND_LEDGER_VERSION,asOf:effectiveAsOf,automatic:false};
 }
 
-function money0(n){return Number.isFinite(Number(n))?Math.round(Number(n)).toLocaleString():'—'}
+function money0(n){return hasNumber(n)?Math.round(Number(n)).toLocaleString():'—'}
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),SHADOW_STATE=loadJSON('v124_shadow_state',{day:null,models:{}}),SHADOW_LOG=loadJSON('v124_shadow_replay',[]),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null,knownUnlocked:!!loadJSON('v124_model_sync_known_unlocked',false)};
+let SYNC_SERVER_VERIFIED=false;
 // R3.81: persisted, trade-ID keyed holdings operations. A network retry is safe because
 // the backend applies each trade ID once (including across phones / computers).
 const HOLDINGS_OP_KEY='v124_holdings_pending_trade_ops_r3802';
@@ -124,7 +126,7 @@ function queueHoldingsTrade(trade){
   applyBoughtSharesLocal(op);persistHoldingsLocal();
  }
  HOLDINGS_SYNC.message=`持股有 ${HOLDINGS_PENDING_TRADES.length} 筆成交待雲端確認；本機股數已更新`;
- if(MODEL_SYNC.ready)void flushPendingHoldingsTrades();
+ if(MODEL_SYNC.ready)void syncAllCloud(true);
 }
 function saveHoldings(){
  // Manual adjustment: never silently download old cloud holdings on top of an offline edit.
@@ -135,7 +137,7 @@ function saveHoldings(){
 function taipeiNow(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei'}))}
 function dayKey(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date())}
 function fresh(ts,ms=90000){return ts&&Date.now()-Date.parse(ts)<ms}
-function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false);if(id==='trendBuyPage')loadTrendBuy(false);if(id==='model'){renderSpecs(false);loadValidation(false)}}
+function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.toggle('on',x.id===id));document.querySelectorAll('.navb').forEach(x=>x.classList.toggle('on',x.dataset.page===id));window.scrollTo({top:0,behavior:'instant'});if(id==='constituentPage')loadConstituentPage(false);if(id==='commentaryPage')loadCommentary(false);if(id==='trendBuyPage')loadTrendBuy(false);if(id==='model'){renderSpecs(true);loadValidation(false)}}
 document.querySelectorAll('.navb').forEach(b=>b.onclick=()=>setPage(b.dataset.page));
 function setMode(){const d=taipeiNow(),m=d.getHours()*60+d.getMinutes(),day=d.getDay();let a,b,c;if(day===0||day===6){a='週末模式';b='市場休市，整理全歷史與下一交易日環境';c='現貨維持最近交易日，夜盤／海外依交易時段更新'}else if(m>=537&&m<540){a='08:57盤前';b='盤前三層正在收斂';c='08:59:30鎖定盤前基準'}else if(m>=540&&m<=810){a='● 盤中模式';b='今天有沒有合理買點？';c='價格10秒｜模型30秒'}else if(m>810&&m<900){a='收盤模式';b='今天收盤結構與下一交易日環境';c='檢查今日買點歷史與市場廣度'}else if(m>=900||m<300){a='🌙 夜間模式';b='夜盤與海外正在怎麼影響下一交易日？';c='夜盤10秒更新；正負號自行重算'}else{a='盤前模式';b='開盤前先看海外與台指期日盤';c=m>=525?'08:45台指期先行訊號累積中｜08:57開始三層收斂':'等待08:45台指期日盤'}$('mode').textContent=a;$('modeTitle').textContent=b;$('modeNote').textContent=c}
 function addEvent(text,kind='info'){const last=EVENTS.at(-1);if(last&&last.text===text&&Date.now()-Date.parse(last.at)<60000)return;EVENTS.push({at:new Date().toISOString(),text,kind});EVENTS=EVENTS.slice(-160);saveJSON('v124_events',EVENTS);renderEvents()}
@@ -254,7 +256,9 @@ function get(url,timeoutMs=12000){
    apiTrafficCheckResponse(r,t);
    if(!r.ok){const e=Error('HTTP '+r.status+'｜'+url);e.status=r.status;throw e}
    if(!(t.startsWith('{')||t.startsWith('[')))throw Error('來源回傳HTML而非JSON｜'+url+'｜'+t.slice(0,45).replace(/\s+/g,' '));
-   try{return JSON.parse(t)}catch(e){throw Error('JSON解析失敗｜'+url+'｜'+e.message)}
+   let d;try{d=JSON.parse(t)}catch(e){throw Error('JSON解析失敗｜'+url+'｜'+e.message)}
+   if(d?.ok===false){const e=Error(d.error||d.reason||('API資料更新失敗｜'+url));e.status=r.status;throw e}
+   return d;
   }catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}
   finally{clearTimeout(timer)}
  })();
@@ -334,7 +338,7 @@ async function postJSON(url,body,timeoutMs=12000){
  }catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(timer)}
 }
 
-async function loadEtfLive(){
+async function loadEtfLive(){if(document.visibilityState==='hidden')return;
  clearTimeout(etfLiveTimer);
  try{
   const d=await get('/api/etf-live?_='+Date.now(),6500);
@@ -353,6 +357,7 @@ async function loadEtfLive(){
     }
    }
    renderHoldings();
+   refreshTrendLiveQuotes();
    renderHomeRanking();
    renderBuyCards();
    if(selectedETF)renderDetailBuy();if(VALIDATION)renderSpecs();
@@ -360,15 +365,15 @@ async function loadEtfLive(){
  }catch(e){console.warn('[ETF-LIVE]',e?.message||e)}
  etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?5000:10000);
 }
-async function loadMarket(){clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);
+async function loadMarket(){if(document.visibilityState==='hidden')return;clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);
  const yahooETF={};for(const c of ETF)if(lastLive?.quotes?.[c]?.last>0)yahooETF[c]=lastLive.quotes[c];
  lastLive={...d,quotes:{...(d.quotes||{}),...yahooETF}};
  saveLastGood('market',d);renderMarket();renderHoldings();if(VALIDATION)renderSpecs();$('freshPill').textContent=d.realtime===false?'● 盤後備援資料':'● 行情正常';$('freshPill').className=d.realtime===false?'pill warn':'pill live'}catch(e){const c=loadLastGood('market');if(c?.data){
   const yahooETF={};for(const code of ETF)if(lastLive?.quotes?.[code]?.last>0)yahooETF[code]=lastLive.quotes[code];
   lastLive={...c.data,quotes:{...(c.data.quotes||{}),...yahooETF}};renderMarket();renderHoldings();if(VALIDATION)renderSpecs();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}console.warn('[MARKET]',e?.message||e)}marketTimer=setTimeout(loadMarket,10000)}
-async function loadSlow(){clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();if(VALIDATION)renderSpecs();slowTimer=setTimeout(loadSlow,30000)}
-async function loadNight(){clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();if(VALIDATION)renderSpecs();nightTimer=setTimeout(loadNight,10000)}
-async function loadBuy(){clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){const bad=ETF.filter(c=>d.modelFreshByCode&&d.modelFreshByCode[c]===false);$('freshPill').textContent=bad.length?`● 部分模型資料降級：${bad.join('/')}`:'● 模型資料降級';$('freshPill').className='pill warn'}updateState();renderAllModel();loadServerPreopen();if(VALIDATION)renderSpecs()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
+async function loadSlow(){if(document.visibilityState==='hidden')return;clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();if(VALIDATION)renderSpecs();slowTimer=setTimeout(loadSlow,30000)}
+async function loadNight(){if(document.visibilityState==='hidden')return;clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();if(VALIDATION)renderSpecs();nightTimer=setTimeout(loadNight,10000)}
+async function loadBuy(){if(document.visibilityState==='hidden')return;clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){const bad=ETF.filter(c=>d.modelFreshByCode&&d.modelFreshByCode[c]===false);$('freshPill').textContent=bad.length?`● 部分模型資料降級：${bad.join('/')}`:'● 模型資料降級';$('freshPill').className='pill warn'}updateState();renderAllModel();loadServerPreopen();if(VALIDATION)renderSpecs()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
 
 function renderMarket(){
  if(lastLive?.market){const q=lastLive.market,ch=(q.last-q.prevClose)/q.prevClose*100;$('idx').textContent=q.last.toLocaleString('zh-TW',{maximumFractionDigits:2});$('idxchg').textContent=(ch>=0?'▲ ':'▼ ')+Math.abs(q.last-q.prevClose).toFixed(2)+'點　'+pct(ch);$('idxchg').className='change '+cls(ch);$('open').textContent=fmt(q.open);$('high').textContent=fmt(q.high);$('low').textContent=fmt(q.low);$('offHigh').textContent=q.high?pct((q.last-q.high)/q.high*100):'—';let text='目前多空震盪。';if(ch>0)text='大盤現貨高於昨收；仍要搭配市場廣度與台積電判斷是不是全面上漲。';if(ch<0)text='大盤現貨低於昨收；先看低點承接與市場廣度是否繼續惡化。';$('plain').innerHTML='<b>白話：</b>'+text}
@@ -391,7 +396,7 @@ function renderTomorrow(){
  const n=lastNight||lastBuy?.nightFuture,o=lastOverseas||lastBuy?.overseas,b=lastCtx?.breadth;let vals=[n?.changePct,o?.quotes?.NASDAQ?.changePct,o?.quotes?.SOX?.changePct,o?.quotes?.TSM?.changePct].filter(Number.isFinite),avg=vals.length?vals.reduce((a,v)=>a+v,0)/vals.length:0;if(b?.usableForModel)avg+=(b.ratio-.5)*2;
  let text='中性',c='amber',plain='訊號互相抵銷，先等更多資料。';if(avg>.65){text='🔴 偏多';c='upc';plain='外部環境偏順風，但不代表開盤就追高；仍以08:57與盤中三層為準。'}else if(avg<-.65){text='🟢 偏空';c='downc';plain='外部環境偏逆風，盤前買點可能下修；若開盤快速穿透，先啟動保護而不是一次買滿。'}$('tomorrowScore').textContent=text;$('tomorrowScore').className='score '+c;$('confidence').textContent='信心：'+(vals.length>=4?'中高':vals.length>=2?'中':'低');$('tomorrowPlain').innerHTML='<b>白話：</b>'+plain;$('tomorrowFactors').innerHTML=[['WTX&',n?.changePct],['NASDAQ',o?.quotes?.NASDAQ?.changePct],['SOX',o?.quotes?.SOX?.changePct],['TSM ADR',o?.quotes?.TSM?.changePct]].map(x=>`<div class="box"><span class="k">${x[0]}</span><b class="${cls(x[1])}">${pct(x[1])}</b></div>`).join('')
 }
-async function loadServerPreopen(){
+async function loadServerPreopen(){if(document.visibilityState==='hidden')return;
  try{
   const d=await get('/api/preopen-snapshot',6000),s=d?.snapshot;
   if(!s||s.day!==dayKey())return;
@@ -571,6 +576,10 @@ function etfDailyChangeText(code,px){
  const d=last-prev,p=d/prev*100;
  return `${d>0?'+':''}${d.toFixed(2)} (${p>0?'+':''}${p.toFixed(2)}%)`;
 }
+function refreshTrendLiveQuotes(){
+ if(!$('trendBuyPage')?.classList.contains('on'))return;
+ for(const c of ETF){const el=$('trendLivePrice-'+c),stamp=$('trendLiveStamp-'+c),px=Number(lastLive?.quotes?.[c]?.last);if(el&&px>0){el.className=etfPriceClass(c,px);el.textContent=fmt(px)+' '+etfDailyChangeText(c,px);if(stamp)stamp.textContent=etfFetchStamp()+etfExchangeStamp(c)}}
+}
 function trendStatusClass(status){return status==='TREND_BUY'?'buyok':status==='NO_CHASE'||status==='WEAK'?'invalid':''}
 function trendStatusTone(status){return status==='TREND_BUY'?'upc':status==='NO_CHASE'||status==='WEAK'?'downc':'amber'}
 function trendLevelText(x){return Number.isFinite(Number(x))?Number(x).toFixed(2):'—'}
@@ -579,9 +588,10 @@ function renderTrendBuy(){
  const d=lastTrendBuy;if(!d?.models){sum.textContent='強勢加碼模型尚未取得資料。';host.innerHTML='';return}
  const valid=ETF.map(c=>d.models[c]).filter(x=>x?.ok),ready=valid.filter(x=>x.status==='TREND_BUY'),noChase=valid.filter(x=>x.status==='NO_CHASE');
  sum.innerHTML=`目前 ${ready.length} 檔出現強勢小額加碼條件；${noChase.length} 檔屬漲太遠不追。<br><span class="note">趨勢強度不是上漲機率。此頁與回檔三層模型完全分離；「可小額加碼」預設只代表一般第一層的 0.25～0.5 倍部位。</span>`;
- host.innerHTML=ETF.map(c=>{const m=d.models[c];if(!m?.ok)return`<section class="card"><div class="ticker">${c} ${NAME[c]}</div><div class="notice">強勢加碼模型暫不可用：${m?.error||'資料不足'}</div></section>`;const lv=m.levels||{},t=m.trend||{},bt=m.backtest||{},rg=m.regime||{},sg=m.scoreGroups||{},ath=bt.ath||{},parts=Object.values(sg).map(x=>`${x.label} ${x.score}/${x.max}`).join('｜')||((m.parts||[]).map(x=>`${x.label} ${x.value}/${x.max||''}`).join('｜')),canRecord=m.status==='TREND_BUY',athNote=rg.allTimeHigh?`<div class="notice"><b>歷史新高區：</b>已進入價格發現階段${Number.isFinite(Number(rg.priorAllTimeHigh))?`｜前高 ${fmt(rg.priorAllTimeHigh)}`:''}。可依模型小額加碼，但不因創高而放寬最高追價線。</div>`:'';return`<section class="card buycard ${trendStatusClass(m.status)}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate ${trendStatusTone(m.status)}">${m.statusText}</span></div><div><small class="k">ETF趨勢強度</small><div class="score">${m.score}/100</div></div></div>${athNote}<div class="buygrid"><div class="buybox"><span class="k">現價</span><b>${fmt(m.price)} <span class="etf-daily-pct ${cls(m.changePct)}">${pct(m.changePct)}</span></b><small>${m.action}</small></div><div class="buybox first"><span class="k">20日突破位</span><b>${trendLevelText(lv.breakout20)}</b><small>${t.brokeToday?'今日曾突破':'尚未突破'}</small></div><div class="buybox"><span class="k">強勢加碼執行帶</span><b>${trendLevelText(lv.entryLow)}–${trendLevelText(lv.entryHigh)}</b><small>突破／回踩後的小額區</small></div><div class="buybox"><span class="k">最高追價線</span><b>${trendLevelText(lv.maxChase)}</b><small>高於此價不追</small></div></div><div class="grid4"><div class="box"><span class="k">趨勢結構</span><b>${sg.trendStructure?.score??'—'}/${sg.trendStructure?.max??35}</b><small>日線＋週線，不重複逐項疊分</small></div><div class="box"><span class="k">突破品質</span><b>${sg.breakoutQuality?.score??'—'}/${sg.breakoutQuality?.max??30}</b><small>20/55日突破＋距突破位</small></div><div class="box"><span class="k">相對大盤</span><b>${sg.relativeStrength?.score??'—'}/${sg.relativeStrength?.max??20}</b><small>20日 ${pct(t.relative20)}｜60日 ${pct(t.relative60)}</small></div><div class="box"><span class="k">追價安全</span><b>${sg.chaseSafety?.score??'—'}/${sg.chaseSafety?.max??15}</b><small>距突破 ${Number.isFinite(t.distBreakAtr)?fmt(t.distBreakAtr)+' ATR':'—'}</small></div></div><div class="reading"><b>判斷：</b>${m.statusText}。${m.action}。<br><b>強度拆解：</b>${parts||'—'}<br><b>全部突破樣本：</b>${bt.signals||0}筆${bt.startDate&&bt.endDate?`｜${bt.startDate.slice(0,4)}～${bt.endDate.slice(0,4)}`:''}｜5日 ${pct(bt.avg5)}（勝率 ${pct(bt.win5)}）｜20日 ${pct(bt.avg20)}（勝率 ${pct(bt.win20)}）｜60日 ${pct(bt.avg60)}（勝率 ${pct(bt.win60)}）<br><b>風險路徑：</b>20日 MAE/MFE ${fmt(bt.avgMAE20)}% / ${fmt(bt.avgMFE20)}%｜60日 MAE/MFE ${fmt(bt.avgMAE60)}% / ${fmt(bt.avgMFE60)}%｜5日假突破 ${pct(bt.fakeBreak5Rate)}<br><b>相對大盤：</b>20日 Alpha ${pct(bt.avgAlpha20)}（${bt.alpha20Samples||0}筆）｜60日 Alpha ${pct(bt.avgAlpha60)}（${bt.alpha60Samples||0}筆）${ath.signals?`<br><b>歷史新高子樣本：</b>${ath.signals}筆｜20日 ${pct(ath.avg20)}（勝率 ${pct(ath.win20)}）｜60日 ${pct(ath.avg60)}（勝率 ${pct(ath.win60)}）｜假突破 ${pct(ath.fakeBreak5Rate)}`:''}<br><span class="note">${bt.note||''}；量價／籌碼仍不進正式強勢加碼分數，也完全不影響 ETF合理買點。</span></div><div class="row" style="margin-top:8px"><span class="note">${canRecord?'目前已符合強勢加碼模型，可將實際成交獨立記錄並驗證。':'尚未成立強勢加碼訊號；若仍買進請記為自主買入。'}</span>${canRecord?`<button class="btn primary" onclick="openTrendTrade('${c}')">記錄強勢加碼買入</button>`:''}<button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('');
+ host.innerHTML=ETF.map(c=>{const m=d.models[c];if(!m?.ok)return`<section class="card"><div class="ticker">${c} ${NAME[c]}</div><div class="notice">強勢加碼模型暫不可用：${m?.error||'資料不足'}</div></section>`;const livePx=Number(lastLive?.quotes?.[c]?.last)||m.price;const lv=m.levels||{},t=m.trend||{},bt=m.backtest||{},rg=m.regime||{},sg=m.scoreGroups||{},ath=bt.ath||{},parts=Object.values(sg).map(x=>`${x.label} ${x.score}/${x.max}`).join('｜')||((m.parts||[]).map(x=>`${x.label} ${x.value}/${x.max||''}`).join('｜')),canRecord=m.status==='TREND_BUY',athNote=rg.allTimeHigh?`<div class="notice"><b>歷史新高區：</b>已進入價格發現階段${Number.isFinite(Number(rg.priorAllTimeHigh))?`｜前高 ${fmt(rg.priorAllTimeHigh)}`:''}。可依模型小額加碼，但不因創高而放寬最高追價線。</div>`:'';return`<section class="card buycard ${trendStatusClass(m.status)}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate ${trendStatusTone(m.status)}">${m.statusText}</span></div><div><small class="k">ETF趨勢強度</small><div class="score">${m.score}/100</div></div></div>${athNote}<div class="buygrid"><div class="buybox"><span class="k">現價</span><b><span id="trendLivePrice-${c}" class="${etfPriceClass(c,livePx)}">${fmt(livePx)} ${etfDailyChangeText(c,livePx)}</span></b><small id="trendLiveStamp-${c}">${etfFetchStamp()}${etfExchangeStamp(c)}</small><small>${m.action}</small></div><div class="buybox first"><span class="k">20日突破位</span><b>${trendLevelText(lv.breakout20)}</b><small>${t.brokeToday?'今日曾突破':'尚未突破'}</small></div><div class="buybox"><span class="k">強勢加碼執行帶</span><b>${trendLevelText(lv.entryLow)}–${trendLevelText(lv.entryHigh)}</b><small>突破／回踩後的小額區</small></div><div class="buybox"><span class="k">最高追價線</span><b>${trendLevelText(lv.maxChase)}</b><small>高於此價不追</small></div></div><div class="grid4"><div class="box"><span class="k">趨勢結構</span><b>${sg.trendStructure?.score??'—'}/${sg.trendStructure?.max??35}</b><small>日線＋週線，不重複逐項疊分</small></div><div class="box"><span class="k">突破品質</span><b>${sg.breakoutQuality?.score??'—'}/${sg.breakoutQuality?.max??30}</b><small>20/55日突破＋距突破位</small></div><div class="box"><span class="k">相對大盤</span><b>${sg.relativeStrength?.score??'—'}/${sg.relativeStrength?.max??20}</b><small>20日 ${pct(t.relative20)}｜60日 ${pct(t.relative60)}</small></div><div class="box"><span class="k">追價安全</span><b>${sg.chaseSafety?.score??'—'}/${sg.chaseSafety?.max??15}</b><small>距突破 ${Number.isFinite(t.distBreakAtr)?fmt(t.distBreakAtr)+' ATR':'—'}</small></div></div><div class="reading"><b>判斷：</b>${m.statusText}。${m.action}。<br><b>強度拆解：</b>${parts||'—'}<br><b>全部突破樣本：</b>${bt.signals||0}筆${bt.startDate&&bt.endDate?`｜${bt.startDate.slice(0,4)}～${bt.endDate.slice(0,4)}`:''}｜5日 ${pct(bt.avg5)}（勝率 ${pct(bt.win5)}）｜20日 ${pct(bt.avg20)}（勝率 ${pct(bt.win20)}）｜60日 ${pct(bt.avg60)}（勝率 ${pct(bt.win60)}）<br><b>風險路徑：</b>20日 MAE/MFE ${fmt(bt.avgMAE20)}% / ${fmt(bt.avgMFE20)}%｜60日 MAE/MFE ${fmt(bt.avgMAE60)}% / ${fmt(bt.avgMFE60)}%｜5日假突破 ${pct(bt.fakeBreak5Rate)}<br><b>相對大盤：</b>20日 Alpha ${pct(bt.avgAlpha20)}（${bt.alpha20Samples||0}筆）｜60日 Alpha ${pct(bt.avgAlpha60)}（${bt.alpha60Samples||0}筆）${ath.signals?`<br><b>歷史新高子樣本：</b>${ath.signals}筆｜20日 ${pct(ath.avg20)}（勝率 ${pct(ath.win20)}）｜60日 ${pct(ath.avg60)}（勝率 ${pct(ath.win60)}）｜假突破 ${pct(ath.fakeBreak5Rate)}`:''}<br><span class="note">${bt.note||''}；量價／籌碼仍不進正式強勢加碼分數，也完全不影響 ETF合理買點。</span></div><div class="row" style="margin-top:8px"><span class="note">${canRecord?'目前已符合強勢加碼模型，可將實際成交獨立記錄並驗證。':'尚未成立強勢加碼訊號；若仍買進請記為自主買入。'}</span>${canRecord?`<button class="btn primary" onclick="openTrendTrade('${c}')">記錄強勢加碼買入</button>`:''}<button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('');
 }
 async function loadTrendBuy(force=false){
+ if(document.visibilityState==='hidden'&&!force)return;
  clearTimeout(trendBuyTimer);const page=$('trendBuyPage');if(!force&&!page?.classList.contains('on'))return;
  try{const d=await get('/api/trend-entry',18000);if(!d?.ok)throw Error(d?.error||'trend-entry failed');lastTrendBuy=d;renderTrendBuy()}catch(e){const sum=$('trendBuySummary');if(sum)sum.innerHTML=`<b class="downc">強勢加碼模型暫時失敗：</b>${e.message}`}
  finally{if(page?.classList.contains('on'))trendBuyTimer=setTimeout(()=>loadTrendBuy(false),30000)}
@@ -619,7 +629,8 @@ function renderCommentary(d){
  $('commentaryFocus').innerHTML=(d.focus||[]).map(x=>`<div class="commentaryFocusCard"><div class="focusTitle"><div><b>${x.code} ${x.name||''}</b><div class="note">組合權重 ${Number.isFinite(x.weight)?x.weight.toFixed(1)+'%':'—'}｜累積 ${pct(x.totalReturnPct)}</div></div><b class="${cls(x.dayPct)}">${pct(x.dayPct)}</b></div><div class="focusText">今日貢獻 ${commentaryMoney(x.dayPnl)}｜${x.comment||''}</div></div>`).join('')||'<div class="notice">目前沒有可計算的持股行情。</div>';
  $('commentaryMarket').textContent=d.marketImpact||'—';$('commentaryAction').textContent=d.action||'—';$('commentaryConclusion').textContent=d.conclusion||'—';$('commentaryDisclaimer').textContent=d.disclaimer||'';
 }
-async function loadCommentary(force=false){clearTimeout(commentaryTimer);const page=$('commentaryPage');if(!force&&!page?.classList.contains('on'))return;try{const miniModels=Object.fromEntries(ETF.map(c=>{const m=lastBuy?.models?.[c];return[c,m&&!m.error?{price:m.price,prevClose:m.prevClose,score:m.score,chaseRisk:m.chaseRisk,hardVeto:m.hardVeto,noBuyToday:m.noBuyToday,reachability:m.reachability,raw:m.raw}:null]}));const snapshot={quotes:{...(lastLive?.quotes||{}),...(lastBuy?.quotes||{})},market:lastLive?.market||lastBuy?.market||null,breadth:lastCtx?.breadth||lastBuy?.context?.breadth||null,models:miniModels};const d=await postJSON('/api/portfolio-commentary',{holdings:H,snapshot},15000);renderCommentary(d)}catch(e){renderCommentary({ok:false,error:e.message})}finally{if(page?.classList.contains('on'))commentaryTimer=setTimeout(()=>loadCommentary(false),30000)}}
+async function loadCommentary(force=false){
+ if(document.visibilityState==='hidden'&&!force)return;clearTimeout(commentaryTimer);const page=$('commentaryPage');if(!force&&!page?.classList.contains('on'))return;try{const miniModels=Object.fromEntries(ETF.map(c=>{const m=lastBuy?.models?.[c];return[c,m&&!m.error?{price:m.price,prevClose:m.prevClose,score:m.score,chaseRisk:m.chaseRisk,hardVeto:m.hardVeto,noBuyToday:m.noBuyToday,reachability:m.reachability,raw:m.raw}:null]}));const snapshot={quotes:{...(lastLive?.quotes||{}),...(lastBuy?.quotes||{})},market:lastLive?.market||lastBuy?.market||null,breadth:lastCtx?.breadth||lastBuy?.context?.breadth||null,models:miniModels};const d=await postJSON('/api/portfolio-commentary',{holdings:H,snapshot},15000);renderCommentary(d)}catch(e){renderCommentary({ok:false,error:e.message})}finally{if(page?.classList.contains('on'))commentaryTimer=setTimeout(()=>loadCommentary(false),30000)}}
 
 function renderHoldings(){
  let val=0,cost=0,dividendTotal=0,pendingDividendTotal=0,estimatedDividendTotal=0;
@@ -647,7 +658,7 @@ function openHolding(){ $('holdingTitle').textContent='新增持股';$('editHold
 function closeHolding(){$('holdingModal').classList.remove('on')}
 function editHolding(t){const h=H.find(x=>x.t===t);if(!h)return;$('holdingTitle').textContent='編輯持股';$('editHoldingId').value=t;$('hCode').value=h.t;$('hShares').value=h.s;$('hCost').value=h.c;if($('hDividend'))$('hDividend').value=ETF.includes(t)?dividendStats(t,h).received:Number(h.dividendReceived||0);setDividendEditorMode(t);$('holdingModal').classList.add('on')}
 function saveHoldingForm(){
- const old=$('editHoldingId').value,t=$('hCode').value.trim().toUpperCase(),s=Number($('hShares').value),c=Number($('hCost').value);if(!t||!(s>0)||!(c>0))return alert('請輸入正確代號、股數、成本');
+ const old=$('editHoldingId').value,t=$('hCode').value.trim().toUpperCase(),s=Number($('hShares').value),c=Number($('hCost').value);if(!/^[A-Z0-9.^_-]{1,20}$/.test(t)||!Number.isSafeInteger(s)||s<=0||!Number.isFinite(c)||c<=0||c>1e7)return alert('請輸入正確代號、整數股數、成本');
  const prev=H.find(x=>x.t===old||x.t===t),manualDividend=Math.max(0,Number($('hDividend')?.value||0)),d=ETF.includes(t)?Number(prev?.dividendReceived??DIVIDEND_SEED[t]??0):manualDividend,dividendAsOf=ETF.includes(t)?String(prev?.dividendAsOf||DIVIDEND_SEED_ASOF):dayKey();
  H=H.filter(x=>x.t!==old&&x.t!==t);H.push(normalizeHoldingRecord({t,s,c,dividendReceived:d,dividendAsOf}));saveHoldings();closeHolding();renderHoldings();loadMarket()
 }
@@ -665,7 +676,7 @@ function renderHealth(h){$('healthSummary').innerHTML=`<div class="grid4"><div c
 
 let constituentSelected='0050',constituentCache={},constituentRequestSeq=0;
 function renderConstituentTabs(){
- const meta={0050:'50檔',0056:'50檔',00878:'官方持股',00919:'40檔'};
+ const meta={'0050':'50檔','0056':'50檔','00878':'官方持股','00919':'40檔'};
  $('constTabs').innerHTML=ETF.map(c=>{const label=meta[c]||'成分股';return `<button class="btn etftab ${c===constituentSelected?'on':''}" onclick="selectConstituent('${c}')">${c} <small>${label}</small></button>`}).join('');
 }
 function selectConstituent(c){
@@ -675,6 +686,7 @@ function selectConstituent(c){
  loadConstituentPage(false);
 }
 async function loadConstituentPage(force=false){
+ if(document.visibilityState==='hidden'&&!force)return;
  const c=constituentSelected,hit=constituentCache[c],req=++constituentRequestSeq;
  renderConstituentTabs();
  if(hit&&!force&&Date.now()-hit._loadedAt<25000){renderConstituents(hit);return}
@@ -691,8 +703,8 @@ async function loadConstituentPage(force=false){
  }
 }
 function renderConstituents(d){
- const c=d.code||constituentSelected, expected=d.expected||({0050:50,0056:50,00878:30,00919:40}[c]||0),s=d.summary||{},full=d.actual>=expected&&d.complete,model=d.usable;
- const names={0050:'元大台灣50',0056:'元大高股息',00878:'國泰永續高股息',00919:'群益台灣精選高息'};
+ const c=d.code||constituentSelected, expected=d.expected||({'0050':50,'0056':50,'00878':30,'00919':40}[c]||0),s=d.summary||{},full=d.actual>=expected&&d.complete,model=d.usable;
+ const names={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
  const displayName=names[c]||d.name||'ETF';
  const items=Array.isArray(d.items)?d.items:[];
  const nonStock=Array.isArray(d.nonStockPositions)?d.nonStockPositions:[];
@@ -718,9 +730,9 @@ function renderHistory(c){const a=HIST[c]||[],z=majorZone(c);$('majorZone').inne
 function drawHistory(a){const svg=$('historyChart');if(!a.length){svg.innerHTML='';return}const series=[['priceLast','#111827'],['first','#c23b3b'],['second','#a86500'],['third','#315f9e']],vals=a.flatMap(x=>series.map(s=>x[s[0]])).filter(Number.isFinite),lo=Math.min(...vals),hi=Math.max(...vals),W=900,H=230,pad=15,xy=(v,i)=>`${pad+i*(W-2*pad)/Math.max(1,a.length-1)},${H-pad-(v-lo)/(hi-lo||1)*(H-2*pad)}`;svg.innerHTML=series.map(([k,color])=>`<polyline fill="none" stroke="${color}" stroke-width="${k==='priceLast'?3:2}" points="${a.map((x,i)=>xy(x[k],i)).join(' ')}"/>`).join('')}
 
 function renderBacktestTabs(){$('backtestTabs').innerHTML=ETF.map(c=>`<button class="btn etftab ${c===selectedBacktest?'on':''}" onclick="selectBacktest('${c}')">${c}</button>`).join('')}
-function selectBacktest(c){selectedBacktest=c;renderBacktestTabs();$('backtestResult').innerHTML='尚未執行 '+c+' 全歷史回測。'}
+function selectBacktest(c){clearTimeout(backtestPoll);selectedBacktest=c;renderBacktestTabs();$('backtestResult').innerHTML='尚未執行 '+c+' 全歷史回測。'}
 let backtestPoll=null;
-async function runBacktest(){clearTimeout(backtestPoll);$('runBacktestBtn').disabled=true;$('backtestResult').innerHTML='正在建立TWSE官方上市日至今歷史…';try{await get('/api/history-warm?code='+selectedBacktest);const b=await get('/api/backtest?code='+selectedBacktest,30000);if(!b.ok){$('backtestResult').innerHTML=`<b class="downc">資料源錯誤：</b>${b.error||'未知錯誤'}`;return}if(!b.ready){if(b.status==='WARMING'){const p=b.progress||{};$('backtestResult').innerHTML=`<b class="amber">🟡 完整回測歷史建立中</b><br>${selectedBacktest}：${p.doneMonths||0}/${p.totalMonths||0}個月份（${p.percent||0}%）<br><span class="note">這次不會再把兩百多個月塞進同一支HTTP請求；背景完成後自動執行回測。</span>`;backtestPoll=setTimeout(runBacktest,2500);return}$('backtestResult').innerHTML=`<b class="downc">🔴 回測驗證未通過：</b>${b.error||b.status}<br><span class="note">${b.validation?`實際第一筆 ${b.validation.first||'—'}｜官方掛牌 ${b.validation.listed}｜樣本 ${b.validation.rows||0}`:''}</span>`;return}const m=b.slices.full,on=b.ab.antiChaseOn,off=b.ab.antiChaseOff,w=b.walkForward.metrics,v=b.validation,wc=m.worstCase;$('backtestResult').innerHTML=`<b>${b.code} ${b.name}｜回測資料起始 ${b.firstDate}｜資料截止 ${b.lastDate}｜${b.historyDays}日</b><br><span class="note">官方掛牌 ${b.listed}${b.code==='0050'&&b.firstDate>b.listed?'｜本模型以實際取得的長期日K樣本回測，不強求追溯至2003':''}</span><br><span class="${v.fullHistoryPass?'upc':'downc'}">${v.fullHistoryPass?'🟢 完整回測歷史PASS':'🔴 全歷史FAIL'}</span>｜OHLC覆蓋 ${fmt(v.ohlcCoveragePct)}%｜${v.precision}<br>${b.scope}${Number.isFinite(b.computeMs)?`<br><span class="note">本次價格核心計算 ${b.computeMs} ms（同一批指標／分位數共用，不改公式）</span>`:''}<div class="grid4"><div class="box"><span class="k">價格核心訊號</span><b>${m.signals}</b></div><div class="box"><span class="k">20日平均／中位</span><b>${fmt(m.avg20)}% / ${fmt(m.median20)}%</b><small>20日正報酬率 ${fmt(m.win20)}%</small></div><div class="box"><span class="k">60日最差MAE</span><b>${fmt(m.worstMAE60)}%</b><small>${wc?`${wc.signalDate}→${wc.lowDate} (${wc.precision})`:''}</small></div><div class="box"><span class="k">真正多頭參與率</span><b>${fmt(m.participationRate)}%</b><small>${m.participatedBullWindows||0}/${m.bullWindows||0}個60日多頭窗</small></div></div><div class="grid4"><div class="box"><span class="k">5/20/60日正報酬率</span><b>${fmt(m.win5)} / ${fmt(m.win20)} / ${fmt(m.win60)}%</b></div><div class="box"><span class="k">平均MAE / MFE</span><b>${fmt(m.avgMAE60)}% / ${fmt(m.avgMFE60)}%</b><small>訊號後60交易日</small></div><div class="box"><span class="k">錯失多頭窗</span><b>${m.missedUpsideWindows||0}</b><small>${fmt(m.missedBullRate)}%｜共 ${m.bullWindows||0} 個</small></div><div class="box"><span class="k">最長無訊號</span><b>${m.maxNoSignalDays??'—'}日</b><small>用來監控模型是否過度保守</small></div></div><table class="table"><thead><tr><th>區間</th><th>訊號</th><th>20日平均</th><th>60日平均</th><th>高位買入率</th><th>最長無訊號</th></tr></thead><tbody>${Object.entries(b.slices).map(([k,x])=>`<tr><td>${{full:'全歷史',y10:'近10年',y5:'近5年',y2:'近2年',y1:'近1年'}[k]}${x.signals===m.signals&&k!=='full'?'（同全歷史）':''}</td><td>${x.signals||0}</td><td>${fmt(x.avg20)}%</td><td>${fmt(x.avg60)}%</td><td>${fmt(x.highEntryRate)}%</td><td>${x.maxNoSignalDays??'—'}日</td></tr>`).join('')}</tbody></table><div class="reading"><b>防追高A/B：</b>ON 高位買入 ${fmt(on.highEntryRate)}%、真正參與率 ${fmt(on.participationRate)}%；OFF 高位買入 ${fmt(off.highEntryRate)}%、真正參與率 ${fmt(off.participationRate)}%。<br><b>價格核心回測 WF：</b>未看資料合併訊號 ${w.signals||0}，20日平均 ${fmt(w.avg20)}%，真正參與率 ${fmt(w.participationRate)}%。<br><b>防追高門檻 WF 校準：</b>${b.chaseCalibration?.ready?`警戒 ${b.chaseCalibration.warningThreshold}｜硬線 ${b.chaseCalibration.hardThreshold}｜穩定區間 ${b.chaseCalibration.stableLow}–${b.chaseCalibration.stableHigh}｜可信度 ${b.chaseCalibration.confidence}｜樣本 ${b.chaseCalibration.observations}`:`歷史樣本不足，暫用硬線 ${b.chaseCalibration?.hardThreshold??88}`}。<br><b>參與率保護：</b>候選門檻必須保留至少 ${b.chaseCalibration?.participationGuard??85}% 的追價觀察機會；價格真的回到第一層後，不再因同一個中期高檔分數重複否決。<br><b>錯失監控：</b>全歷史 ${m.missedUpsideWindows||0}/${m.bullWindows||0} 個60日多頭窗未及時參與（${fmt(m.missedBullRate)}%）；這是觀察模型是否過度保守，不會反向放寬現有Gate。${wc?`<br><b>最差案例：</b>${wc.signalDate} 買點 ${fmt(wc.entry)}，${wc.lowDate} 最低 ${fmt(wc.lowPrice)}，MAE ${fmt(wc.mae60)}%。`:''}</div>`;if(validationPageVisible())loadValidation(false)}catch(e){$('backtestResult').innerHTML='<b class="downc">回測資料連線錯誤：</b>'+e.message}finally{$('runBacktestBtn').disabled=false}}
+async function runBacktest(){const code=selectedBacktest;clearTimeout(backtestPoll);$('runBacktestBtn').disabled=true;$('backtestResult').innerHTML='正在建立TWSE官方上市日至今歷史…';try{await get('/api/history-warm?code='+code);const b=await get('/api/backtest?code='+code,30000);if(code!==selectedBacktest)return;if(!b.ok){$('backtestResult').innerHTML=`<b class="downc">資料源錯誤：</b>${b.error||'未知錯誤'}`;return}if(!b.ready){if(b.status==='WARMING'){const p=b.progress||{};$('backtestResult').innerHTML=`<b class="amber">🟡 完整回測歷史建立中</b><br>${code}：${p.doneMonths||0}/${p.totalMonths||0}個月份（${p.percent||0}%）<br><span class="note">這次不會再把兩百多個月塞進同一支HTTP請求；背景完成後自動執行回測。</span>`;backtestPoll=setTimeout(runBacktest,2500);return}$('backtestResult').innerHTML=`<b class="downc">🔴 回測驗證未通過：</b>${b.error||b.status}<br><span class="note">${b.validation?`實際第一筆 ${b.validation.first||'—'}｜官方掛牌 ${b.validation.listed}｜樣本 ${b.validation.rows||0}`:''}</span>`;return}const m=b.slices.full,on=b.ab.antiChaseOn,off=b.ab.antiChaseOff,w=b.walkForward.metrics,v=b.validation,wc=m.worstCase;$('backtestResult').innerHTML=`<b>${b.code} ${b.name}｜回測資料起始 ${b.firstDate}｜資料截止 ${b.lastDate}｜${b.historyDays}日</b><br><span class="note">官方掛牌 ${b.listed}${b.code==='0050'&&b.firstDate>b.listed?'｜本模型以實際取得的長期日K樣本回測，不強求追溯至2003':''}</span><br><span class="${v.fullHistoryPass?'upc':'downc'}">${v.fullHistoryPass?'🟢 完整回測歷史PASS':'🔴 全歷史FAIL'}</span>｜OHLC覆蓋 ${fmt(v.ohlcCoveragePct)}%｜${v.precision}<br>${b.scope}${Number.isFinite(b.computeMs)?`<br><span class="note">本次價格核心計算 ${b.computeMs} ms（同一批指標／分位數共用，不改公式）</span>`:''}<div class="grid4"><div class="box"><span class="k">價格核心訊號</span><b>${m.signals}</b></div><div class="box"><span class="k">20日平均／中位</span><b>${fmt(m.avg20)}% / ${fmt(m.median20)}%</b><small>20日正報酬率 ${fmt(m.win20)}%</small></div><div class="box"><span class="k">60日最差MAE</span><b>${fmt(m.worstMAE60)}%</b><small>${wc?`${wc.signalDate}→${wc.lowDate} (${wc.precision})`:''}</small></div><div class="box"><span class="k">真正多頭參與率</span><b>${fmt(m.participationRate)}%</b><small>${m.participatedBullWindows||0}/${m.bullWindows||0}個60日多頭窗</small></div></div><div class="grid4"><div class="box"><span class="k">5/20/60日正報酬率</span><b>${fmt(m.win5)} / ${fmt(m.win20)} / ${fmt(m.win60)}%</b></div><div class="box"><span class="k">平均MAE / MFE</span><b>${fmt(m.avgMAE60)}% / ${fmt(m.avgMFE60)}%</b><small>訊號後60交易日</small></div><div class="box"><span class="k">錯失多頭窗</span><b>${m.missedUpsideWindows||0}</b><small>${fmt(m.missedBullRate)}%｜共 ${m.bullWindows||0} 個</small></div><div class="box"><span class="k">最長無訊號</span><b>${m.maxNoSignalDays??'—'}日</b><small>用來監控模型是否過度保守</small></div></div><table class="table"><thead><tr><th>區間</th><th>訊號</th><th>20日平均</th><th>60日平均</th><th>高位買入率</th><th>最長無訊號</th></tr></thead><tbody>${Object.entries(b.slices).map(([k,x])=>`<tr><td>${{full:'全歷史',y10:'近10年',y5:'近5年',y2:'近2年',y1:'近1年'}[k]}${x.signals===m.signals&&k!=='full'?'（同全歷史）':''}</td><td>${x.signals||0}</td><td>${fmt(x.avg20)}%</td><td>${fmt(x.avg60)}%</td><td>${fmt(x.highEntryRate)}%</td><td>${x.maxNoSignalDays??'—'}日</td></tr>`).join('')}</tbody></table><div class="reading"><b>防追高A/B：</b>ON 高位買入 ${fmt(on.highEntryRate)}%、真正參與率 ${fmt(on.participationRate)}%；OFF 高位買入 ${fmt(off.highEntryRate)}%、真正參與率 ${fmt(off.participationRate)}%。<br><b>價格核心回測 WF：</b>未看資料合併訊號 ${w.signals||0}，20日平均 ${fmt(w.avg20)}%，真正參與率 ${fmt(w.participationRate)}%。<br><b>防追高門檻 WF 校準：</b>${b.chaseCalibration?.ready?`警戒 ${b.chaseCalibration.warningThreshold}｜硬線 ${b.chaseCalibration.hardThreshold}｜穩定區間 ${b.chaseCalibration.stableLow}–${b.chaseCalibration.stableHigh}｜可信度 ${b.chaseCalibration.confidence}｜樣本 ${b.chaseCalibration.observations}`:`歷史樣本不足，暫用硬線 ${b.chaseCalibration?.hardThreshold??88}`}。<br><b>參與率保護：</b>候選門檻必須保留至少 ${b.chaseCalibration?.participationGuard??85}% 的追價觀察機會；價格真的回到第一層後，不再因同一個中期高檔分數重複否決。<br><b>錯失監控：</b>全歷史 ${m.missedUpsideWindows||0}/${m.bullWindows||0} 個60日多頭窗未及時參與（${fmt(m.missedBullRate)}%）；這是觀察模型是否過度保守，不會反向放寬現有Gate。${wc?`<br><b>最差案例：</b>${wc.signalDate} 買點 ${fmt(wc.entry)}，${wc.lowDate} 最低 ${fmt(wc.lowPrice)}，MAE ${fmt(wc.mae60)}%。`:''}</div>`;if(validationPageVisible())loadValidation(false)}catch(e){$('backtestResult').innerHTML='<b class="downc">回測資料連線錯誤：</b>'+e.message}finally{$('runBacktestBtn').disabled=false}}
 const SPEC=[
 [1,'保留V12.3原功能','大盤、持股、明日環境、判斷說明保留'],[2,'夜盤正負號','成交－參考價自行重算'],[3,'夜盤資訊重定義','相對參考價／距今晚最高分離'],[4,'夜盤1/3/5/15分動能','短線方向與高檔回落／低檔反彈'],[5,'08:45→08:57盤前','08:45台指期日盤先行＋08:59:30鎖定'],[6,'盤前置頂','08:57–09:00提高優先'],[7,'允許今日無買點','不每天硬生買價'],[8,'四檔獨立模型','各自參數與歷史'],[9,'第一動態買點區','區間、30秒重估'],[10,'三層價格','第一／理想／強力'],[11,'評分制','價格、環境、健康、追高綜合'],[12,'三層買進行為','分批而非全有全無'],[13,'硬Gate','資料失效／嚴重追高／急殺'],[14,'防追高','5/20/60/120/250與乖離漲速'],[15,'買點漂移','買點上修限速'],[16,'新高重新定錨','中樞慢速確認'],[17,'歷史動態買價','30秒底層紀錄'],[18,'同步市場實價','抓追高／下逃'],[19,'重複買點去重','UI折疊、維持時間保留'],[20,'主要買點區','近7日時間加權'],[21,'完整成分引擎','不足覆蓋就不計分'],[22,'成分熱力格','名稱＋漲跌＋ETF權重'],[23,'成分健康度','每ETF獨立'],[24,'分歧／背離','權重式判斷'],[25,'健康度放ETF下面','與標的一體'],[26,'成分自動換版','新有效日保存版本'],[27,'歷史成分有效日','無版本就不倒灌今天成分'],[28,'市場廣度','母體＋漲跌平＋比例'],[29,'海外風險層','NASDAQ／SOX／TSM ADR／台指夜盤'],[30,'環境避免偏科','多來源共同計分，單一市場不主導'],[31,'我的持股保留','股數成本市值損益報酬'],[32,'持股與買點分離','最新需求：私人頁不塞買點'],[33,'持股10秒更新','同步市值損益'],[34,'資料逾時保護','逾時硬Gate'],[35,'回前景刷新','visibilitychange立即抓'],[36,'不同更新頻率','行情10秒／模型30秒'],[37,'四檔全歷史回測','上市日起'],[38,'歷史切片','10/5/2/1年只作檢查'],[39,'價格核心回測 WF','訓練選參數→下一年驗證'],[40,'除息／還原權息','調整後OHLC避免假跌'],[41,'防追高A/B','ON/OFF全歷史比較'],[42,'回測多KPI','5/20/60、MAE、參與率、錯過上漲'],[43,'可信度','樣本長度與資料覆蓋'],[44,'台股顏色','紅漲綠跌'],[45,'版本文字','全站V12.4']
 ];
@@ -852,16 +864,28 @@ async function runDeepValidation(){
 
 function modelSyncSaveLocal(){saveJSON('v124_model_trades',MODEL_TRADES);saveJSON('v124_model_trade_pending_deletes',MODEL_PENDING_DELETES)}
 function modelTradeClean(t){const x=JSON.parse(JSON.stringify(t));delete x._syncDirty;delete x._cloudUpdatedAt;return x}
-function markModelTradeDirty(t){if(!t)return;t._syncDirty=true;t._syncUpdatedAt=new Date().toISOString()}
+function markModelTradeDirty(t){if(!t)return;t._syncDirty=true;t._syncUpdatedAt=new Date(Math.max(Date.now(),(Date.parse(t._syncUpdatedAt)||0)+1)).toISOString()}
 async function modelSyncFetch(url,opts={}){
+ // Updating only the frontend must never initialize holdings using the older
+ // backend, which does not acknowledge the already-included pending IDs.
+ if(opts.method&&opts.method!=='GET'&&url!=='/api/model-sync/login'&&!SYNC_SERVER_VERIFIED){
+  const status=await modelSyncFetch('/api/model-sync/status');
+  if(status.build!==CLIENT_BUILD)throw Error('前後端版本不同，已暫停寫入；請一起部署 server.js 與 public 資料夾');
+  SYNC_SERVER_VERIFIED=true;
+ }
  // All holdings/model-trade requests share the same 429 cooldown; failed writes retain their pending IDs.
  await apiTrafficPermit();
- const c=new AbortController(),tm=setTimeout(()=>c.abort(),10000);
+ const {timeoutMs=30000,...requestOpts}=opts;
+ const c=new AbortController(),tm=setTimeout(()=>c.abort(),timeoutMs);
  try{
-  const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opts.headers||{})},...opts,signal:c.signal});
+  const r=await fetch(url,{...requestOpts,cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json',...(requestOpts.headers||{})},signal:c.signal});
   const body=await r.text();apiTrafficCheckResponse(r,body);
-  let d={};try{d=JSON.parse(body)}catch(_){}
-  if(!r.ok){const e=Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}
+  let d;try{d=JSON.parse(body)}catch(_){throw Error('同步服務回傳非JSON內容｜'+url)}
+  if(!r.ok||d?.ok!==true){const e=Error(d?.error||('同步服務未確認成功｜HTTP '+r.status));e.status=r.status;throw e}
+  if((url==='/api/model-trades'||url==='/api/holdings-sync')&&(!opts.method||opts.method==='GET')){
+   SYNC_SERVER_VERIFIED=d.build===CLIENT_BUILD;
+   if(!SYNC_SERVER_VERIFIED)throw Error('前後端版本不同，資料已保留；請一起部署 server.js 與 public 資料夾');
+  }
   return d;
  }catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(tm)}
 }
@@ -871,31 +895,36 @@ async function loadDividendAuto(force=false){
  if(!force&&DIVIDEND_AUTO.lastAt&&Date.now()-Date.parse(DIVIDEND_AUTO.lastAt)<300000)return;
  DIVIDEND_AUTO.busy=true;
  try{
-  const d=await modelSyncFetch('/api/dividend-auto');
+  const d=await modelSyncFetch('/api/dividend-auto',{timeoutMs:60000});
+  if(!ETF.every(c=>d.byCode?.[c]&&Number.isFinite(Number(d.byCode[c].received))))throw Error('四檔股息資料未齊全');
   if(d?.ok){
    DIVIDEND_AUTO.ready=true;DIVIDEND_AUTO.byCode=d.byCode||{};DIVIDEND_AUTO.snapshotDay=d.snapshotDay||null;DIVIDEND_AUTO.source=d.source||null;DIVIDEND_AUTO.lastAt=d.fetchedAt||new Date().toISOString();
-   DIVIDEND_AUTO.message=`四檔全自動｜持股快照 ${String(d.snapshotDay||'建立中').replaceAll('-','/')}`;
+   DIVIDEND_AUTO.sourceReady=ETF.every(c=>d.byCode[c].sourceOk===true);
+   DIVIDEND_AUTO.message=(DIVIDEND_AUTO.sourceReady?'四檔股息資料已確認':'股息基準可用；部分官方配息來源待重試')+`｜持股快照 ${String(d.snapshotDay||'建立中').replaceAll('-','/')}`;
    normalizeAllModelTradeTotalReturns();renderHoldings();renderModelTrades();
   }
- }catch(e){DIVIDEND_AUTO.ready=false;DIVIDEND_AUTO.message='股息自動同步暫時失敗，先顯示已重建基準值'}
- finally{DIVIDEND_AUTO.busy=false}
+ }catch(e){DIVIDEND_AUTO.ready=false;DIVIDEND_AUTO.sourceReady=false;DIVIDEND_AUTO.message='股息更新失敗，保留最後資料：'+e.message}
+ finally{DIVIDEND_AUTO.busy=false;renderModelTrades()}
 }
 
 function modelSyncBar(){
  const st=MODEL_SYNC.status,synced=st==='ready',degraded=st==='degraded',usable=MODEL_SYNC.ready,locked=st==='locked',setup=st==='setup',err=st==='error',pending=MODEL_TRADES.filter(t=>t._syncDirty).length+MODEL_PENDING_DELETES.length;
- const tag=synced?'🟢 已同步':degraded?'🟡 自動重試中':locked?'🔒 未解鎖':setup?'🟡 尚未設定':'🟡 '+(err?'同步異常':'連線中');
+ const tag=synced&&!pending?'🟢 已同步':synced?'🟡 待同步':degraded?'🟡 自動重試中':locked?'🔒 未解鎖':setup?'🟡 尚未設定':'🟡 '+(err?'同步異常':'連線中');
  const htag=HOLDINGS_PENDING_TRADES.length?`｜持股🟡待同步${HOLDINGS_PENDING_TRADES.length}筆`:HOLDINGS_MANUAL_DIRTY?'｜持股🟡本機調整待確認':HOLDINGS_SYNC.ready?'｜持股🟢':'｜持股⚪';
- const dtag=DIVIDEND_AUTO.ready?'｜股息🟢':'｜股息⚪';
+ const dtag=DIVIDEND_AUTO.ready&&DIVIDEND_AUTO.sourceReady?'｜股息🟢 已確認':DIVIDEND_AUTO.ready?'｜股息🟡 資料待齊':'｜股息⚪ 待確認';
+ const allReady=synced&&!pending&&HOLDINGS_SYNC.ready&&!HOLDINGS_PENDING_TRADES.length&&!HOLDINGS_MANUAL_DIRTY&&DIVIDEND_AUTO.ready&&DIVIDEND_AUTO.sourceReady;
+ const overall=allReady?'全部同步完成':'同步尚未全部完成';
  const at=MODEL_SYNC.lastAt?`｜${new Date(MODEL_SYNC.lastAt).toLocaleTimeString('zh-TW',{hour12:false})}`:'';
  const pend=pending?`｜待同步 ${pending}筆`:'';
  const buttons=usable
   ? `<div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn" onclick="syncAllCloud(true)">立即同步</button><button class="btn" onclick="uploadThisHoldingsToCloud()">上傳此裝置持股</button><button class="btn" onclick="downloadCloudHoldings()">下載雲端持股</button></div>`
   : `<button class="btn primary" onclick="connectModelSync()">設定同步碼</button>`;
- return `<div class="notice"><div class="row"><div><b>模型實戰雲端：${tag}${htag}${dtag}</b><div class="note">${MODEL_SYNC.message||''}${pend}${HOLDINGS_SYNC.message?'｜'+HOLDINGS_SYNC.message:''}${DIVIDEND_AUTO.message?'｜'+DIVIDEND_AUTO.message:''}${at}</div></div>${buttons}</div></div>`;
+ return `<div class="notice"><div class="row"><div><b>${overall}｜交易紀錄：${tag}${htag}${dtag}</b><div class="note">${escapeHTML(MODEL_SYNC.message||'')}${pend}${HOLDINGS_SYNC.message?'｜'+escapeHTML(HOLDINGS_SYNC.message):''}${DIVIDEND_AUTO.message?'｜'+escapeHTML(DIVIDEND_AUTO.message):''}${at}</div></div>${buttons}</div></div>`;
 }
+function escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
 async function flushPendingHoldingsTrades(){
- if(HOLDINGS_OP_BUSY||!MODEL_SYNC.ready||!HOLDINGS_PENDING_TRADES.length)return;
+ if(HOLDINGS_OP_BUSY||HOLDINGS_PUSH_BUSY||!MODEL_SYNC.ready||!HOLDINGS_PENDING_TRADES.length)return;
  HOLDINGS_OP_BUSY=true;
  try{
   while(HOLDINGS_PENDING_TRADES.length&&MODEL_SYNC.ready){
@@ -912,21 +941,23 @@ async function flushPendingHoldingsTrades(){
   HOLDINGS_SYNC.message=`尚有 ${HOLDINGS_PENDING_TRADES.length} 筆持股待同步，本機股數已保留：${e.message||'暫時無法連線'}`;
  }finally{
   HOLDINGS_OP_BUSY=false;
-  // Refresh the canonical cloud portfolio promptly after the queue is acknowledged.
-  if(!HOLDINGS_PENDING_TRADES.length&&MODEL_SYNC.ready&&!HOLDINGS_SYNC.busy)void syncHoldingsCloud(true);
+  renderModelTrades();
  }
 }
 async function syncHoldingsCloud(force=false){
- if(HOLDINGS_SYNC.busy||!MODEL_SYNC.ready)return;
+ if(HOLDINGS_SYNC.busy||HOLDINGS_PUSH_BUSY||!MODEL_SYNC.ready)return;
  HOLDINGS_SYNC.busy=true;
  try{
   await flushPendingHoldingsTrades();
   if(HOLDINGS_PENDING_TRADES.length){
    HOLDINGS_SYNC.ready=false;
-   HOLDINGS_SYNC.message=`持股尚有 ${HOLDINGS_PENDING_TRADES.length} 筆成交待同步；保留本機股數，避免被舊雲端資料覆蓋`;
+   // Preserve the actual apply-trade error so failed operations are diagnosable.
    return;
   }
   if(HOLDINGS_MANUAL_DIRTY){
+   // In-session edits may upload automatically using a known cloud revision.
+   // Offline edits after a reload still require the explicit reviewed upload.
+   if(HOLDINGS_SYNC.cloudUpdatedAt){await pushHoldingsCloud();if(!HOLDINGS_MANUAL_DIRTY)return}
    HOLDINGS_SYNC.ready=false;
    HOLDINGS_SYNC.message='本機持股有手動修改尚未確認上傳，為避免覆蓋已暫停雲端下載；請核對後按「上傳此裝置持股」';
    return;
@@ -934,10 +965,11 @@ async function syncHoldingsCloud(force=false){
   const atRevision=HOLDINGS_LOCAL_REV,remoteRevision=HOLDINGS_REMOTE_REV;
   const d=await modelSyncFetch('/api/holdings-sync');
   if(HOLDINGS_LOCAL_REV!==atRevision||HOLDINGS_REMOTE_REV!==remoteRevision||HOLDINGS_PENDING_TRADES.length||HOLDINGS_MANUAL_DIRTY){
+   HOLDINGS_SYNC.ready=false;
    HOLDINGS_SYNC.message='同步期間有新持股變更，已保留本機資料；下一輪重試';
    return;
   }
-  if(!d.ok)throw Error(d.error||'雲端持股讀取失敗');
+  if(d.initialized&&!Array.isArray(d.holdings))throw Error('雲端持股格式不完整，本機資料已保留');
   if(!d.initialized){
    HOLDINGS_SYNC.ready=false;
    HOLDINGS_SYNC.message='雲端尚無持股；請在持股正確的裝置按「上傳此裝置持股」';
@@ -946,34 +978,40 @@ async function syncHoldingsCloud(force=false){
    persistHoldingsLocal();renderHoldings();HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
    const h50=H.find(x=>x.t==='0050');
    HOLDINGS_SYNC.message='持股已從雲端載入'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
-   await loadDividendAuto(force);
   }
   HOLDINGS_SYNC.lastAt=d.fetchedAt||new Date().toISOString();
  }catch(e){
-  HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股雲端暫時連不上，本機持股仍保留';
- }finally{HOLDINGS_SYNC.busy=false}
+  HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股同步失敗，本機持股已保留：'+e.message;
+ }finally{HOLDINGS_SYNC.busy=false;renderModelTrades()}
 }
 
 async function uploadThisHoldingsToCloud(){
  if(!MODEL_SYNC.ready)return alert('請先設定同步碼');
+ if(HOLDINGS_PUSH_BUSY)return;
+ if(HOLDINGS_SYNC.busy)await syncHoldingsCloud(false);
  await flushPendingHoldingsTrades();
- if(HOLDINGS_PENDING_TRADES.length)return alert('仍有模型交易正在等待同步，為避免重複加股，請待交易完成後再上傳整份持股。');
- const h50=H.find(x=>x.t==='0050'),label=h50?`0050 ${Number(h50.s).toLocaleString()}股／均價 ${Number(h50.c).toFixed(2)}`:'目前沒有0050';
- if(!confirm(`將「這台裝置」的持股覆蓋到雲端。\\n${label}\\n\\n確定嗎？`))return;
+ HOLDINGS_PUSH_BUSY=true;
  try{
-  const revision=HOLDINGS_LOCAL_REV;
-  const d=await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:H,expectedUpdatedAt:HOLDINGS_SYNC.cloudUpdatedAt})});
+  const cloud=await modelSyncFetch('/api/holdings-sync');
+  if(cloud.initialized&&HOLDINGS_PENDING_TRADES.length)return alert('成交持股尚未同步成功：'+HOLDINGS_SYNC.message);
+  const label=H.map(h=>`${h.t} ${Number(h.s).toLocaleString()}股／均價 ${Number(h.c).toFixed(2)}`).join('\n');
+  if(!confirm(`${cloud.initialized?'將這台裝置的持股覆蓋到雲端':'使用這台裝置的持股初始化雲端；現有待同步成交會一併確認，不會重複加股'}。\n${label}\n\n確定嗎？`))return;
+  const revision=HOLDINGS_LOCAL_REV,snapshot=JSON.parse(JSON.stringify(H)),includedTradeIds=cloud.initialized?[]:HOLDINGS_PENDING_TRADES.map(t=>t.id);
+  const d=await modelSyncFetch('/api/holdings-sync',{method:'POST',body:JSON.stringify({holdings:snapshot,expectedUpdatedAt:cloud.updatedAt||null,includedTradeIds})});
   if(!d.ok)throw Error(d.error||'雲端未確認上傳');
+  const acknowledged=new Set(d.includedTradeIds||[]);
+  HOLDINGS_PENDING_TRADES=HOLDINGS_PENDING_TRADES.filter(t=>!acknowledged.has(t.id));persistPendingHoldingsOps();
   HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
   if(HOLDINGS_LOCAL_REV===revision&&!HOLDINGS_PENDING_TRADES.length)setHoldingsManualDirty(false);
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='已以上傳的這台裝置持股覆蓋雲端';
-  await loadDividendAuto(true);
-  await syncHoldingsCloud(true);renderModelTrades();
   alert('雲端持股已更新。現在可到手機按「下載雲端持股」。');
- }catch(e){alert('上傳失敗：'+(e.message||'未知錯誤'))}
+ }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股上傳失敗：'+e.message;alert('上傳失敗：'+(e.message||'未知錯誤'))}
+ finally{HOLDINGS_PUSH_BUSY=false;renderModelTrades()}
+ await syncAllCloud(true);
 }
 async function downloadCloudHoldings(){
  if(!MODEL_SYNC.ready)return alert('請先設定同步碼');
+ if(HOLDINGS_PUSH_BUSY)return alert('持股正在上傳，完成後再下載。');
  if(HOLDINGS_PENDING_TRADES.length||HOLDINGS_MANUAL_DIRTY)return alert('這台裝置還有尚未同步的持股變更，不能下載舊雲端資料覆蓋。請先完成同步或確認上傳。');
  try{
   const revision=HOLDINGS_LOCAL_REV,remoteRevision=HOLDINGS_REMOTE_REV;
@@ -1002,16 +1040,16 @@ async function pushHoldingsCloud(){
   if(HOLDINGS_LOCAL_REV===revision&&!HOLDINGS_PENDING_TRADES.length)setHoldingsManualDirty(false);
   HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.lastAt=new Date().toISOString();HOLDINGS_SYNC.message='持股已同步';
   await loadDividendAuto(true);
- }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股上傳失敗，本機修改保留；請核對雲端持股後重新上傳'}
- finally{HOLDINGS_PUSH_BUSY=false}
+ }catch(e){HOLDINGS_SYNC.ready=false;HOLDINGS_SYNC.message='持股上傳失敗，本機修改已保留：'+e.message}
+ finally{HOLDINGS_PUSH_BUSY=false;renderModelTrades()}
 }
 async function syncAllCloud(force=false){
- if(CLOUD_SYNC_ALL_BUSY)return;CLOUD_SYNC_ALL_BUSY=true;
+ if(document.visibilityState==='hidden'&&!force)return;
  try{
   await syncModelTrades(force);
   if(MODEL_SYNC.ready){await syncHoldingsCloud(force);await loadDividendAuto(force)}
   renderModelTrades();
- }finally{CLOUD_SYNC_ALL_BUSY=false}
+ }finally{renderModelTrades()}
 }
 
 async function connectModelSync(){
@@ -1029,15 +1067,18 @@ async function syncDirtyModelTrades(){
   try{await modelSyncFetch('/api/model-trades/'+encodeURIComponent(id),{method:'DELETE'});MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(x=>x!==id)}
   catch(e){if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.status='locked'};throw e}
  }
- const dirty=MODEL_TRADES.filter(t=>t._syncDirty);
- if(dirty.length)await modelSyncFetch('/api/model-trades/import',{method:'POST',body:JSON.stringify({trades:dirty.map(modelTradeClean)})});
- dirty.forEach(t=>t._syncDirty=false);modelSyncSaveLocal();
+ const dirty=MODEL_TRADES.filter(t=>t._syncDirty).map(modelTradeClean),sent=new Map(dirty.map(t=>[t.id,JSON.stringify(t)]));
+ if(dirty.length)await modelSyncFetch('/api/model-trades/import',{method:'POST',body:JSON.stringify({trades:dirty})});
+ // A performance refresh or user edit during upload is a new unsent revision.
+ for(const t of MODEL_TRADES)if(sent.get(t.id)===JSON.stringify(modelTradeClean(t)))t._syncDirty=false;
+ modelSyncSaveLocal();
 }
 async function syncModelTrades(force=false){
  if(MODEL_SYNC.busy)return;MODEL_SYNC.busy=true;
  try{
   let d=await modelSyncFetch('/api/model-trades');
-  MODEL_SYNC.ready=true;MODEL_SYNC.knownUnlocked=true;MODEL_SYNC.status='ready';MODEL_SYNC.message='Supabase 為正式來源；本機 localStorage 為離線備援。';saveJSON('v124_model_sync_known_unlocked',true);
+  if(!Array.isArray(d.trades)||!Array.isArray(d.deletedIds))throw Error('雲端交易格式不完整，本機紀錄已保留');
+  MODEL_SYNC.ready=true;MODEL_SYNC.knownUnlocked=true;MODEL_SYNC.status='checking';MODEL_SYNC.message='正在合併交易紀錄';saveJSON('v124_model_sync_known_unlocked',true);
   if(!d.initialized&&MODEL_TRADES.length){
    MODEL_TRADES.forEach(markModelTradeDirty);modelSyncSaveLocal();
    await syncDirtyModelTrades();
@@ -1050,9 +1091,13 @@ async function syncModelTrades(force=false){
    await syncDirtyModelTrades();
    d=await modelSyncFetch('/api/model-trades');
   }
-  MODEL_TRADES=(Array.isArray(d.trades)?d.trades:[]).map(t=>({...t,_syncDirty:false}));
+  if(!Array.isArray(d.trades)||!Array.isArray(d.deletedIds))throw Error('雲端交易格式不完整，本機紀錄已保留');
+  const pendingDeletes=new Set(MODEL_PENDING_DELETES),cloudDeleted=new Set(d.deletedIds);
+  const merged=new Map(d.trades.filter(t=>!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id)).map(t=>[t.id,{...t,_syncDirty:false}]));
+  for(const t of MODEL_TRADES)if(t._syncDirty&&!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id))merged.set(t.id,t);
+  MODEL_TRADES=[...merged.values()];
   const deleted=new Set(d.deletedIds||[]);MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(id=>!deleted.has(id));
-  modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();MODEL_SYNC.status='ready';MODEL_SYNC.message='雲端同步完成；手機／電腦以 trade ID 雙向合併。';renderModelTrades();
+  modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();MODEL_SYNC.status='ready';MODEL_SYNC.message='交易紀錄已校對；以交易ID合併手機／電腦資料。';renderModelTrades();
  }catch(e){
   if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.knownUnlocked=false;saveJSON('v124_model_sync_known_unlocked',false);MODEL_SYNC.status='locked';MODEL_SYNC.message='這台裝置尚未輸入同步碼。'}
   else if(e.status===503){MODEL_SYNC.ready=false;MODEL_SYNC.status='setup';MODEL_SYNC.message='Render 尚缺 MODEL_SYNC_KEY / Supabase 環境設定。'}
@@ -1105,7 +1150,7 @@ function openManualTrade(code){
 function closeModelTrade(){$('modelTradeModal').classList.remove('on')}
 function saveModelTrade(){
  const code=$('mtCode').value,price=Number($('mtPrice').value),shares=Number($('mtShares').value),mode=$('mtTradeType').value,manual=mode==='manual',trendMode=mode==='trend',tradeType=manual?'manual':'model',modelFamily=manual?'manual':trendMode?'trend':'reasonable',layer=(manual||trendMode)?null:Number($('mtLayer').value);
- if(!(price>0)||!(shares>0)||(!manual&&!trendMode&&![1,2,3].includes(layer)))return alert(manual?'請確認成交價與股數':trendMode?'請確認成交價與股數':'請確認成交價、股數與層級');
+ if(!Number.isFinite(price)||price<=0||price>1e7||!Number.isSafeInteger(shares)||shares<=0||(!manual&&!trendMode&&![1,2,3].includes(layer)))return alert(manual?'請確認成交價與整數股數':trendMode?'請確認成交價與整數股數':'請確認成交價、整數股數與層級');
  let snapshot=null,signalText='';
  if(trendMode){
   const m=lastTrendBuy?.models?.[code];if(!m?.ok)return alert('強勢加碼模型尚未載入');
@@ -1123,7 +1168,7 @@ function saveModelTrade(){
  markModelTradeDirty(trade);MODEL_TRADES.push(trade);modelSyncSaveLocal();
  // Exactly one local increment + one idempotent cloud operation per NEW trade ID.
  queueHoldingsTrade(trade);
- closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncModelTrades(true);
+ closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncAllCloud(true);
  if(manual)addEvent(`${code} 已記錄自主買入（未觸發模型）：${shares}股 @ ${price.toFixed(2)}｜當下模型：${signalText}`,'trade');
  else if(trendMode)addEvent(`${code} 已記錄強勢加碼實戰並同步持股：${shares}股 @ ${price.toFixed(2)}｜${signalText}`,'trade');
  else addEvent(`${code} 已記錄合理買點模型第${layer}層實戰並同步持股：${shares}股 @ ${price.toFixed(2)}`,'trade');
@@ -1144,9 +1189,9 @@ async function refreshModelTradePerformance(){
    if(p?.ok){
     const prev=t.perf&&typeof t.perf==='object'?t.perf:{};
     // 盤後/跨日若資料源暫時沒有 currentPrice，不准把最後有效損益洗成空值。
-    if(!Number.isFinite(Number(p.currentPrice))&&Number.isFinite(Number(prev.currentPrice)))p.currentPrice=prev.currentPrice;
-    if(!Number.isFinite(Number(p.currentReturnPct))&&Number.isFinite(Number(prev.currentReturnPct)))p.currentReturnPct=prev.currentReturnPct;
-    if(!Number.isFinite(Number(p.currentPnLPerShare))&&Number.isFinite(Number(prev.currentPnLPerShare)))p.currentPnLPerShare=prev.currentPnLPerShare;
+    if(!hasNumber(p.currentPrice)&&hasNumber(prev.currentPrice))p.currentPrice=prev.currentPrice;
+    if(!hasNumber(p.currentReturnPct)&&hasNumber(prev.currentReturnPct))p.currentReturnPct=prev.currentReturnPct;
+    if(!hasNumber(p.currentPnLPerShare)&&hasNumber(prev.currentPnLPerShare))p.currentPnLPerShare=prev.currentPnLPerShare;
     t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true
    }
   }catch(e){if(e?.status===429)break}
@@ -1227,7 +1272,7 @@ function modelNetMetrics(t){
   const base=entry*shares;
   return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null};
  }
- const base=entry*shares,divPerShare=modelTradeDividendPerShare(t),totalRet=Number(p?.currentTotalReturnPct);
+ const base=entry*shares,divPerShare=modelTradeDividendPerShare(t),totalRet=hasNumber(p?.currentTotalReturnPct)?Number(p.currentTotalReturnPct):null;
  const gross=Number.isFinite(totalRet)&&base>0?totalRet/100*base:
    (Number.isFinite(px)&&Number.isFinite(entry)?(px+divPerShare-entry)*shares:null);
  const cost=fubonEstimatedTradeCost(entry,shares,px);
@@ -1291,7 +1336,7 @@ function renderModelTrades(){
  const table=hist.length?`<div class="trade-table-wrap"><table class="trade-table"><thead><tr><th>日期</th><th>ETF</th><th>層級</th><th>買價</th><th>股數</th><th>目前含息</th><th>MAE</th><th>MFE</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="notice">此篩選條件沒有交易紀錄。</div>';
  $('modelTradeList').innerHTML=modelSyncBar()+attentionHtml+controls+table;
 }
-async function loadHistoryStatus(){
+async function loadHistoryStatus(){if(document.visibilityState==='hidden')return;
  try{
   const d=await get('/api/history-status');HISTORY_STATUS=d.history||[];
   $('historyBuildStatus').innerHTML=HISTORY_STATUS.map(x=>{
@@ -1307,7 +1352,7 @@ function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys')
 
 function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(()=>{if(document.visibilityState!=='hidden')loadHistoryStatus()},60000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy()}
 migrate1689Existing0050Trade();
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if($('trendBuyPage')?.classList.contains('on'))loadTrendBuy(false);syncAllCloud(false)}})
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if($('trendBuyPage')?.classList.contains('on'))loadTrendBuy(false);if($('commentaryPage')?.classList.contains('on'))loadCommentary(false);if($('constituentPage')?.classList.contains('on'))loadConstituentPage(false);syncAllCloud(false)}})
 setInterval(()=>{
  const p=document.getElementById('constituentPage');
  if(p?.classList.contains('on'))loadConstituentPage(false);
@@ -1325,4 +1370,11 @@ loadMarket=apiSingleFlight(loadMarket);
 loadSlow=apiSingleFlight(loadSlow);
 loadNight=apiSingleFlight(loadNight);
 loadBuy=apiSingleFlight(loadBuy);
+syncAllCloud=apiSingleFlight(syncAllCloud);
+syncModelTrades=apiSingleFlight(syncModelTrades);
+syncHoldingsCloud=apiSingleFlight(syncHoldingsCloud);
+flushPendingHoldingsTrades=apiSingleFlight(flushPendingHoldingsTrades);
+loadDividendAuto=apiSingleFlight(loadDividendAuto);
+loadTrendBuy=apiSingleFlight(loadTrendBuy);
+loadCommentary=apiSingleFlight(loadCommentary);
 setInterval(setMode,30000);boot();
