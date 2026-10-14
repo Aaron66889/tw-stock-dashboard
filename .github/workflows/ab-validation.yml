@@ -5,6 +5,7 @@ on:
       - feature/ab-performance-validation-20261013
       - fix/trend-b-advisory-20261013
       - feature/trend-ab-forward-ledger-20261013
+      - fix/four-etf-dividend-forecast-20261014
   pull_request:
     paths:
       - 'public/model-ab.js'

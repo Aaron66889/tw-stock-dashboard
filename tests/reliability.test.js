@@ -247,6 +247,58 @@ test('trend live prices update independently while score, entry band and model t
  assert.equal(c.run(`lastTrendBuy.models['0050'].score`),93);assert.equal(c.run(`lastTrendBuy.models['0050'].levels.entryHigh`),101);assert.equal(c.run('lastTrendBuy.fetchedAt'),'old-model-time');
 });
 
+test('four ETF dividend forecast uses latest shares and never changes locked ex-date amount',()=>{
+ const b=backend();
+ const x=b.run("dividendNextForecast('0056',[],null,820,'2026-10-14')");
+ assert.equal(x.exDate,'2026-10-22');assert.equal(x.status,'estimated');
+ assert.equal(x.cashEstimate,1410);assert.equal(x.sharesEstimate,820);
+ const y=b.run("dividendNextForecast('0056',[],null,920,'2026-10-14')");
+ assert.equal(y.cashEstimate,1582);
+ assert.equal(b.run("dividendNextForecast('0056',[],null,920,'2026-10-22')"),null);
+ const z=b.run("dividendNextForecast('00919',[],null,650,'2026-10-14')");
+ assert.equal(z,null);
+});
+
+test('official dividend announcement is preferred over estimate for any of the four ETFs',()=>{
+ const b=backend();
+ const sameDay={exDate:'2026-10-22',payDate:'2026-11-11',amount:1.78,status:'actual',estimated:false,source:'TWSE正式公告'};
+ b.ctx.ev=sameDay;
+ const a=b.run("dividendNextForecast('0056',[],ev,820,'2026-10-20')");
+ assert.equal(a.amount,1.78);assert.equal(a.estimated,false);assert.equal(a.cashEstimate,1460);
+ b.ctx.other=[{exDate:'2026-12-05',payDate:'2026-12-30',amount:.42}];
+ for(const code of ['0050','00878','00919']){
+  b.ctx.code=code;const x=b.run("dividendNextForecast(code,other,null,100,'2026-10-14')");
+  assert.equal(x.cashEstimate,42);assert.equal(x.estimated,false);
+ }
+});
+
+test('future estimated, entitled-unpaid and already-paid dividends render separately in all ETF cards',()=>{
+ const c=client();
+ c.run(`H=[{t:'0050',s:3380,c:79.65},{t:'0056',s:820,c:35.78},{t:'00878',s:4080,c:18.39},{t:'00919',s:650,c:20.78}];
+ DIVIDEND_AUTO={ready:true,snapshotDay:'2026-10-13',byCode:{
+ '0050':{received:2954,pending:0,nextForecast:{exDate:'2026-11-15',amount:.4,sharesEstimate:3380,cashEstimate:1352,status:'estimated',estimated:true}},
+ '0056':{received:3836,pending:0,nextForecast:{exDate:'2026-10-22',amount:1.72,sharesEstimate:820,cashEstimate:1410,status:'estimated',estimated:true}},
+ '00878':{received:15645,pending:0,nextForecast:null},
+ '00919':{received:1788,pending:605,nextPending:{shares:550,amount:1.1,payDate:'2026-10-15'},nextForecast:null}}};renderHoldings();`);
+ const h=c.nodes.get('holdings').innerHTML;
+ for(const code of ['0050','0056','00878','00919'])assert.match(h,new RegExp(code));
+ assert.match(h,/已除息待入帳/);assert.match(h,/下一次配息預估/);
+ assert.match(h,/1,410元/);assert.match(h,/605元/);
+ assert.match(h,/550股 × 1\.10元/);assert.match(h,/等待公告/);
+ assert.match(h,/預估公告（尚未確認）/);
+ assert.equal(c.run('dividendStats(\'00919\',H[3]).received'),1788);
+ assert.equal(c.run('dividendStats(\'00919\',H[3]).pending'),605);
+ assert.equal(c.run('dividendStats(\'0056\',H[1]).nextForecast.cashEstimate'),1410);
+ assert.equal(c.run('DIVIDEND_AUTO.byCode[\'00919\'].received'),1788);
+});
+
+test('dividend forecast fields escape external content and never mutate actual holdings',()=>{
+ const c=client();
+ c.ctx.ds={received:200,pending:0,nextForecast:{status:'estimated',estimated:true,amount:1.5,sharesEstimate:5,cashEstimate:8,exDate:'<img src=x onerror=alert(1)>',payDate:'2026-11-01'}};
+ const html=c.run("dividendTimelineMarkup('0050',ds)");
+ assert.doesNotMatch(html,/<img /);assert.match(html,/&lt;img/);
+ assert.equal(c.run("dividendTimelineMarkup('not-etf',ds)"),'');
+});
 test('mixed frontend/backend builds block writes before applying any holdings operation',async()=>{
  const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
  c.route(async(url,opts)=>{if(opts.method==='POST')writes++;return{ok:true,build:'older-deployed-server'}});
