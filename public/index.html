@@ -26,11 +26,33 @@
 @keyframes priceFlashUp{0%,55%{color:#ff5b63!important;text-shadow:0 0 9px rgba(255,91,99,.45)}100%{color:inherit;text-shadow:none}}
 @keyframes priceFlashDown{0%,55%{color:#39c987!important;text-shadow:0 0 9px rgba(57,201,135,.4)}100%{color:inherit;text-shadow:none}}
 </style>
+<style>
+#signalAlertsCard{padding:12px 16px}
+.signal-alert-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.signal-alert-actions{display:flex;gap:6px;flex-wrap:wrap}
+#signalAlertRecent{font-size:12px;margin-top:6px;line-height:1.5;color:#b7c5da}
+#signalAlertToasts{position:fixed;top:12px;right:12px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:min(94vw,390px);pointer-events:none}
+.signal-alert-toast{background:#172a46;color:#fff;border:1px solid #52b0eb;border-left:4px solid #f1b04e;border-radius:12px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:13px;line-height:1.5}
+.signal-alert-toast strong{display:block;margin-bottom:3px;font-size:15px}
+</style>
 </head><body><main>
 <div class="top"><div><div class="eyebrow">台股戰情｜V12.4｜16.8.101 同步修正版</div><h1 id="modeTitle">正在載入市場</h1><div id="modeNote" class="note">即時價格10秒｜模型30秒</div></div><div class="pills"><span id="mode" class="pill">載入中</span><span id="freshPill" class="pill warn">資料檢查中</span></div></div>
 <nav class="topnav">
 <button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF合理買點</button><button class="navb" data-page="trendBuyPage">ETF強勢加碼</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
 </nav>
+<section id="signalAlertsCard" class="card">
+<div class="signal-alert-bar">
+<div><b>買點桌面提醒</b><div id="signalAlertStatus" class="note">通知功能載入中</div></div>
+<div class="signal-alert-actions">
+<button id="signalAlertEnable" type="button" class="btn primary" onclick="SignalAlerts.enable()">啟用提醒</button>
+<button id="signalAlertSound" type="button" class="btn" onclick="SignalAlerts.toggleSound()">提示音：開</button>
+<button id="signalAlertTest" type="button" class="btn" onclick="SignalAlerts.test()">測試通知</button>
+</div>
+</div>
+<div id="signalAlertRecent" aria-live="polite">同一檔同一類正式訊號，每個交易日只提醒一次。</div>
+<div class="note">僅開著此網站分頁時有效；切換其他工作視窗可由Chrome通知。瀏覽器可能限制背景更新，無法保證逐秒通知。提醒不代表下單指令。</div>
+</section>
+<div id="signalAlertToasts" role="status" aria-live="polite"></div>
 
 <div id="home" class="page on">
 <section id="preopenCard" class="card"><div class="sectiontitle">08:57 盤前預測三層</div><div id="preopenSummary" class="reading">尚未建立今日盤前基準。</div></section>
@@ -137,4 +159,4 @@
 <div class="field" id="mtLayerField"><label>依模型哪一層買入</label><select id="mtLayer" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px"><option value="1">第一層</option><option value="2">第二／理想層</option><option value="3">第三／強力層</option></select></div>
 <div id="mtSnapshot" class="reading"></div><button id="mtSaveBtn" class="btn primary" style="width:100%;margin-top:12px" onclick="saveModelTrade()">保存這筆模型實戰</button></div></div>
 
-<script src="/app.js?v=16.8.101-SYNC-RELIABILITY"></script><script src="/model-ab.js?v=ab-20261013"></script><script src="/trend-shadow-b-ui.js?v=trend-b-20261013"></script><script src="/trend-forward-ui.js?v=ab-ledger-20261013"></script></body></html>
+<script src="/signal-alerts.js?v=20261014-a1"></script><script src="/app.js?v=16.8.101-SIGNAL-ALERTS-20261014"></script><script src="/model-ab.js?v=ab-20261013"></script><script src="/trend-shadow-b-ui.js?v=trend-b-20261013"></script><script src="/trend-forward-ui.js?v=ab-ledger-20261013"></script></body></html>
