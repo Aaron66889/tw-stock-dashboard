@@ -37,6 +37,16 @@ jobs:
           const unauth=await fetch(base+'/api/dividend-auto', {signal:AbortSignal.timeout(15000)});
           if(unauth.status!==401)throw Error('Sensitive dividend API authentication changed: '+unauth.status);
           console.log('DIVIDEND_PUBLIC_SMOKE PASS: 4-ETF preview UI shipped; private dividend API requires auth');
+          for(const t of ['id="signalAlertsCard"', 'id="signalAlertEnable"', 'id="signalAlertTest"', '/signal-alerts.js'])
+            if(!html.includes(t))throw Error('Signal notification UI missing '+t);
+          if(html.indexOf('/signal-alerts.js')>=html.indexOf('/app.js?v='))throw Error('Notifier script loads after model');
+          const alertScript=await (await get('/signal-alerts.js')).text();
+          for(const t of ['observeLayers','observeTrend','requestPermission','Notification','signalAlertToasts'])
+            if(!alertScript.includes(t))throw Error('Notifier missing '+t);
+          for(const t of ['SignalAlerts?.observeLayers(STATE,lastBuy,lastLive)','SignalAlerts?.observeTrend(d,lastLive)','SignalAlerts?.monitoring()'])
+            if(!stockUI.includes(t))throw Error('Model signal hook missing '+t);
+          console.log('SIGNAL_ALERT_SMOKE PASS: opt-in desktop notification controls, live model hooks and scripts loaded');
+
           const state = await (await get('/api/model-sync/status')).json();
           if (!state.supabaseConfigured) throw Error('Supabase not configured: persistent forward ledger unavailable');
           const forward = await (await get('/api/trend-ab-forward', 55000)).json();
