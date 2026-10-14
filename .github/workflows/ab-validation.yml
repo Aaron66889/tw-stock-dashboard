@@ -6,11 +6,14 @@ on:
       - fix/trend-b-advisory-20261013
       - feature/trend-ab-forward-ledger-20261013
       - fix/four-etf-dividend-forecast-20261014
+      - feature/desktop-signal-alerts-20261014
   pull_request:
     paths:
       - 'public/model-ab.js'
       - 'public/index.html'
       - 'public/app.js'
+      - 'public/signal-alerts.js'
+      - 'tests/signal-alerts.test.js'
       - 'tests/reliability.test.js'
       - 'tests/model-ab.test.js'
       - 'trend-shadow-b.js'
@@ -30,6 +33,6 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
-      - run: npm run check
+      - run: npm run check && node --check public/signal-alerts.js
       - run: node --check trend-shadow-b.js && node --check public/trend-shadow-b-ui.js && node --check trend-forward-ledger.js && node --check public/trend-forward-ui.js
       - run: npm test
