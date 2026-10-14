@@ -79,5 +79,22 @@ jobs:
             }
           }
           if (!result) throw err;
+
+          // 2026-10-14 read-only check for whether the 00919 official A strong-add signal was actually observed.
+          const now = new Date().toISOString();
+          const feed = await (await get('/api/trend-ab-forward', 55000)).json();
+          const todayRows = (feed.events||[]).filter(e=>String(e.code)==='00919'&&String(e.signalDate||e.firstObservedAt||'').startsWith('2026-10-14'));
+          console.log('CHECK_00919_FORWARD', JSON.stringify({
+             observedAt:now,asOf:feed.asOf,scanStatus:feed.scanStatus,lastScanAt:feed.lastScanAt,
+             eventCount:feed.eventCount,all00919:(feed.events||[]).filter(e=>e.code==='00919').length,
+             todayRows:todayRows.map(e=>({code:e.code,signalDate:e.signalDate,firstObservedAt:e.firstObservedAt,
+               firstPrice:e.firstPrice,entryPrice:e.entryPrice,a:e.a,b:e.b,modelStatus:e.modelStatus}))
+          }));
+          const market = await (await get('/api/trend-entry', 65000)).json();
+          const m = market.models?.['00919'];
+          console.log('CHECK_00919_CURRENT', JSON.stringify({at:market.fetchedAt,ok:m?.ok,
+            status:m?.status,statusText:m?.statusText,score:m?.score,price:m?.price,
+            action:m?.action,levels:m?.levels,shadowB:m?.shadowB?.status,error:m?.error}));
+
           console.log('PRODUCTION SMOKE PASS',JSON.stringify(result));
           NODE
