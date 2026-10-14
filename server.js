@@ -3076,7 +3076,7 @@ async function dividendAutoReport(){
  }
  // One migrated entitlement that occurred before the automatic snapshot start but pays after it.
  for(const [key,v] of Object.entries(DIVIDEND_BOOTSTRAP_LOCKS)){const cur=state.locked[key];const needsCorrection=!cur||Number(cur.shares)!==Number(v.shares)||Number(cur.cash)!==Number(v.cash)||Number(cur.amount)!==Number(v.amount)||String(cur.payDate||'')!==String(v.payDate||'');if(needsCorrection){state.locked[key]={...v,key,lockedAt:cur?.lockedAt||new Date().toISOString(),correctedAt:new Date().toISOString(),snapshotDay:'migration'};dirty=true}}
- const [fetched,announcementReport]=await Promise.all([Promise.all(ETF.map(async code=>{try{return[code,await twseDividendEvents(code)]}catch(e){return[code,{ok:false,events:[],errors:[e.message],source:'TWSE ETF e添富'}]}})),twseDistributionAnnouncementMap().catch(e=>({ok:false,byCode:{},errors:[e.message],source:'TWSE ETF e添富收益分配公告'}))]);
+ const [fetched,announcementReport]=await Promise.all([Promise.all(ETF.map(async code=>{try{return[code,await twseDividendEvents(code)]}catch(e){return[code,{ok:false,events:[],errors:[e.message],source:'TWSE ETF e添富'}]}})),deadline(twseDistributionAnnouncementMap().catch(e=>({ok:false,byCode:{},errors:[e.message],source:'TWSE ETF e添富收益分配公告'})),10000,{ok:false,byCode:{},errors:['收益分配公告查詢超過10秒；本次使用已確認配息資料'],source:'TWSE ETF e添富收益分配公告'})]);
  const sourceByCode=Object.fromEntries(fetched),announcementByCode=announcementReport?.byCode||{},allEvents={};
  for(const [code,d] of fetched){
   const events=(d?.events||[]).map(e=>({...e,code,exDate:e.exDate||e.date})).filter(e=>e.exDate&&e.payDate&&Number(e.amount)>0).sort((a,b)=>a.exDate.localeCompare(b.exDate));
