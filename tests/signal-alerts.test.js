@@ -34,6 +34,8 @@ function client({permission='granted',enabled=false,sound=false}={}){
   window:{Notification:NotificationMock,addEventListener:()=>{},focus:()=>{},setPage:page=>calls.pages.push(page),loadTrendBuy:()=>{calls.trend++}}
  });
  vm.runInContext(fs.readFileSync(path.join(root,'public/signal-alerts.js'),'utf8'),ctx);
+ // In a real browser, window fields are global names. The VM uses a separate window mock.
+ ctx.SignalAlerts=ctx.window.SignalAlerts;
  return{ctx,db,dom,notifications,toasts,seen,calls,run:code=>vm.runInContext(code,ctx)};
 }
 function trend(overrides={}){
