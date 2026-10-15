@@ -57,6 +57,27 @@ jobs:
           console.log('LIVE_PNL_QUOTE',{price:q?.last,quoteDate:q?.date,serverFetchedAt:q?.serverFetchedAt,source:q?.source,realtime:q?.realtime});
           console.log('TRADE_PNL_SMOKE PASS: latest quote marking, no stale cached-return priority, periodic trade UI update');
 
+          const appChecks=['function tradeMaturedHorizon(t,k)', 'function modelBenchmarkDelta(t,metrics=modelNetMetrics(t))',
+            "p.pathBasis!=='post-entry-full-sessions-v1'", 'unknownCount=allMetrics.length-allPnls.length',
+            'const jobs=MODEL_TRADES.filter(t=>!t.exitAt).slice().sort'];
+          for(const t of appChecks)if(!stockUI.includes(t))throw Error('Performance consistency patch missing: '+t);
+          const testPerf=await (await get('/api/trade-performance?code=0050&entryDate=2026-10-13&entryPrice=112.50',55000)).json();
+          if(!testPerf.ok)throw Error('Performance API unhealthy: '+JSON.stringify(testPerf).slice(0,400));
+          if(![null,'post-entry-full-sessions-v1'].includes(testPerf.pathBasis??null))
+            throw Error('Wrong performance path basis '+testPerf.pathBasis);
+          for(const k of [5,20,60]){
+            const h=testPerf.horizon?.[k];
+            if(h&&(!h.date||h.date<='2026-10-13'))throw Error('Invalid '+k+'d maturity '+JSON.stringify(h));
+          }
+          const mae=testPerf.maePct,mfe=testPerf.mfePct;
+          if(mae!=null&&mae>0.000001)throw Error('MAE must not be positive '+mae);
+          if(mfe!=null&&mfe<-.000001)throw Error('MFE must not be negative '+mfe);
+          console.log('FULL_PERFORMANCE_SMOKE PASS',JSON.stringify({
+             pathBasis:testPerf.pathBasis,pathSamples:testPerf.pathSamples,
+             quoteSource:testPerf.currentPriceSource,mae,mfe,maturedHorizonKeys:[5,20,60].filter(k=>testPerf.horizon?.[k])
+          }));
+
+
 
           const state = await (await get('/api/model-sync/status')).json();
           if (!state.supabaseConfigured) throw Error('Supabase not configured: persistent forward ledger unavailable');
