@@ -2742,10 +2742,10 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
  const pathSamples=postEntryRows.filter(x=>tradeActualField(x,'low')>0||tradeActualField(x,'high')>0||tradeActualField(x,'close')>0).length;
  return{ok:true,status:'READY',code,entryDate,entryPrice:ep,...immediate,horizon,benchmark,
   benchmarkDeltaCurrentPct:Number.isFinite(immediate.currentReturnPct)&&Number.isFinite(benchmark.currentReturnPct)?immediate.currentReturnPct-benchmark.currentReturnPct:null,
-  maePct:min?(min.price/ep-1)*100:null,mfePct:max?(max.price/ep-1)*100:null,maeDate:min?.date||null,mfeDate:max?.date||null,
+  maePct:min?Math.min(0,(min.price/ep-1)*100):null,mfePct:max?Math.max(0,(max.price/ep-1)*100):null,maeDate:min?.date||null,mfeDate:max?.date||null,
   maeDetail:min?{date:min.date,marketPrice:min.marketPrice,dividendPerShare:min.dividendPerShare,economicPrice:min.price}:null,
   mfeDetail:max?{date:max.date,marketPrice:max.marketPrice,dividendPerShare:max.dividendPerShare,economicPrice:max.price}:null,
-  priceMaePct:priceMin?(priceMin.price/ep-1)*100:null,priceMfePct:priceMax?(priceMax.price/ep-1)*100:null,
+  priceMaePct:priceMin?Math.min(0,(priceMin.price/ep-1)*100):null,priceMfePct:priceMax?Math.max(0,(priceMax.price/ep-1)*100):null,
   layerReachBasis:TRADE_RETURN_VERSION,pathBasis:'post-entry-full-sessions-v1',pathSamples,pathStartDate:postEntryRows[0]?.date||null,
   // Layer-reach diagnostics also use the economic price (market low + entitled dividend), so an ex-dividend gap cannot fake an L2/L3 touch.
   reachedLayer2:Number.isFinite(l2)&&min?min.price<=l2:false,reachedLayer3:Number.isFinite(l3)&&min?min.price<=l3:false,
