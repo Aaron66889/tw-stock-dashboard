@@ -41,7 +41,7 @@ test('independent ticks, 90 seconds without a new low and rebound are all requir
  assert.equal(x.observations,4);assert.ok(x.bounce>=x.bounceRequired);
  const html=h.api.panel('0050',h.model,h.layers,h.quote,h.data);
  assert.match(html,/可評估自主小額試單/);
- assert.match(html,/非正式模型訊號/);assert.match(html,/10～20%/);
+ assert.match(html,/非正式模型訊號/);assert.match(html,/不應追價/);
 });
 test('fresh new intraday low cancels previous stabilization immediately',()=>{
  const h=harness();h.obs();
