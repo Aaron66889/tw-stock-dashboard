@@ -116,6 +116,24 @@ jobs:
           }
           console.log('CRASH_GATE_RESEARCH_SMOKE PASS',JSON.stringify({date:study.asOfDate,proxy:study.marketProxy,rows}));
 
+          const buyModelAudit=await(await get('/api/buy-model',45000)).json();
+          if(!buyModelAudit.ok)throw Error('Official buy model API unavailable during research audit: '+JSON.stringify(buyModelAudit).slice(0,420));
+          const audits=[];
+          for(const code of ['0050','0056','00878','00919']){
+            const audit=buyModelAudit.researchGateAudit?.[code],m=buyModelAudit.models?.[code];
+            if(!audit || !Array.isArray(audit.flags) || audit.flags.length!==4)
+              throw Error('No live Gate audit for '+code);
+            if(!m || !Object.prototype.hasOwnProperty.call(m,'hardVeto'))
+              throw Error('Official A model missing for '+code);
+            audits.push({code,score:m.score,officialVeto:m.hardVeto,reason:m.hardVetoReason,
+              oldCount:audit.existing.flagCount,independentCount:audit.independent.flagCount,
+              doubleCountRisk:audit.doubleCountRisk,evidenceComplete:audit.evidenceComplete,
+              hits:audit.flags.filter(f=>f.hit).map(f=>f.id)});
+          }
+          console.log('CRASH_GATE_LIVE_AUDIT PASS',JSON.stringify({
+             fetchedAt:buyModelAudit.fetchedAt,dataFresh:buyModelAudit.dataFresh,audits}));
+
+
           const state = await (await get('/api/model-sync/status')).json();
           if (!state.supabaseConfigured) throw Error('Supabase not configured: persistent forward ledger unavailable');
           const forward = await (await get('/api/trend-ab-forward', 55000)).json();
