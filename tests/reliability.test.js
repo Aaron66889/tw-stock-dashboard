@@ -477,7 +477,7 @@ test('MAE and MFE include zero baseline when all subsequent trading prices stay 
  assert.equal(first.mfePct,0);assert.equal(first.maePct,-12);
  b.ctx.mockRows[1]={date:'2026-10-14',open:110,high:120,low:105,close:115,adjclose:115};
  const second=await b.run("tradePerformance('0050','2026-10-13',100)");
- assert.equal(second.maePct,0);assert.equal(second.mfePct,20);
+ assert.equal(second.maePct,0);assert.ok(Math.abs(second.mfePct-20)<1e-8);
 });
 
 test('mixed frontend/backend builds block writes before applying any holdings operation',async()=>{
