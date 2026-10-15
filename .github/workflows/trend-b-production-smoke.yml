@@ -60,6 +60,45 @@ jobs:
             if(!dipCode.includes(text))throw Error('Third layer bounce-in-gap repair not live: '+text);
           console.log('DIP_GAP_REBOUND_SMOKE PASS: L3 touched then resumed within bounded rebound tracking range');
 
+          if(!html.includes('id="gateBlockedLedger"') || !html.includes('/gate-blocked-ui.js'))
+            throw Error('New blocked-opportunity UI not deployed');
+          if(html.indexOf('/gate-blocked-ui.js')>=html.indexOf('/app.js?v='))
+            throw Error('Blocked ledger UI loaded after official buy model script');
+          if(!stockUI.includes('window.GateBlockedUI?.load(false)'))
+            throw Error('Blocked ledger lazy-navigation hook not live');
+          const gateUi=await(await get('/gate-blocked-ui.js')).text();
+          for(const t of ['gate-blocked-forward','未下單','不影響即時行情與買入模型'])
+            if(!gateUi.includes(t))throw Error('Gate blocked UI caution/cache absent: '+t);
+          const started=Date.now();
+          const report=await(await get('/api/gate-blocked-forward',22000)).json();
+          const reportMs=Date.now()-started;
+          if(!report.ok || report.storageReady!==true || report.version!=='gate-blocked-forward-v1'||
+            !Array.isArray(report.events)||report.events.length>80||!report.limitations)
+            throw Error('Persistent blocked opportunity report invalid: '+JSON.stringify(report).slice(0,700));
+          for(const code of ['0050','0056','00878','00919']){
+            const row=report.summary?.byCode?.[code];
+            if(!row || typeof row.events!=='number' || !row.byLayer?.L1 || !row.byLayer?.L2 || !row.byLayer?.L3)
+              throw Error('Incomplete per-ETF/layer summary '+code);
+            for(const k of [5,20,60]){
+              const m=row.byHorizon?.[k];
+              if(!m || m.matured>row.events)throw Error('Invalid matured horizon for '+code+' '+k);
+            }
+          }
+          if(reportMs>18000)throw Error('New background report too slow: '+reportMs+'ms');
+          const buyDurations=[];
+          for(let i=0;i<3;i++){
+            const tick=Date.now(),buy=await(await get('/api/buy-model',17000)).json();
+            buyDurations.push(Date.now()-tick);
+            if(!buy.ok||!buy.models?.['0050']||!buy.models?.['0056']||!buy.models?.['00878']||!buy.models?.['00919'])
+              throw Error('Official buy model regressed after blocked-ledger update');
+          }
+          if(buyDurations.some(x=>x>15000))
+            throw Error('Official buy model has unacceptable response latency '+JSON.stringify(buyDurations));
+          console.log('GATE_BLOCKED_FORWARD_SMOKE PASS',JSON.stringify({
+            asOf:report.asOf,events:report.eventCount,storageReady:report.storageReady,
+            reportMs,buyModelMs:buyDurations,scanner:report.scanStatus}));
+
+
 
 
           for (const t of ['function tradeMarkPrice(t)', 'function modelNetMetrics(t)', "source:'ETF即時行情'", 'priceSource:mark.source']) {
