@@ -47,7 +47,7 @@ jobs:
             if(!stockUI.includes(t))throw Error('Model signal hook missing '+t);
           console.log('SIGNAL_ALERT_SMOKE PASS: opt-in desktop notification controls, live model hooks and scripts loaded');
 
-          for (const t of ['function tradeMarkPrice(t)', 'function modelNetMetrics(t)', "priceSource:'ETF即時行情'", "source:'ETF即時行情'"]) {
+          for (const t of ['function tradeMarkPrice(t)', 'function modelNetMetrics(t)', "source:'ETF即時行情'", 'priceSource:mark.source']) {
             if (!stockUI.includes(t)) throw Error('Production PnL mark-to-market patch is not live: '+t);
           }
           if(!stockUI.includes('LAST_MODEL_TRADE_MARK_RENDER_AT') || !stockUI.includes('renderModelTrades()'))
