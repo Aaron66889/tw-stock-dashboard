@@ -202,7 +202,8 @@ test('complete formal models render all four ETFs, history and 45 validation slo
  const models=clone(b.run(`Object.fromEntries(ETF.map(code=>[code,modelOne(code,quotes[code],history,{score:30,parts:[]},null,true)]))`));
  c.ctx.models=models;c.ctx.quotes=b.ctx.quotes;
  c.run(`lastLive={quotes};lastBuy={models,quotes,dataFresh:true,tradingDates:[]};updateState();renderAllModel();setPage('model');renderSpecs(true);`);
- assert.equal((c.nodes.get('buyCards').innerHTML.match(/記錄模型買入/g)||[]).length,4);
+ assert.equal((c.nodes.get('buyCards').innerHTML.match(/模型買點未確認/g)||[]).length,4);
+ assert.equal((c.nodes.get('buyCards').innerHTML.match(/disabled title="尚未通過正式模型買入許可/g)||[]).length,4);
  assert.equal((c.nodes.get('specGrid').innerHTML.match(/class="spec /g)||[]).length,45);
  assert.match(c.nodes.get('validationSummary').innerHTML,/交易核心/);
 });
