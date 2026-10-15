@@ -1261,14 +1261,27 @@ function modelTradeThroughDay(t){
  return dayKey();
 }
 function modelTradeDividendPerShare(t){
- const p=t?.perf||{},entry=Number(t?.entryPrice),entryDate=String(t?.entryDate||''),through=modelTradeThroughDay(t),vals=[];
- const direct=Number(p.accruedDividendPerShare);if(Number.isFinite(direct)&&direct>=0)vals.push(direct);
- const elig=(p.eligibleDividends||[]).reduce((sum,e)=>sum+(Number(e?.amount)||0),0);if(elig>0)vals.push(elig);
- const locks=DIVIDEND_AUTO?.byCode?.[t?.code]?.locks||[];
- const locked=locks.filter(e=>String(e?.exDate||'')>entryDate&&String(e?.exDate||'')<=through).reduce((sum,e)=>sum+(Number(e?.amount)||0),0);if(locked>0)vals.push(locked);
- const known=(DIVIDEND_KNOWN_FUTURE?.[t?.code]||[]).filter(e=>String(e?.exDate||'')>entryDate&&String(e?.exDate||'')<=through).reduce((sum,e)=>sum+(Number(e?.amount)||0),0);if(known>0)vals.push(known);
- if(entry>0){for(const h of Object.values(p.horizon||{})){const pr=Number(h?.priceReturnPct),tr=Number(h?.totalReturnPct);if(Number.isFinite(pr)&&Number.isFinite(tr)&&tr>=pr){const d=entry*(tr-pr)/100;if(d>=0)vals.push(d)}}}
- return vals.length?Math.max(...vals):0;
+ const p=t?.perf||{},entryDate=String(t?.entryDate||''),through=modelTradeThroughDay(t),eligible=new Map();
+ const add=(e)=>{
+  const exDate=String(e?.exDate||e?.date||''),amount=Number(e?.amount);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(exDate)||!(amount>0)||exDate<=entryDate||exDate>through)return;
+  // Same ex-date across TWSE, locked entitlement and client fallback is one
+  // dividend, not three. Prefer source-backed entries to inferred aggregates.
+  if(!eligible.has(exDate))eligible.set(exDate,amount);
+ };
+ (p.eligibleDividends||[]).forEach(add);
+ (DIVIDEND_AUTO?.byCode?.[t?.code]?.locks||[]).forEach(add);
+ (DIVIDEND_KNOWN_FUTURE?.[t?.code]||[]).forEach(add);
+ if(eligible.size)return Math.round([...eligible.values()].reduce((sum,amount)=>sum+amount,0)*10000)/10000;
+ // Backward compatibility only if official backend already confirmed earned
+ // entitlement on/before through date. A 5/20/60-day future-horizon dividend
+ // must NEVER create today's cash return.
+ if(p.returnBasis===TRADE_RETURN_REQUIRED&&p.dividendDataComplete===true
+   &&p.updatedAt&&String(p.updatedAt).slice(0,10)<=through&&String(p.updatedAt).slice(0,10)>=entryDate
+   &&hasNumber(p.accruedDividendPerShare)){
+  return Math.max(0,Number(p.accruedDividendPerShare));
+ }
+ return 0;
 }
 function normalizeModelTradeTotalReturn(t){
  if(!t?.perf||t?.exitAt)return false;
@@ -1285,17 +1298,24 @@ function normalizeModelTradeTotalReturn(t){
 function normalizeAllModelTradeTotalReturns(){let changed=false;for(const t of MODEL_TRADES)if(normalizeModelTradeTotalReturn(t))changed=true;if(changed)modelSyncSaveLocal();return changed}
 function modelTradePathMetricsReady(t){
  const p=t?.perf||{},div=modelTradeDividendPerShare(t);
+ if(p.status!=='READY'||!hasNumber(p.maePct)||!hasNumber(p.mfePct))return false;
  if(div<=0)return true;
  if(p.returnBasis===TRADE_RETURN_REQUIRED)return true;
- // Backward-compatible readiness check: some deployed backend builds already calculate
- // the corrected total-return path but still label returnBasis as v1. Trust the data
- // only when dividend entitlement exists and the total-return path is demonstrably
- // different from the raw price-only path.
+ // Legacy corrected paths are admissible only when both the price-only and
+ // earned-dividend paths have explicit non-null values and entitlement evidence.
  const nums=['maePct','mfePct','priceMaePct','priceMfePct','currentTotalReturnPct','currentPriceReturnPct'];
- const complete=nums.every(k=>Number.isFinite(Number(p[k])))&&Array.isArray(p.eligibleDividends)&&p.eligibleDividends.length>0&&('reachedLayer2' in p)&&('reachedLayer3' in p);
- if(!complete)return false;
- const changed=Math.abs(Number(p.currentTotalReturnPct)-Number(p.currentPriceReturnPct))>1e-6||Math.abs(Number(p.maePct)-Number(p.priceMaePct))>1e-6||Math.abs(Number(p.mfePct)-Number(p.priceMfePct))>1e-6;
- return changed;
+ if(!nums.every(k=>hasNumber(p[k]))||!Array.isArray(p.eligibleDividends)||!p.eligibleDividends.length)return false;
+ return Math.abs(Number(p.currentTotalReturnPct)-Number(p.currentPriceReturnPct))>1e-6||
+  Math.abs(Number(p.maePct)-Number(p.priceMaePct))>1e-6||
+  Math.abs(Number(p.mfePct)-Number(p.priceMfePct))>1e-6;
+}
+function tradeMetricNumber(v){return hasNumber(v)?Number(v):null}
+function tradePathMetric(t,key){return modelTradePathMetricsReady(t)?tradeMetricNumber(t?.perf?.[key]):null}
+function modelBenchmarkDelta(t,metrics=modelNetMetrics(t)){
+ const bench=Number(t?.perf?.benchmark?.entryPrice),entry=Number(t?.entryPrice),px=metrics?.currentPrice,
+  cash=modelTradeDividendPerShare(t);
+ if(!(bench>0&&entry>0&&Number.isFinite(px)&&px>0))return null;
+ return((px+cash)/entry-(px+cash)/bench)*100;
 }
 // Mark-to-market uses the same acknowledged ETF quote as the holdings cards.
 // Never put an old /api/trade-performance total-return percentage ahead of a
@@ -1321,9 +1341,9 @@ function tradeMarkPrice(t){
 function modelNetMetrics(t){
  const p=t?.perf,entry=Number(t?.entryPrice),shares=Number(t?.shares),base=entry*shares;
  if(t?.exitAt){
-  const gross=Number(t.realizedPnL),exit=Number(t.exitPrice),cost=fubonEstimatedTradeCost(entry,shares,exit);
+  const exit=Number(t.exitPrice),rawGross=t.realizedPnL,gross=hasNumber(rawGross)?Number(rawGross):null,cost=fubonEstimatedTradeCost(entry,shares,exit);
   const net=Number.isFinite(gross)&&Number.isFinite(cost)?gross-cost:null;
-  return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null,currentPrice:exit,priceSource:'已結束'};
+  return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null,currentPrice:exit>0?exit:null,priceSource:'已結束'};
  }
  const mark=tradeMarkPrice(t),px=mark.price,divPerShare=modelTradeDividendPerShare(t);
  const gross=Number.isFinite(px)&&Number.isFinite(entry)&&Number.isSafeInteger(shares)&&shares>0
@@ -1343,7 +1363,8 @@ function tradeDiagnosticLabel(t){
  if(pathReady&&Number.isFinite(p.maePct)&&p.maePct<=-1)parts.push('進場後曾有較深回撤');
  if(pathReady&&family==='reasonable'&&t.layer===1&&p.reachedLayer2)parts.push('L1後續曾到L2，需檢查是否偏早');
  if(!pathReady&&modelTradeDividendPerShare(t)>0)parts.push('除息路徑等待後端含息重算');
- if(Number.isFinite(p.benchmarkDeltaCurrentPct))parts.push(p.benchmarkDeltaCurrentPct>=0?'目前優於同日開盤直接買':'目前落後同日開盤直接買');
+ const benchmarkDelta=modelBenchmarkDelta(t,m);
+ if(Number.isFinite(benchmarkDelta))parts.push(benchmarkDelta>=0?'目前優於同日開盤直接買':'目前落後同日開盤直接買');
  if(Number.isFinite(m.ret)&&Math.abs(m.ret)<.5)parts.push('目前仍屬小幅波動');
  return parts.join('｜');
 }
@@ -1351,11 +1372,11 @@ function tradeDiagnosticLabel(t){
 function performanceDiagnosticPayload(){
  const modelTrades=MODEL_TRADES.filter(t=>t.tradeType!=='manual'),reasonableTrades=modelTrades.filter(t=>modelFamilyOf(t)==='reasonable'),trendTrades=modelTrades.filter(t=>modelFamilyOf(t)==='trend'),byLayer={};
  for(const layer of [1,2,3]){
-  const a=reasonableTrades.filter(t=>Number(t.layer)===layer),pathA=a.filter(modelTradePathMetricsReady),mae=pathA.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfe=pathA.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),bdelta=a.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);
+  const a=reasonableTrades.filter(t=>Number(t.layer)===layer),pathA=a.filter(modelTradePathMetricsReady),mae=pathA.map(t=>tradePathMetric(t,'maePct')).filter(Number.isFinite),mfe=pathA.map(t=>tradePathMetric(t,'mfePct')).filter(Number.isFinite),rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),bdelta=a.map(t=>modelBenchmarkDelta(t)).filter(Number.isFinite);
   byLayer[layer]={trades:a.length,avgNetReturnPct:mean(rets),avgMAEPct:mean(mae),avgMFEPct:mean(mfe),reachedNextLayer:layer<3?a.filter(t=>layer===1?t.perf?.reachedLayer2:t.perf?.reachedLayer3).length:null,avgBenchmarkDeltaCurrentPct:mean(bdelta)};
  }
- const famStats=a=>{const rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),pathA=a.filter(modelTradePathMetricsReady),mae=pathA.map(t=>Number(t.perf?.maePct)).filter(Number.isFinite),mfe=pathA.map(t=>Number(t.perf?.mfePct)).filter(Number.isFinite),bd=a.map(t=>Number(t.perf?.benchmarkDeltaCurrentPct)).filter(Number.isFinite);return{trades:a.length,avgNetReturnPct:mean(rets),avgMAEPct:mean(mae),avgMFEPct:mean(mfe),avgBenchmarkDeltaCurrentPct:mean(bd)}};
- return{generatedAt:new Date().toISOString(),day:dayKey(),build:CLIENT_BUILD,confirmationRules:LAYER_CONFIRM_RULES,summary:{total:MODEL_TRADES.length,model:modelTrades.length,manual:MODEL_TRADES.filter(t=>t.tradeType==='manual').length,byLayer,byFamily:{reasonable:famStats(reasonableTrades),trend:famStats(trendTrades)}},trades:MODEL_TRADES.map(t=>{const p=t.perf||{},m=modelNetMetrics(t),bench=p.benchmark||{};return{id:t.id,code:t.code,name:t.name,tradeType:t.tradeType||'model',modelFamily:modelFamilyOf(t),layer:t.layer,entryAt:t.entryAt,entryDate:t.entryDate,entryPrice:t.entryPrice,shares:t.shares,exitAt:t.exitAt||null,exitPrice:t.exitPrice||null,build:t.snapshot?.build||null,confirmationVersion:t.snapshot?.confirmationVersion||null,confirmationRule:t.snapshot?.confirmationRule||null,score:t.snapshot?.score??null,chaseRisk:t.snapshot?.chaseRisk??null,chaseWarningThreshold:t.snapshot?.chaseWarningThreshold??null,chaseHardThreshold:t.snapshot?.chaseHardThreshold??null,chaseCalibrationLockedDate:t.snapshot?.chaseCalibrationLockedDate??null,chaseCalibrationObservations:t.snapshot?.chaseCalibrationObservations??null,chaseCalibrationWalkForwardCount:t.snapshot?.chaseCalibrationWalkForwardCount??null,environmentScore:t.snapshot?.environmentScore??null,healthScore:t.snapshot?.health?.score??null,healthDivergence:t.snapshot?.health?.divergence??null,modelStatus:t.snapshot?.modelStatusText||null,zones:t.snapshot?.zones||null,trendLevels:t.snapshot?.trendLevels||null,trend:t.snapshot?.trend||null,trendScoreGroups:t.snapshot?.scoreGroups||null,trendRegime:t.snapshot?.regime||null,trendBacktest:t.snapshot?.trendBacktest||null,shadow:t.snapshot?.shadow||null,currentPrice:m.currentPrice??null,currentPriceSource:m.priceSource||null,currentPriceReturnPct:m.currentPriceReturnPct??null,currentTotalReturnPct:m.currentTotalReturnPct??null,accruedDividendPerShare:modelTradeDividendPerShare(t),eligibleDividends:p.eligibleDividends||[],dividendDataComplete:p.dividendDataComplete??null,returnBasis:p.returnBasis||p.frontendReturnBasis||null,netPnL:m.net,netReturnPct:m.ret,grossPnL:m.gross,estimatedCost:m.cost,horizon:p.horizon||null,maePct:p.maePct??null,priceMaePct:p.priceMaePct??null,maeDate:p.maeDate??null,mfePct:p.mfePct??null,priceMfePct:p.priceMfePct??null,mfeDate:p.mfeDate??null,reachedLayer2:!!p.reachedLayer2,reachedLayer3:!!p.reachedLayer3,chaseEntry:p.chaseEntry??null,benchmarkEntryMode:bench.entryMode||null,benchmarkEntryPrice:bench.entryPrice??null,benchmarkCurrentReturnPct:bench.currentReturnPct??null,benchmarkDeltaCurrentPct:p.benchmarkDeltaCurrentPct??null,benchmarkHorizon:bench.horizon||null,diagnosis:tradeDiagnosticLabel(t)} })};
+ const famStats=a=>{const rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),pathA=a.filter(modelTradePathMetricsReady),mae=pathA.map(t=>tradePathMetric(t,'maePct')).filter(Number.isFinite),mfe=pathA.map(t=>tradePathMetric(t,'mfePct')).filter(Number.isFinite),bd=a.map(t=>modelBenchmarkDelta(t)).filter(Number.isFinite);return{trades:a.length,avgNetReturnPct:mean(rets),avgMAEPct:mean(mae),avgMFEPct:mean(mfe),avgBenchmarkDeltaCurrentPct:mean(bd)}};
+ return{generatedAt:new Date().toISOString(),day:dayKey(),build:CLIENT_BUILD,confirmationRules:LAYER_CONFIRM_RULES,summary:{total:MODEL_TRADES.length,model:modelTrades.length,manual:MODEL_TRADES.filter(t=>t.tradeType==='manual').length,valued:MODEL_TRADES.filter(t=>Number.isFinite(modelNetMetrics(t).net)).length,unvalued:MODEL_TRADES.filter(t=>!Number.isFinite(modelNetMetrics(t).net)).length,byLayer,byFamily:{reasonable:famStats(reasonableTrades),trend:famStats(trendTrades)}},trades:MODEL_TRADES.map(t=>{const p=t.perf||{},m=modelNetMetrics(t),bench=p.benchmark||{};return{id:t.id,code:t.code,name:t.name,tradeType:t.tradeType||'model',modelFamily:modelFamilyOf(t),layer:t.layer,entryAt:t.entryAt,entryDate:t.entryDate,entryPrice:t.entryPrice,shares:t.shares,exitAt:t.exitAt||null,exitPrice:t.exitPrice||null,build:t.snapshot?.build||null,confirmationVersion:t.snapshot?.confirmationVersion||null,confirmationRule:t.snapshot?.confirmationRule||null,score:t.snapshot?.score??null,chaseRisk:t.snapshot?.chaseRisk??null,chaseWarningThreshold:t.snapshot?.chaseWarningThreshold??null,chaseHardThreshold:t.snapshot?.chaseHardThreshold??null,chaseCalibrationLockedDate:t.snapshot?.chaseCalibrationLockedDate??null,chaseCalibrationObservations:t.snapshot?.chaseCalibrationObservations??null,chaseCalibrationWalkForwardCount:t.snapshot?.chaseCalibrationWalkForwardCount??null,environmentScore:t.snapshot?.environmentScore??null,healthScore:t.snapshot?.health?.score??null,healthDivergence:t.snapshot?.health?.divergence??null,modelStatus:t.snapshot?.modelStatusText||null,zones:t.snapshot?.zones||null,trendLevels:t.snapshot?.trendLevels||null,trend:t.snapshot?.trend||null,trendScoreGroups:t.snapshot?.scoreGroups||null,trendRegime:t.snapshot?.regime||null,trendBacktest:t.snapshot?.trendBacktest||null,shadow:t.snapshot?.shadow||null,currentPrice:m.currentPrice??null,currentPriceSource:m.priceSource||null,currentPriceAsOf:m.priceAsOf||null,currentPriceReturnPct:m.currentPriceReturnPct??null,currentTotalReturnPct:m.currentTotalReturnPct??null,accruedDividendPerShare:modelTradeDividendPerShare(t),eligibleDividends:p.eligibleDividends||[],dividendDataComplete:p.dividendDataComplete??null,returnBasis:p.returnBasis||p.frontendReturnBasis||null,netPnL:m.net,netReturnPct:m.ret,grossPnL:m.gross,estimatedCost:m.cost,horizon:p.horizon||null,maePct:tradePathMetric(t,'maePct'),priceMaePct:modelTradePathMetricsReady(t)?tradeMetricNumber(p.priceMaePct):null,maeDate:p.maeDate??null,mfePct:tradePathMetric(t,'mfePct'),priceMfePct:modelTradePathMetricsReady(t)?tradeMetricNumber(p.priceMfePct):null,mfeDate:p.mfeDate??null,reachedLayer2:!!p.reachedLayer2,reachedLayer3:!!p.reachedLayer3,chaseEntry:p.chaseEntry??null,benchmarkEntryMode:bench.entryMode||null,benchmarkEntryPrice:bench.entryPrice??null,benchmarkCurrentReturnPct:bench.currentReturnPct??null,benchmarkDeltaCurrentPct:modelBenchmarkDelta(t,m),benchmarkHorizon:bench.horizon||null,diagnosis:tradeDiagnosticLabel(t)} })};
 }
 
 function downloadTradeDiagnostics(){
