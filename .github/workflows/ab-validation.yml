@@ -11,6 +11,7 @@ on:
       - fix/performance-consistency-20261015
       - feature/crash-dip-watch-20261015
       - feature/crash-gate-research-20261015
+      - fix/dip-watch-rebound-gap-20261015
   pull_request:
     paths:
       - 'public/model-ab.js'

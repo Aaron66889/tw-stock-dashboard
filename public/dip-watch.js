@@ -6,10 +6,23 @@ const state=Object.create(null);
 const format=n=>Number.isFinite(Number(n))?Number(n).toFixed(2):'—';
 function day(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date())}
 function fresh(time){const t=Date.parse(time||'');return Number.isFinite(t)&&t<=Date.now()+15000&&Date.now()-t<=MAX_AGE_MS}
-function rangeFor(m,px){
- for(let i=2;i>=0;i--){
-  const z=m?.layers?.[i]?.zone;
-  if(z&&Number.isFinite(z.low)&&Number.isFinite(z.high)&&px>=z.low&&px<=z.high)return{layer:i+1,low:z.low,high:z.high};
+function rangeFor(m,px,sessionLow,atr){
+ const zones=(m?.layers||[]).map(x=>x?.zone);
+ // A price may already have reached L3 and rebounded into the gap between L3
+ // and L2. Do not discard that observation just because it left the narrow L3
+ // band; equally do not chase a rebound all the way to the next buy layer.
+ for(let i=zones.length-1;i>=0;i--){
+  const z=zones[i];
+  if(z&&Number.isFinite(z.low)&&Number.isFinite(z.high)&&px>=z.low&&px<=z.high)
+   return{layer:i+1,low:z.low,high:z.high,mode:'INSIDE'};
+ }
+ for(let i=zones.length-1;i>=0;i--){
+  const z=zones[i],upper=zones[i-1];
+  if(!z||!Number.isFinite(z.low)||!Number.isFinite(z.high)||!(sessionLow>0&&sessionLow<=z.high)||px<=z.high)continue;
+  // Limit the watch to <=0.4 ATR above the band, and stop before reaching the
+  // next higher layer. No extrapolation to stale or far-away market prices.
+  const cap=Math.min(z.high+Math.max(.15,atr*.4),upper&&Number.isFinite(upper.low)?upper.low:Infinity);
+  if(px<cap)return{layer:i+1,low:z.low,high:z.high,mode:'REBOUND',reboundCap:cap};
  }
  return null;
 }
@@ -23,10 +36,11 @@ function check(code,q,r,data,m){
  if(!good)return{status:'DATA_WAIT',reason:'目前報價或模型時間不足以作盤中低接判斷'};
  const prev=Number(q?.effectivePrevClose||q?.prevClose),drop=prev>0?(px/prev-1)*100:null;
  if(!(drop<=-1.5))return{status:'OFF'};
- const zone=rangeFor(m,px),atr=Number(r?.history?.atr14);
- if(!zone||!(atr>0))return{status:'OUTSIDE',reason:'目前價格不在已計算的任一買點區間內，或ATR未確認'};
- const low=Number(q?.low);
+ const atr=Number(r?.history?.atr14),low=Number(q?.low);
+ if(!(atr>0))return{status:'DATA_WAIT',reason:'ATR尚未確認，暫不判定急跌後止跌'};
  if(!(low>0&&low<=px))return{status:'DATA_WAIT',reason:'缺少本日可信最低價，暫不判定止跌'};
+ const zone=rangeFor(m,px,low,atr);
+ if(!zone)return{status:'OUTSIDE',reason:'現價已離開本次急跌觀察範圍（可能仍在破低，或反彈已超出追蹤上限），不追價'};
  return{status:'WATCH',px,low,atr,zone,drop,bounceRequired:Math.max(0.12,atr*0.2)};
 }
 function observe(code,q,r,data,m){
@@ -58,10 +72,10 @@ function panel(code,r,m,q,data){
  let heading='',detail='',color='style="border-left:3px solid #dca44e;padding:10px 12px;margin:8px 0;background:#152237;border-radius:9px"';
  if(d.status==='PROBE'){
   heading='急跌低接觀察：可評估自主小額試單（非正式模型訊號）';
-  detail='已持續'+d.seconds+'秒未創新低｜'+d.observations+'筆不同行情｜自低點反彈'+format(d.bounce)+'元。僅建議作為最多原定單次加碼預算10～20%的自主評估參考，不能將這筆交易標記為正式L1/L2/L3；無法保證不續跌。';
+  detail=(d.zone.mode==='REBOUND'?'今日已觸及第'+d.zone.layer+'層，現價反彈至該層上方｜':'')+'已持續'+d.seconds+'秒未創新低｜'+d.observations+'筆不同行情｜自低點反彈'+format(d.bounce)+'元。這只是可供自主評估的短暫反彈訊號，並未解除硬Gate；不應追價，也不能標記成正式L1/L2/L3買入。';
  }else if(d.status==='WAIT'){
   heading='急跌低接觀察：價格有吸引力，但尚未確認止跌';
-  detail='已進入第'+d.zone.layer+'層｜最近低點後'+d.seconds+'秒（需90秒）｜行情樣本'+d.observations+'筆（需4筆）｜反彈'+format(d.bounce)+'元（需'+format(d.bounceRequired)+'元）。不因觸價就直接解除硬Gate。';
+  detail=(d.zone.mode==='REBOUND'?'今日已觸及第'+d.zone.layer+'層，現價已反彈至層間｜':'現價位於第'+d.zone.layer+'層｜')+'最近低點後'+d.seconds+'秒（需90秒）｜行情樣本'+d.observations+'筆（需4筆）｜反彈'+format(d.bounce)+'元（需'+format(d.bounceRequired)+'元）。仍須觀察是否再創新低，不因觸價解除硬Gate。';
  }else{
   heading='急跌低接觀察：暫不可評估';
   detail=d.reason||'等待資料確認';
