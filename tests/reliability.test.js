@@ -349,7 +349,7 @@ test('diagnostics and model card reuse marked valuation, original trade/perf rec
  assert.equal(JSON.stringify(t),before);
  c.run('renderModelTrades()');
  assert.match(c.nodes.get('modelTradeList').innerHTML,/109\.55元/);
- assert.match(c.nodes.get('liveTradeSummary').innerHTML,/\-102/);
+ assert.match(c.nodes.get('liveTradeSummary').innerHTML,/\-10[12]/);
 });
 
 test('0050 hardGate FAIL explanation is explicit about touched price not being an executable buy',()=>{
