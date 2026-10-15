@@ -7,6 +7,7 @@ on:
       - feature/trend-ab-forward-ledger-20261013
       - fix/four-etf-dividend-forecast-20261014
       - feature/desktop-signal-alerts-20261014
+      - fix/trade-pnl-live-quote-20261015
   pull_request:
     paths:
       - 'public/model-ab.js'
