@@ -398,7 +398,7 @@ test('missing MAE MFE and benchmark values never become synthetic zero returns',
 test('newer mark and benchmark comparison share the same price, not stale stored delta',()=>{
  const c=client(),t={...trade('mt_same_mark'),tradeType:'model',modelFamily:'reasonable',layer:1,
   entryDate:'2026-10-13',entryPrice:112.5,shares:30,perf:{status:'READY',currentPrice:113,
-   currentTotalReturnPct:3,benchmark:{entryPrice:113},benchmarkDeltaCurrentPct:99,accruedDividendPerShare:0}};
+   currentTotalReturnPct:3,benchmark:{entryPrice:112},benchmarkDeltaCurrentPct:99,accruedDividendPerShare:0}};
  c.ctx.t=t;c.run("lastLive={quotes:{'0050':{last:109.55,date:dayKey(),fetchTime:new Date().toISOString(),realtime:true}}};MODEL_TRADES=[t]");
  const delta=c.run('modelBenchmarkDelta(t)');
  assert.ok(delta<0);
