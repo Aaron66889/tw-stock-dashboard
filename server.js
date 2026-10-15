@@ -7,6 +7,7 @@ const {URL}=require('url');
 const TREND_SHADOW_B=require('./trend-shadow-b');
 const TREND_LEDGER=require('./trend-forward-ledger');
 const CRASH_GATE_LAB=require('./crash-gate-lab');
+const GATE_LEDGER=require('./gate-blocked-ledger');
 let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 
 const PORT=process.env.PORT||3000;
@@ -2980,6 +2981,75 @@ async function trendLedgerReport(){
   eventCount:raw.length,events,summary:TREND_LEDGER.summarize(events),limitations:'真實盤中模型快照；未來績效以日OHLC含息調整代理，非實際成交。只計下一完整交易日起的日內MAE/MFE；未滿期不算。'};
 }
 
+/* ---------- Independent, read-only forward Gate-blocked opportunity ledger ---------- */
+const GATE_LEDGER_INSTANCE=crypto.randomUUID();
+const GATE_LEDGER_STATUS={lastAttemptAt:null,lastSuccessAt:null,error:null,lastWrites:0};
+let GATE_LEDGER_SCANNING=false;
+async function gateLedgerRows(){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return[];
+ const rows=await supabaseRest('model_trades?code=eq.'+encodeURIComponent(GATE_LEDGER.RECORD_CODE)+
+  '&select=payload&order=entry_at.desc&limit=500',{timeoutMs:9000});
+ return(rows||[]).map(r=>r.payload).filter(p=>p?.version===GATE_LEDGER.VERSION&&
+  ETF.includes(p.code)&&p.id===GATE_LEDGER.eventId(p.code,p.day,p.layer));
+}
+async function gateLedgerLease(){
+ const now=Date.now(),id=GATE_LEDGER.LEASE_ID;
+ for(let attempt=0;attempt<3;attempt++){
+  const old=(await cloudRowsById(id))[0];
+  if(Date.parse(old?.payload?.expiresAt||'')>now)return false;
+  const payload={version:GATE_LEDGER.VERSION,owner:GATE_LEDGER_INSTANCE,
+   startedAt:new Date(now).toISOString(),expiresAt:new Date(now+110000).toISOString()};
+  const row={id,code:'__GATE_BLOCKED_LEASE__',entry_at:'2000-01-01T00:00:00.000Z',payload};
+  if(await conditionalCloudTradeWrite(old,row))return true;
+ }
+ return false;
+}
+async function gateLedgerScan(){
+ const clock=taipeiClock();if(!TREND_LEDGER.activeTradingWindow(clock)||GATE_LEDGER_SCANNING)return;
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY)){GATE_LEDGER_STATUS.error='Supabase未設定，無法跨服務保存';return}
+ const data=RUNTIME.bm,now=Date.now();
+ // Never fetch/recompute buyModel or external quotes merely to populate this ledger.
+ // It only observes already-computed live, fresh official snapshots.
+ const candidates=ETF.flatMap(code=>GATE_LEDGER.observationCandidates(code,
+  data?.models?.[code],data?.quotes?.[code],data,{day:clock.day,nowMs:now}));
+ if(!candidates.length)return;
+ GATE_LEDGER_SCANNING=true;GATE_LEDGER_STATUS.lastAttemptAt=new Date(now).toISOString();
+ try{
+  if(!await gateLedgerLease())return;
+  let writes=0;
+  for(const candidate of candidates){
+   const old=(await cloudRowsById(candidate.id))[0];
+   if(old)continue; // Historical first live observation must remain immutable.
+   if(await conditionalCloudTradeWrite(null,{
+    id:candidate.id,code:GATE_LEDGER.RECORD_CODE,
+    entry_at:candidate.observedAt,payload:candidate
+   }))writes++;
+  }
+  GATE_LEDGER_STATUS.lastWrites=writes;
+  GATE_LEDGER_STATUS.lastSuccessAt=new Date().toISOString();GATE_LEDGER_STATUS.error=null;
+ }catch(e){GATE_LEDGER_STATUS.error=String(e?.message||e).slice(0,240);
+  RUNTIME.errors=[...(RUNTIME.errors||[]),'gate-ledger-scan:'+GATE_LEDGER_STATUS.error].slice(-20)}
+ finally{GATE_LEDGER_SCANNING=false}
+}
+async function gateLedgerReport(){
+ const storageReady=!!(SUPABASE_URL&&SUPABASE_SECRET_KEY),today=ymdTaipei();
+ if(!storageReady)return{ok:true,storageReady:false,version:GATE_LEDGER.VERSION,
+  error:'Supabase未設定，未啟用持久化觀察',summary:GATE_LEDGER.summarize([]),events:[]};
+ const raw=await gateLedgerRows(),codes=[...new Set(raw.map(x=>x.code))],hist={};
+ await Promise.all(codes.map(async code=>{
+  const h=await deadline(etfHistory(code).catch(()=>null),8000,null);
+  hist[code]=Array.isArray(h?.rows)?h.rows:null;
+ }));
+ const evaluated=raw.map(e=>hist[e.code]?GATE_LEDGER.evaluate(e,hist[e.code],today):
+  {...e,outcome:null,dataError:'歷史日K尚未取得，績效暫不計算'});
+ return{ok:true,version:GATE_LEDGER.VERSION,build:BUILD,storageReady:true,
+  asOf:today,generatedAt:new Date().toISOString(),source:'Supabase獨立不可改寫事件帳簿',
+  sampleWindow:'最近最多500筆，依首次盤中觀測時間排序；不是全市場完整樣本',
+  scanStatus:{...GATE_LEDGER_STATUS},eventCount:evaluated.length,
+  summary:GATE_LEDGER.summarize(evaluated),events:evaluated.slice(0,80),
+  limitations:'僅記錄背景程序實際觀測到的報價落在買點帶、但正式硬Gate阻擋之事件，每檔每層每天最多一筆。不回填未觀測到的盤中最低價。被阻擋並不等於完整兩次確認或保證能以觀測價成交。績效為還原日K代理、約扣0.385%往返成本，排除進場當日MAE/MFE，需下一交易日才有完整持有期；不等於實際交易，也不是已驗證的替代策略。'};
+}
+
 async function cloudUpsertTrade(input){
  if(!input||typeof input!=='object'||!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(String(input.id||'')))throw Error('invalid trade');
  const incoming=JSON.parse(JSON.stringify(input)),id=String(incoming.id);
@@ -3404,6 +3474,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(cached('buymodel',8000,buyModel),9500,null);return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'模型外部資料逾時；不阻塞頁面，30秒後自動重試',fetchedAt:new Date().toISOString()}});
  if(u.pathname==='/api/trend-entry')return safeApi(res,'trend-entry',()=>cached('trend-entry',30000,trendEntryModel));
  if(u.pathname==='/api/trend-ab-forward'&&req.method==='GET')return safeApi(res,'trend-ab-forward',()=>cached('trend-ab-forward',20000,trendLedgerReport));
+ if(u.pathname==='/api/gate-blocked-forward'&&req.method==='GET')return safeApi(res,'gate-blocked-forward',()=>cached('gate-blocked-forward:v1',30000,gateLedgerReport));
  if(u.pathname==='/api/etf-history'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'etf-history',()=>ETF.includes(code)?etfHistory(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituent-dashboard'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'constituent-dashboard',()=>ETF.includes(code)?constituentDashboard(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituents'){const code=u.searchParams.get('code')||'0050',date=u.searchParams.get('date')||null;return safeApi(res,'constituents',()=>ETF.includes(code)?constituents(code,date):Promise.resolve({ok:false,error:'unsupported code'}))}
@@ -3427,6 +3498,10 @@ server.listen(PORT,'0.0.0.0',()=>{
  // A/B forward signal sampling: cloud lease makes exactly one Render instance the scanner per cycle.
  setTimeout(()=>trendLedgerScan().catch(()=>{}),30000);
  setInterval(()=>trendLedgerScan().catch(()=>{}),5*60*1000);
+ // Read-only opportunity ledger uses the existing background buyModel snapshot;
+ // stagger behind the scheduled 120s model refresh and never query external prices.
+ setTimeout(()=>gateLedgerScan().catch(()=>{}),16000);
+ setInterval(()=>gateLedgerScan().catch(()=>{}),120000);
  setTimeout(()=>refreshBreadthRuntime(true).catch(()=>{}),8000);
  setInterval(()=>{const t=taipeiClock(),m=t.h*60+t.m;if(['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&m>=540&&BREADTH_RUNTIME.lockedDay!==t.day)refreshBreadthRuntime(false).catch(()=>{})},30000);
  // Dedicated 08:45~08:59:59 TXF sampler. It is idle outside the pre-open window and gives the 08:57/08:58/08:59 model the actual 12-minute day-session path.
