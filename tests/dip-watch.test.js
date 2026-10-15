@@ -55,6 +55,44 @@ test('repeated refresh of identical market data cannot fake new observations',()
  const h=harness();h.obs();for(let i=0;i<10;i++){h.advance(12000);h.obs()}
  const x=h.evals();assert.equal(x.status,'WAIT');assert.equal(x.observations,1);
 });
+test('0050 reaching L3 at 108.64 then rebounding to 108.90 between L3 and L2 remains under observation',()=>{
+ const h=harness();
+ h.quote.low=108.64;h.quote.last=108.90;h.quote.high=110.20;
+ const status=h.obs();
+ assert.equal(status.status,'WAIT');
+ assert.equal(status.zone.layer,3);
+ assert.equal(status.zone.mode,'REBOUND');
+ assert.equal(status.zone.low,108.51);
+ assert.equal(status.zone.high,108.82);
+ const note=h.api.panel('0050',h.model,h.layers,h.quote,h.data);
+ assert.match(note,/今日已觸及第3層，現價已反彈至層間/);
+ assert.doesNotMatch(note,/暫不可評估/);
+ assert.match(note,/正式A版硬Gate仍FAIL/);
+});
+test('L3 rebound becomes provisional probe only after 90 sec, independent quotes, and minimum bounce',()=>{
+ const h=harness();h.quote.low=108.64;h.quote.last=108.90;
+ h.obs();
+ for(let i=0;i<3;i++){h.advance(32000);h.quote.volume+=100;h.obs()}
+ const waiting=h.evals();assert.equal(waiting.status,'WAIT');
+ assert.equal(waiting.zone.layer,3);assert.equal(waiting.observations,4);
+ h.advance(5000);h.quote.last=109.03;h.quote.volume+=100;
+ const probe=h.obs();assert.equal(probe.status,'PROBE');assert.equal(probe.zone.layer,3);
+ assert.equal(probe.zone.mode,'REBOUND');
+ assert.ok(probe.bounce>=probe.bounceRequired);
+ assert.match(h.api.panel('0050',h.model,h.layers,h.quote,h.data),/非正式模型訊號/);
+});
+test('L3 rebound must remain inside a conservative tracking band and still reject fresh new lows',()=>{
+ const h=harness();h.quote.low=108.64;h.quote.last=108.90;h.obs();
+ h.quote.last=109.71;h.quote.low=108.64;h.quote.volume+=100;
+ assert.equal(h.obs().status,'OUTSIDE');
+ h.quote.last=108.40;h.quote.low=108.40;h.quote.volume+=100;
+ assert.equal(h.obs().status,'OUTSIDE');
+});
+test('historical touched flag without today's trustworthy low is not sufficient for a rebound probe',()=>{
+ const h=harness();h.quote.last=108.90;h.quote.low=null;h.layers.layers[2].touchedAt='2026-10-15T01:20:00Z';
+ assert.equal(h.obs().status,'DATA_WAIT');
+});
+
 test('no executable band and price crashing through lowest layer remain out of play',()=>{
  const h=harness();h.quote.last=108.34;h.quote.low=108.34;
  assert.equal(h.obs().status,'OUTSIDE');
