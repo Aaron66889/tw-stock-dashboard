@@ -1218,25 +1218,38 @@ async function refreshModelTradePerformance(){
  if(TRADE_PERFORMANCE_REFRESH_ACTIVE||document.visibilityState==='hidden')return;
  TRADE_PERFORMANCE_REFRESH_ACTIVE=true;
  try{
- let changed=false;
- for(const t of MODEL_TRADES){
-  if(t.exitAt)continue;
-  try{
-   const z=t.snapshot?.zones||[],qs=new URLSearchParams({code:t.code,entryDate:t.entryDate,entryPrice:String(t.entryPrice),layer2Low:String(z[1]?.low??''),layer3Low:String(z[2]?.low??''),layer1High:String(z[0]?.high??'')});
-   const p=await get('/api/trade-performance?'+qs.toString());
-   if(p?.ok){
-    const prev=t.perf&&typeof t.perf==='object'?t.perf:{};
-    // 盤後/跨日若資料源暫時沒有 currentPrice，不准把最後有效損益洗成空值。
-    if(!hasNumber(p.currentPrice)&&hasNumber(prev.currentPrice))p.currentPrice=prev.currentPrice;
-    if(!hasNumber(p.currentReturnPct)&&hasNumber(prev.currentReturnPct))p.currentReturnPct=prev.currentReturnPct;
-    if(!hasNumber(p.currentPnLPerShare)&&hasNumber(prev.currentPnLPerShare))p.currentPnLPerShare=prev.currentPnLPerShare;
-    t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true
+  let changed=false,interrupted=false,completed=0;
+  // Newest trades first: otherwise a long sequential queue can starve every
+  // recent trade, leaving all 5/20/60d and MAE/MFE pages showing old snapshots.
+  const jobs=MODEL_TRADES.filter(t=>!t.exitAt).slice().sort((a,b)=>
+   Date.parse(b.entryAt||b.entryDate||0)-Date.parse(a.entryAt||a.entryDate||0));
+  let next=0;
+  async function worker(){
+   while(!interrupted&&next<jobs.length&&document.visibilityState!=='hidden'){
+    const t=jobs[next++],entryKey=[t.code,t.entryDate,t.entryPrice,t.shares].join('|');
+    try{
+     const z=t.snapshot?.zones||[],qs=new URLSearchParams({code:t.code,entryDate:t.entryDate,entryPrice:String(t.entryPrice),layer2Low:String(z[1]?.low??''),layer3Low:String(z[2]?.low??''),layer1High:String(z[0]?.high??'')});
+     const p=await get('/api/trade-performance?'+qs.toString());
+     // A trade edited or removed while a slow response was pending must not be
+     // resurrected, and old-price replies must not overwrite changed entries.
+     if(p?.ok&&MODEL_TRADES.includes(t)&&!t.exitAt&&[t.code,t.entryDate,t.entryPrice,t.shares].join('|')===entryKey){
+      const prev=t.perf&&typeof t.perf==='object'?t.perf:{};
+      // Preserve only explicitly prior valid values when backend is temporarily
+      // unable to obtain a current price; the UI's mark will still require
+      // separately verified market freshness.
+      if(!hasNumber(p.currentPrice)&&hasNumber(prev.currentPrice))p.currentPrice=prev.currentPrice;
+      t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true;
+     }
+    }catch(e){if(e?.status===429){interrupted=true;break}}
+    completed++;
+    if(completed%4===0)renderModelTrades();
    }
-  }catch(e){if(e?.status===429)break}
- }
- modelSyncSaveLocal();renderModelTrades();if(changed)syncModelTrades(false)
+  }
+  await Promise.all(Array.from({length:Math.min(3,jobs.length)},()=>worker()));
+  if(changed){modelSyncSaveLocal();renderModelTrades();await syncModelTrades(false)}
  }finally{TRADE_PERFORMANCE_REFRESH_ACTIVE=false}
 }
+
 function closeTrackedTrade(id){
  const t=MODEL_TRADES.find(x=>x.id===id);if(!t)return;const px=Number(lastLive?.quotes?.[t.code]?.last??t.perf?.currentPrice);
  if(t.exitAt)return;
