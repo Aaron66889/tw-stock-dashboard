@@ -90,6 +90,32 @@ jobs:
 
 
 
+          if(!html.includes('id="crashGateResearchResult"') || !html.includes('/crash-gate-lab-ui.js'))throw Error('Crash Gate research UI not deployed');
+          if(!stockUI.includes('window.CrashGateLabUI?.auditSnippet') || !stockUI.includes('window.CrashGateLabUI?.load(false)'))throw Error('Crash Gate study UI hooks not deployed');
+          const labModule=await (await get('/crash-gate-lab-ui.js')).text();
+          if(!labModule.includes('no-lookahead')&&!labModule.includes('次一交易日開盤'))throw Error('Lab research caution missing');
+          const study=await (await get('/api/crash-gate-lab',55000)).json();
+          if(!study.ok || !study.warning || !study.marketProxy)throw Error('Crash Gate research API unavailable: '+JSON.stringify(study).slice(0,500));
+          const rows=[];
+          for(const code of ['0050','0056','00878','00919']){
+            const r=study.results?.[code];
+            if(!r)throw Error('Crash Gate study missing ETF '+code);
+            if(r.ok){
+              if(!(r.summary?.events>=0)||r.summary.eligible>r.summary.events||!r.methodology?.limitations)
+                throw Error('Invalid historical cohort or limitations for '+code);
+              const sample={code,events:r.summary.events,eligible:r.summary.eligible,source:r.source,
+               official:r.historyOfficial,proxyOfficial:r.proxyOfficial,horizons:{}};
+              for(const h of [5,20,60]){
+                const r0=r.summary.results[h];
+                if(!r0 || r0.unfiltered.matured>r.summary.events || r0.reboundQualified.matured>r.summary.eligible)
+                  throw Error('Invalid horizon '+code+' '+h);
+                sample.horizons[h]={all:r0.unfiltered,filtered:r0.reboundQualified};
+              }
+              rows.push(sample);
+            }else rows.push({code,status:r.status,error:r.error});
+          }
+          console.log('CRASH_GATE_RESEARCH_SMOKE PASS',JSON.stringify({date:study.asOfDate,proxy:study.marketProxy,rows}));
+
           const state = await (await get('/api/model-sync/status')).json();
           if (!state.supabaseConfigured) throw Error('Supabase not configured: persistent forward ledger unavailable');
           const forward = await (await get('/api/trend-ab-forward', 55000)).json();
