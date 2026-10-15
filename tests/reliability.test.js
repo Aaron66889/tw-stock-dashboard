@@ -445,6 +445,41 @@ test('full-session trade MAE MFE excludes entry day low and declines missing ent
  assert.equal(partial.pathSamples,0);assert.equal(partial.horizon[5],null);
 });
 
+
+test('multiple open trade snapshots refresh concurrently instead of starving newest items',async()=>{
+ const c=client(),t1={...trade('mt_old'),entryDate:'2026-10-01',entryAt:'2026-10-01T01:00:00Z',entryPrice:100,
+  perf:{status:'TRACKING'}},t2={...trade('mt_new'),entryDate:'2026-10-13',entryAt:'2026-10-13T01:00:00Z',entryPrice:113,
+  perf:{status:'TRACKING'}},t3={...trade('mt_mid'),entryDate:'2026-10-10',entryAt:'2026-10-10T01:00:00Z',entryPrice:105,
+  perf:{status:'TRACKING'}};
+ c.ctx.rows=[t1,t2,t3];c.run('MODEL_TRADES=rows;syncModelTrades=async()=>{}');
+ let active=0,maxActive=0,issued=[];
+ c.route(async url=>{
+  if(!url.startsWith('/api/trade-performance?'))throw Error('unexpected route '+url);
+  active++;maxActive=Math.max(active,maxActive);issued.push(new URL(url,'http://test').searchParams.get('entryDate'));
+  await Promise.resolve();await Promise.resolve();
+  active--;
+  return{ok:true,status:'READY',currentPrice:99,horizon:{5:null,20:null,60:null},
+   maePct:null,mfePct:null,pathBasis:'post-entry-full-sessions-v1',updatedAt:'2026-10-15T01:00:00Z'};
+ });
+ await c.run('refreshModelTradePerformance()');
+ assert.ok(maxActive>=2,'should not serialize all trades');
+ assert.equal(issued[0],'2026-10-13');
+ assert.equal(c.run('MODEL_TRADES.length'),3);
+});
+
+test('MAE and MFE include zero baseline when all subsequent trading prices stay one-sided',async()=>{
+ const b=backend();
+ b.ctx.mockRows=[
+  {date:'2026-10-13',open:100,high:120,low:70,close:100,adjclose:100},
+  {date:'2026-10-14',open:90,high:95,low:88,close:90,adjclose:90}];
+ b.run("etfHistory=async()=>({rows:mockRows,source:'test',validation:{fullHistoryPass:true}});twseDividendEvents=async()=>({complete:true,events:[]});liveEtf4=async()=>({quotes:{'0050':{last:90}}})");
+ const first=await b.run("tradePerformance('0050','2026-10-13',100)");
+ assert.equal(first.mfePct,0);assert.equal(first.maePct,-12);
+ b.ctx.mockRows[1]={date:'2026-10-14',open:110,high:120,low:105,close:115,adjclose:115};
+ const second=await b.run("tradePerformance('0050','2026-10-13',100)");
+ assert.equal(second.maePct,0);assert.equal(second.mfePct,20);
+});
+
 test('mixed frontend/backend builds block writes before applying any holdings operation',async()=>{
  const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
  c.route(async(url,opts)=>{if(opts.method==='POST')writes++;return{ok:true,build:'older-deployed-server'}});
