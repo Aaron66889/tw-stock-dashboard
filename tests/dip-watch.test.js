@@ -83,12 +83,12 @@ test('L3 rebound becomes provisional probe only after 90 sec, independent quotes
 });
 test('L3 rebound must remain inside a conservative tracking band and still reject fresh new lows',()=>{
  const h=harness();h.quote.low=108.64;h.quote.last=108.90;h.obs();
- h.quote.last=109.71;h.quote.low=108.64;h.quote.volume+=100;
+ h.quote.last=110.90;h.quote.high=111.0;h.quote.low=108.64;h.quote.volume+=100;
  assert.equal(h.obs().status,'OUTSIDE');
  h.quote.last=108.40;h.quote.low=108.40;h.quote.volume+=100;
  assert.equal(h.obs().status,'OUTSIDE');
 });
-test('historical touched flag without today's trustworthy low is not sufficient for a rebound probe',()=>{
+test('historical touched flag without a trustworthy current low is not sufficient for a rebound probe',()=>{
  const h=harness();h.quote.last=108.90;h.quote.low=null;h.layers.layers[2].touchedAt='2026-10-15T01:20:00Z';
  assert.equal(h.obs().status,'DATA_WAIT');
 });
