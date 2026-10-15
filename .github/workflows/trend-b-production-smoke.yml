@@ -47,6 +47,17 @@ jobs:
             if(!stockUI.includes(t))throw Error('Model signal hook missing '+t);
           console.log('SIGNAL_ALERT_SMOKE PASS: opt-in desktop notification controls, live model hooks and scripts loaded');
 
+          if(!html.includes('/dip-watch.js'))throw Error('Crash-dip watch module not installed');
+          if(!(html.indexOf('/dip-watch.js')<html.indexOf('/app.js?v=')))
+             throw Error('Dip-watch module loads after app');
+          const dipCode=await(await get('/dip-watch.js')).text();
+          for(const t of ['root.DipWatch={observe,evaluate,panel,check}','MAX_AGE_MS','MIN_OBSERVATIONS=4','STABLE_MS=90000','正式A版硬Gate仍FAIL'])
+            if(!dipCode.includes(t))throw Error('Crash-dip guard missing: '+t);
+          for(const t of ['window.DipWatch?.panel(c,x.r,x.m,','window.DipWatch?.observe(c,lastLive.quotes[c]', '正式模型暫停', '不能記作模型訊號'])
+            if(!stockUI.includes(t))throw Error('Crash-dip model/UI separation missing: '+t);
+          console.log('CRASH_DIP_SMOKE PASS: four ETF dip watch, hard Gate unchanged, model record blocked while veto');
+
+
           for (const t of ['function tradeMarkPrice(t)', 'function modelNetMetrics(t)', "source:'ETF即時行情'", 'priceSource:mark.source']) {
             if (!stockUI.includes(t)) throw Error('Production PnL mark-to-market patch is not live: '+t);
           }
