@@ -56,6 +56,10 @@ jobs:
           for(const t of ['window.DipWatch?.panel(c,x.r,x.m,','window.DipWatch?.observe(c,lastLive.quotes[c]', '正式模型暫停', '不能記作模型訊號'])
             if(!stockUI.includes(t))throw Error('Crash-dip model/UI separation missing: '+t);
           console.log('CRASH_DIP_SMOKE PASS: four ETF dip watch, hard Gate unchanged, model record blocked while veto');
+          for(const text of ["mode:'REBOUND'",'rangeFor(m,px,low,atr)','今日已觸及第','現價已反彈至層間','z.high+Math.max(.15,atr*.4)'])
+            if(!dipCode.includes(text))throw Error('Third layer bounce-in-gap repair not live: '+text);
+          console.log('DIP_GAP_REBOUND_SMOKE PASS: L3 touched then resumed within bounded rebound tracking range');
+
 
 
           for (const t of ['function tradeMarkPrice(t)', 'function modelNetMetrics(t)', "source:'ETF即時行情'", 'priceSource:mark.source']) {
