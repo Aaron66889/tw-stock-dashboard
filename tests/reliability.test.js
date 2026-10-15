@@ -360,6 +360,126 @@ test('0050 hardGate FAIL explanation is explicit about touched price not being a
  assert.match(explanation,/第2層/);
 });
 
+
+test('pending future 5/20/60 day dividends do not leak into current cash return',()=>{
+ const c=client();
+ c.ctx.fake={...trade('mt_future_001'),entryDate:'2026-10-13',entryPrice:100,shares:30,
+  perf:{status:'READY',returnBasis:'cash-entitlement-total-return-v2',dividendDataComplete:false,
+   updatedAt:'2026-10-14T05:00:00Z',horizon:{5:{priceReturnPct:0,totalReturnPct:5,dividendPerShare:5},
+     20:{priceReturnPct:1,totalReturnPct:10,dividendPerShare:9}}}};
+ assert.equal(c.run('modelTradeDividendPerShare(fake)'),0);
+});
+
+test('dated dividend entitlement is post-entry and paid only once across overlapping source events',()=>{
+ const c=client();
+ c.ctx.fake={...trade('mt_919_div'),code:'00919',entryPrice:30,entryDate:'2026-09-15',shares:650,
+  perf:{status:'READY',eligibleDividends:[{exDate:'2026-09-16',amount:1.10}]}};
+ c.run("DIVIDEND_AUTO={byCode:{'00919':{locks:[{exDate:'2026-09-16',amount:1.10},{exDate:'2026-10-20',amount:2.0}]}}};");
+ assert.equal(c.run('modelTradeDividendPerShare(fake)'),1.10);
+ c.ctx.fake.entryDate='2026-09-16';assert.equal(c.run('modelTradeDividendPerShare(fake)'),0);
+});
+
+test('missing MAE MFE and benchmark values never become synthetic zero returns',()=>{
+ const c=client();
+ const item={...trade('mt_null_metrics'),tradeType:'model',modelFamily:'reasonable',layer:1,
+   perf:{status:'READY',maePct:null,mfePct:null,benchmarkDeltaCurrentPct:null,benchmark:{entryPrice:null},horizon:{}}};
+ c.ctx.t=item;c.run('MODEL_TRADES=[t];lastLive=null');
+ assert.equal(c.run('modelTradePathMetricsReady(t)'),false);
+ assert.equal(c.run("tradePathMetric(t,'maePct')"),null);
+ assert.equal(c.run('modelBenchmarkDelta(t)'),null);
+ const summary=c.json('performanceDiagnosticPayload().summary');
+ assert.equal(summary.byLayer[1].avgMAEPct,null);
+ assert.equal(summary.byLayer[1].avgMFEPct,null);
+ assert.equal(summary.byLayer[1].avgBenchmarkDeltaCurrentPct,null);
+ c.run('renderModelTrades()');
+ assert.doesNotMatch(c.nodes.get('modelTradeList').innerHTML,/NaN%|MAE 0\.00%/);
+});
+
+test('newer mark and benchmark comparison share the same price, not stale stored delta',()=>{
+ const c=client(),t={...trade('mt_same_mark'),tradeType:'model',modelFamily:'reasonable',layer:1,
+  entryDate:'2026-10-13',entryPrice:112.5,shares:30,perf:{status:'READY',currentPrice:113,
+   currentTotalReturnPct:3,benchmark:{entryPrice:112},benchmarkDeltaCurrentPct:99,accruedDividendPerShare:0}};
+ c.ctx.t=t;c.run("lastLive={quotes:{'0050':{last:109.55,date:dayKey(),fetchTime:new Date().toISOString(),realtime:true}}};MODEL_TRADES=[t]");
+ const delta=c.run('modelBenchmarkDelta(t)');
+ assert.ok(delta<0);
+ const d=c.json('performanceDiagnosticPayload().trades[0]');
+ assert.equal(d.netPnL,-101.5);assert.ok(d.benchmarkDeltaCurrentPct<0);
+ assert.ok(d.benchmarkDeltaCurrentPct<5);
+});
+
+test('incomplete portfolio mark does not display partial sum as total market profit',()=>{
+ const c=client(),good={...trade('mt_known'),tradeType:'model',entryPrice:112.5,shares:30,
+  perf:{status:'TRACKING'}},missing={...trade('mt_unknown'),code:'0056',tradeType:'model',entryPrice:35,shares:50,
+  perf:{status:'TRACKING'}};
+ c.ctx.good=good;c.ctx.missing=missing;
+ c.run("lastLive={quotes:{'0050':{last:109.55,date:dayKey(),fetchTime:new Date().toISOString(),realtime:true}}};MODEL_TRADES=[good,missing];renderModelTrades()");
+ const h=c.nodes.get('liveTradeSummary').innerHTML;
+ assert.match(h,/已計價 1\/2 筆/);
+ assert.match(h,/不顯示不完整合計/);
+ assert.doesNotMatch(h,/追蹤中 \/ 損益估值<\/span><b>2筆｜<span[^>]*>[\-\d,]+<\/span>/);
+});
+
+test('horizon not matured or only speculative day is not presented as 5/20/60 performance',()=>{
+ const c=client();c.ctx.t={...trade('mt_soon'),entryDate:'2026-10-13',perf:{status:'READY',
+  horizon:{5:{date:'2026-10-20',totalReturnPct:20},20:{date:'2026-11-11',totalReturnPct:10}}}};
+ assert.equal(c.run('tradeMaturedHorizon(t,5)'),null);
+ assert.equal(c.run('tradeMaturedHorizon(t,20)'),null);
+ assert.match(c.run('modelTradeDetailHtml(t)'),/未到/);
+});
+
+test('full-session trade MAE MFE excludes entry day low and declines missing entry-day anchor for 5d',async()=>{
+ const b=backend();
+ b.ctx.mockRows=[
+  {date:'2026-10-13',open:100,high:130,low:60,close:100,adjclose:100},
+  {date:'2026-10-14',open:100,high:103,low:95,close:97,adjclose:97},
+  {date:'2026-10-15',open:97,high:99,low:96,close:98,adjclose:98}];
+ b.run("etfHistory=async()=>({rows:mockRows,source:'test',validation:{fullHistoryPass:true}});twseDividendEvents=async()=>({complete:true,events:[]});liveEtf4=async()=>({quotes:{'0050':{last:98,source:'test'}}})");
+ const perf=await b.run("tradePerformance('0050','2026-10-13',100,90,70,105)");
+ assert.equal(perf.status,'READY');
+ assert.ok(Math.abs(perf.maePct+5)<.001);assert.ok(Math.abs(perf.mfePct-3)<.001);
+ assert.equal(perf.pathSamples,2);
+ assert.equal(perf.reachedLayer2,false);
+ assert.equal(perf.horizon[5],null);
+ b.ctx.mockRows=b.ctx.mockRows.slice(1);
+ const partial=await b.run("tradePerformance('0050','2026-10-13',100,90,70,105)");
+ assert.equal(partial.pathSamples,0);assert.equal(partial.horizon[5],null);
+});
+
+
+test('multiple open trade snapshots refresh concurrently instead of starving newest items',async()=>{
+ const c=client(),t1={...trade('mt_old'),entryDate:'2026-10-01',entryAt:'2026-10-01T01:00:00Z',entryPrice:100,
+  perf:{status:'TRACKING'}},t2={...trade('mt_new'),entryDate:'2026-10-13',entryAt:'2026-10-13T01:00:00Z',entryPrice:113,
+  perf:{status:'TRACKING'}},t3={...trade('mt_mid'),entryDate:'2026-10-10',entryAt:'2026-10-10T01:00:00Z',entryPrice:105,
+  perf:{status:'TRACKING'}};
+ c.ctx.rows=[t1,t2,t3];c.run('MODEL_TRADES=rows;syncModelTrades=async()=>{}');
+ let active=0,maxActive=0,issued=[];
+ c.route(async url=>{
+  if(!url.startsWith('/api/trade-performance?'))throw Error('unexpected route '+url);
+  active++;maxActive=Math.max(active,maxActive);issued.push(new URL(url,'http://test').searchParams.get('entryDate'));
+  await Promise.resolve();await Promise.resolve();
+  active--;
+  return{ok:true,status:'READY',currentPrice:99,horizon:{5:null,20:null,60:null},
+   maePct:null,mfePct:null,pathBasis:'post-entry-full-sessions-v1',updatedAt:'2026-10-15T01:00:00Z'};
+ });
+ await c.run('refreshModelTradePerformance()');
+ assert.ok(maxActive>=2,'should not serialize all trades');
+ assert.equal(issued[0],'2026-10-13');
+ assert.equal(c.run('MODEL_TRADES.length'),3);
+});
+
+test('MAE and MFE include zero baseline when all subsequent trading prices stay one-sided',async()=>{
+ const b=backend();
+ b.ctx.mockRows=[
+  {date:'2026-10-13',open:100,high:120,low:70,close:100,adjclose:100},
+  {date:'2026-10-14',open:90,high:95,low:88,close:90,adjclose:90}];
+ b.run("etfHistory=async()=>({rows:mockRows,source:'test',validation:{fullHistoryPass:true}});twseDividendEvents=async()=>({complete:true,events:[]});liveEtf4=async()=>({quotes:{'0050':{last:90}}})");
+ const first=await b.run("tradePerformance('0050','2026-10-13',100)");
+ assert.equal(first.mfePct,0);assert.equal(first.maePct,-12);
+ b.ctx.mockRows[1]={date:'2026-10-14',open:110,high:120,low:105,close:115,adjclose:115};
+ const second=await b.run("tradePerformance('0050','2026-10-13',100)");
+ assert.equal(second.maePct,0);assert.ok(Math.abs(second.mfePct-20)<1e-8);
+});
+
 test('mixed frontend/backend builds block writes before applying any holdings operation',async()=>{
  const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
  c.route(async(url,opts)=>{if(opts.method==='POST')writes++;return{ok:true,build:'older-deployed-server'}});

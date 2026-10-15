@@ -8,6 +8,7 @@ on:
       - fix/four-etf-dividend-forecast-20261014
       - feature/desktop-signal-alerts-20261014
       - fix/trade-pnl-live-quote-20261015
+      - fix/performance-consistency-20261015
   pull_request:
     paths:
       - 'public/model-ab.js'
