@@ -10,6 +10,7 @@ on:
       - fix/trade-pnl-live-quote-20261015
       - fix/performance-consistency-20261015
       - feature/crash-dip-watch-20261015
+      - feature/crash-gate-research-20261015
   pull_request:
     paths:
       - 'public/model-ab.js'
@@ -18,6 +19,9 @@ on:
       - 'public/signal-alerts.js'
       - 'public/dip-watch.js'
       - 'tests/dip-watch.test.js'
+      - 'crash-gate-lab.js'
+      - 'public/crash-gate-lab-ui.js'
+      - 'tests/crash-gate-lab.test.js'
       - 'tests/signal-alerts.test.js'
       - 'tests/reliability.test.js'
       - 'tests/model-ab.test.js'
@@ -38,6 +42,6 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
-      - run: npm run check && node --check public/signal-alerts.js && node --check public/dip-watch.js
+      - run: npm run check && node --check public/signal-alerts.js && node --check public/dip-watch.js && node --check crash-gate-lab.js && node --check public/crash-gate-lab-ui.js
       - run: node --check trend-shadow-b.js && node --check public/trend-shadow-b-ui.js && node --check trend-forward-ledger.js && node --check public/trend-forward-ui.js
       - run: npm test

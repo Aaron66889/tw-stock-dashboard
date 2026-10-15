@@ -6,6 +6,7 @@ const crypto=require('crypto');
 const {URL}=require('url');
 const TREND_SHADOW_B=require('./trend-shadow-b');
 const TREND_LEDGER=require('./trend-forward-ledger');
+const CRASH_GATE_LAB=require('./crash-gate-lab');
 let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 
 const PORT=process.env.PORT||3000;
@@ -2335,10 +2336,16 @@ async function buyModel(){
  // To keep /api/buy-model responsive, at most ONE uncached OOS calibration is computed per request; the others temporarily use baseline and warm on later cycles.
  let shadowCalibratedThisRequest=false;
  for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy&&!shadowCalibratedThisRequest){policy=shadowPolicyCalibration(c,rows);shadowCalibratedThisRequest=true}if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);const volumeSignal=volumeShadowSignal(c,etfLd?.quotes?.[c],hs[c],vh[c]),chipSignal=chipShadowSignal(c,hh[c],instWin,yc[c]);applyShadowExperimentalFactors(sr,volumeSignal,chipSignal);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
+ // Comparison is read-only; the actual modelOne() hardVeto remains untouched.
+ const researchGateAudit=Object.fromEntries(ETF.map(c=>[c,CRASH_GATE_LAB.analyzeGate({
+  marketPct:movePct(ld.market),tsmcPct:movePct(ld.tsmc),breadthRatio:ctx?.breadth?.ratio,
+  breadthUsable:ctx?.breadth?.usableForModel===true,environmentScore:models[c]?.environmentScore??null,
+  fresh:modelFreshByCode[c],corpActionBlocked:quoteStatus[c]?.corporateActionReferenceMissing
+ })]));
  // Recent completed exchange dates let the browser advance no-signal streaks by real trading sessions instead of calendar days.
  const calendarHist=ETF.map(c=>hs[c]).find(h=>Array.isArray(h?.rows)&&h.rows.length);
  const tradingDates=[...new Set((calendarHist?.rows||[]).map(x=>x?.date).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)))].sort().slice(-180);
- return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'},shadowData:{yahooChips:Object.fromEntries(ETF.map(c=>[c,{ok:!!yc[c]?.ok,days:yc[c]?.days||0,asOf:yc[c]?.asOf||null,reason:yc[c]?.reason||null}])),volumeWindows:Object.fromEntries(ETF.map(c=>[c,{ok:!!vh[c]?.ok,days:vh[c]?.days||0,asOf:vh[c]?.asOf||null,reason:vh[c]?.reason||null}])),liveVolumes:etfLd?.volumeStatus||Object.fromEntries(ETF.map(c=>[c,{ok:Number(etfLd?.quotes?.[c]?.volume)>0,volume:Number(etfLd?.quotes?.[c]?.volume)||null,source:etfLd?.quotes?.[c]?.volumeSource||null}]))}};
+ return{ok:true,version:VERSION,build:BUILD,fetchedAt:new Date().toISOString(),marketFetchedAt:ld.fetchedAt||null,etfFetchedAt:etfLd?.fetchedAt||null,dataFresh:!!fresh,researchGateAudit,marketFresh,marketAgeMs:Number.isFinite(marketAgeMs)?marketAgeMs:null,marketLastGoodFallback:!!ld.lastGoodFallback,etfFresh,etfQuotesOk,modelFreshByCode,quoteStatus,tradingDates,etfQuoteErrors:etfLd?.errors||[],corporateActions:etfLd?.corporateActions||{},degraded:!fresh||Object.values(hh).some(x=>!x?.usable),models,shadowModels,quotes:etfLd?.quotes||{},market:ld.market||null,tsmc:ld.tsmc||null,context:ctx,nightFuture:nf,overseas:ovs,health:Object.fromEntries(ETF.map(c=>[c,hh[c]&&{score:hh[c].score,usable:hh[c].usable,divergence:hh[c].divergence,sourceCoverage:hh[c].sourceCoverage,quoteCoverage:hh[c].quoteCoverage,asOf:hh[c].asOf}])),institutionalWindow:{ok:!!instWin?.ok,days:instWin?.days||0,asOf:instWin?.asOf||null,source:instWin?.source||'TWSE T86'},shadowData:{yahooChips:Object.fromEntries(ETF.map(c=>[c,{ok:!!yc[c]?.ok,days:yc[c]?.days||0,asOf:yc[c]?.asOf||null,reason:yc[c]?.reason||null}])),volumeWindows:Object.fromEntries(ETF.map(c=>[c,{ok:!!vh[c]?.ok,days:vh[c]?.days||0,asOf:vh[c]?.asOf||null,reason:vh[c]?.reason||null}])),liveVolumes:etfLd?.volumeStatus||Object.fromEntries(ETF.map(c=>[c,{ok:Number(etfLd?.quotes?.[c]?.volume)>0,volume:Number(etfLd?.quotes?.[c]?.volume)||null,source:etfLd?.quotes?.[c]?.volumeSource||null}]))}};
 }
 
 
@@ -2670,6 +2677,33 @@ function tradeDividendPerShare(events,entryDate,throughDate){
  return [...uniq.values()].reduce((sum,e)=>sum+(e.exDate>String(entryDate||'')&&e.exDate<=String(throughDate||'')?(Number(e.amount)||0):0),0);
 }
 function tradeEligibleDividends(events,entryDate,throughDate){const uniq=new Map();for(const e of (events||[])){const d=String(e?.exDate||e?.date||'');if(/^\d{4}-\d{2}-\d{2}$/.test(d)&&Number(e?.amount)>0)uniq.set(d,{...e,exDate:d})}return [...uniq.values()].filter(e=>e.exDate>String(entryDate||'')&&e.exDate<=String(throughDate||''))}
+
+// Offline price-core research: ETF 0050 is a clearly labeled market proxy.
+// No cached market environment/held positions are modified by this endpoint.
+async function crashGateLabReport(){
+ const codes=ETF,asOfDate=ymdTaipei();
+ const hs=await Promise.all(codes.map(async code=>{
+  try{return await deadline(etfHistory(code),9000,null)}
+  catch(e){return{ok:false,error:e.message||String(e)}} }));
+ const market=hs[0],results={};
+ for(let i=0;i<codes.length;i++){
+  const code=codes[i],h=hs[i];
+  if(!Array.isArray(market?.rows)||!Array.isArray(h?.rows)){
+   results[code]={ok:false,code,status:'HISTORY_UNAVAILABLE',source:h?.source||null,error:h?.error||'日K尚未取得'};
+   continue;
+  }
+  const backtest=CRASH_GATE_LAB.backtest(h.rows,market.rows,{code,asOfDate});
+  results[code]={...backtest,source:h.source||'ETF history',
+   marketProxySource:market.source||'0050 ETF history',
+   historyOfficial:!!h.validation?.backtestReadyPass,
+   proxyOfficial:!!market.validation?.backtestReadyPass};
+ }
+ return{ok:true,version:'crash-gate-lab-v1',asOfDate,generatedAt:new Date().toISOString(),
+  scope:'只研究，與正式L1/L2/L3 Gate / 買點 / Supabase完全隔離',
+  warning:'這不是正式A策略對B策略的回測；缺少歷史台積電、上市廣度、環境分數與真實進場訊號快照',
+  marketProxy:'0050 ETF調整日K代表市場代理，不是台灣加權指數',
+  results};
+}
 
 async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3Low=null,layer1High=null){
  if(!ETF.includes(code)||!(Number(entryPrice)>0)||!/^\d{4}-\d{2}-\d{2}$/.test(entryDate||''))return{ok:false,error:'invalid trade parameters'};
@@ -3374,6 +3408,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/constituent-dashboard'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'constituent-dashboard',()=>ETF.includes(code)?constituentDashboard(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituents'){const code=u.searchParams.get('code')||'0050',date=u.searchParams.get('date')||null;return safeApi(res,'constituents',()=>ETF.includes(code)?constituents(code,date):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/constituent-health'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'constituent-health',()=>ETF.includes(code)?constituentHealth(code):Promise.resolve({ok:false,error:'unsupported code'}))}
+ if(u.pathname==='/api/crash-gate-lab'&&req.method==='GET')return safeApi(res,'crash-gate-lab',()=>cached('crash-gate-lab:v1',30*60*1000,crashGateLabReport));
  if(u.pathname==='/api/backtest'){const code=u.searchParams.get('code')||'0050';return safeApi(res,'backtest',()=>ETF.includes(code)?backtest(code):Promise.resolve({ok:false,error:'unsupported code'}))}
  if(u.pathname==='/api/trade-performance'){return safeApi(res,'trade-performance',()=>tradePerformance(u.searchParams.get('code'),u.searchParams.get('entryDate'),u.searchParams.get('entryPrice'),u.searchParams.get('layer2Low'),u.searchParams.get('layer3Low'),u.searchParams.get('layer1High')))}
  try{let rel=u.pathname==='/'?'/index.html':u.pathname.replace(/\.\./g,''),f=path.join(PUBLIC,rel);if(!f.startsWith(PUBLIC)||!fs.existsSync(f)||fs.statSync(f).isDirectory())return send(res,404,'Not found','text/plain; charset=utf-8');const type=mime(f);res.writeHead(200,{'Content-Type':type,'Cache-Control':/\.html$|\.js$|\.css$/.test(f)?'no-store, max-age=0':'public,max-age=120','X-Content-Type-Options':'nosniff'});return res.end(fs.readFileSync(f))}catch(e){return send(res,500,'Static error','text/plain; charset=utf-8')}
