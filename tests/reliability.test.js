@@ -299,6 +299,67 @@ test('dividend forecast fields escape external content and never mutate actual h
  assert.doesNotMatch(html,/<img /);assert.match(html,/&lt;img/);
  assert.equal(c.run("dividendTimelineMarkup('not-etf',ds)"),'');
 });
+
+test('0050 30 shares bought at 112.50 show a loss at verified live 109.55 even when server perf still says gain',()=>{
+ const c=client(),t={...trade('mt_live_loss'),entryPrice:112.5,shares:30,entryDate:'2026-10-13',
+  perf:{currentPrice:112.95,currentReturnPct:.40,currentTotalReturnPct:.40,accruedDividendPerShare:0,
+   currentPriceSource:'daily history fallback',updatedAt:'2026-10-13T03:30:00Z',horizon:{}}};
+ c.ctx.one=t;
+ c.run("lastLive={quotes:{'0050':{last:109.55,date:dayKey(),fetchTime:new Date().toISOString(),realtime:true}}}");
+ const result=c.json('modelNetMetrics(one)');
+ assert.equal(result.currentPrice,109.55);assert.equal(result.priceSource,'ETF即時行情');
+ assert.equal(result.gross,-88.5);assert.equal(result.cost,13);assert.equal(result.net,-101.5);
+ assert.ok(result.ret<-3.0);assert.ok(result.currentTotalReturnPct<-2.6);
+ const details=c.run('modelTradeDetailHtml(one)');
+ assert.match(details,/109\.55元/);assert.match(details,/含息毛損益 -88/);
+});
+
+test('four ETF positions are always marked from latest common quote instead of stale API totals',()=>{
+ const c=client();c.run("lastLive={quotes:Object.fromEntries(ETF.map(code=>[code,{last:90,date:dayKey(),fetchTime:new Date().toISOString(),realtime:true}]))}");
+ for(const code of ['0050','0056','00878','00919']){
+  const item={...trade('mt_mark_'+code),code,entryPrice:100,shares:10,entryDate:'2026-10-13',
+   perf:{currentPrice:101,currentTotalReturnPct:1,accruedDividendPerShare:0,updatedAt:'2026-10-13T04:00:00Z'}};
+  c.ctx.example=item;
+  const m=c.json('modelNetMetrics(example)');
+  assert.equal(m.currentPrice,90,code);assert.ok(m.net<0,code);
+ }
+});
+
+test('during an open session stale old cloud performance cannot masquerade as a current gain',()=>{
+ const c=client();c.ctx.t={...trade('mt_stale_001'),entryPrice:112.5,shares:30,entryDate:'2026-10-13',
+  perf:{currentPrice:113,currentTotalReturnPct:.44,updatedAt:'2026-10-13T03:25:00Z'}};
+ c.run("lastLive={quotes:{'0050':{last:109.55,date:'2026-10-13',fetchTime:'2026-10-13T01:00:00Z',realtime:false,lastGoodFallback:true}}}");
+ // Simulate trading hours regardless of when CI happens to execute.
+ c.run("twMarketOpenClient=()=>true");
+ const m=c.json('modelNetMetrics(t)');
+ assert.equal(m.currentPrice,null);assert.equal(m.net,null);
+ assert.equal(m.priceSource,'等待最新行情');
+});
+
+test('diagnostics and model card reuse marked valuation, original trade/perf records remain unchanged',()=>{
+ const c=client();
+ const t={...trade('mt_snapshot_0050'),entryDate:'2026-10-13',entryPrice:112.5,shares:30,
+  snapshot:{score:72,zones:[]},perf:{currentPrice:112.95,currentTotalReturnPct:.4,updatedAt:'2026-10-13T03:00:00Z',horizon:{}}};
+ c.ctx.caseTrade=t;
+ c.run("lastLive={quotes:{'0050':{last:109.55,date:dayKey(),fetchTime:new Date().toISOString(),realtime:true}}};MODEL_TRADES=[caseTrade]");
+ const before=JSON.stringify(t),m=c.json('modelNetMetrics(caseTrade)');
+ assert.equal(m.gross,-88.5);assert.equal(JSON.stringify(t),before);
+ const d=c.json('performanceDiagnosticPayload().trades[0]');
+ assert.equal(d.currentPrice,109.55);assert.equal(d.netPnL,-101.5);assert.equal(d.currentPriceSource,'ETF即時行情');
+ assert.equal(JSON.stringify(t),before);
+ c.run('renderModelTrades()');
+ assert.match(c.nodes.get('modelTradeList').innerHTML,/109\.55元/);
+ assert.match(c.nodes.get('liveTradeSummary').innerHTML,/\-10[12]/);
+});
+
+test('0050 hardGate FAIL explanation is explicit about touched price not being an executable buy',()=>{
+ const c=client();
+ c.ctx.sample={r:{hardVeto:true,hardVetoReason:'市場/權值/廣度至少兩項急殺',score:42},m:{layers:[{zone:{low:109.84,high:110.15}},{zone:{low:109.31,high:109.61}},{zone:{low:108.62,high:108.93}}]},px:109.55,activeStatus:'WAIT',statuses:['WAIT','WAIT','WAIT'],activeLayer:1};
+ const explanation=c.run("explain('0050',sample)");
+ assert.match(explanation,/硬Gate FAIL/);assert.match(explanation,/非可執行買點/);
+ assert.match(explanation,/第2層/);
+});
+
 test('mixed frontend/backend builds block writes before applying any holdings operation',async()=>{
  const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
  c.route(async(url,opts)=>{if(opts.method==='POST')writes++;return{ok:true,build:'older-deployed-server'}});
