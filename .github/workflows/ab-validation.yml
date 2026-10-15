@@ -12,6 +12,7 @@ on:
       - feature/crash-dip-watch-20261015
       - feature/crash-gate-research-20261015
       - fix/dip-watch-rebound-gap-20261015
+      - feature/gate-blocked-forward-ledger-20261015
   pull_request:
     paths:
       - 'public/model-ab.js'
@@ -23,6 +24,9 @@ on:
       - 'crash-gate-lab.js'
       - 'public/crash-gate-lab-ui.js'
       - 'tests/crash-gate-lab.test.js'
+      - 'gate-blocked-ledger.js'
+      - 'public/gate-blocked-ui.js'
+      - 'tests/gate-blocked-ledger.test.js'
       - 'tests/signal-alerts.test.js'
       - 'tests/reliability.test.js'
       - 'tests/model-ab.test.js'
@@ -43,6 +47,6 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
-      - run: npm run check && node --check public/signal-alerts.js && node --check public/dip-watch.js && node --check crash-gate-lab.js && node --check public/crash-gate-lab-ui.js
+      - run: npm run check && node --check public/signal-alerts.js && node --check public/dip-watch.js && node --check crash-gate-lab.js && node --check public/crash-gate-lab-ui.js && node --check gate-blocked-ledger.js && node --check public/gate-blocked-ui.js
       - run: node --check trend-shadow-b.js && node --check public/trend-shadow-b-ui.js && node --check trend-forward-ledger.js && node --check public/trend-forward-ui.js
       - run: npm test
