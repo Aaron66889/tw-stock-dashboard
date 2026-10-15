@@ -9,12 +9,15 @@ on:
       - feature/desktop-signal-alerts-20261014
       - fix/trade-pnl-live-quote-20261015
       - fix/performance-consistency-20261015
+      - feature/crash-dip-watch-20261015
   pull_request:
     paths:
       - 'public/model-ab.js'
       - 'public/index.html'
       - 'public/app.js'
       - 'public/signal-alerts.js'
+      - 'public/dip-watch.js'
+      - 'tests/dip-watch.test.js'
       - 'tests/signal-alerts.test.js'
       - 'tests/reliability.test.js'
       - 'tests/model-ab.test.js'
@@ -35,6 +38,6 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
-      - run: npm run check && node --check public/signal-alerts.js
+      - run: npm run check && node --check public/signal-alerts.js && node --check public/dip-watch.js
       - run: node --check trend-shadow-b.js && node --check public/trend-shadow-b-ui.js && node --check trend-forward-ledger.js && node --check public/trend-forward-ui.js
       - run: npm test
