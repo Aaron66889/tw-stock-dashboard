@@ -1327,7 +1327,7 @@ function modelNetMetrics(t){
  }
  const mark=tradeMarkPrice(t),px=mark.price,divPerShare=modelTradeDividendPerShare(t);
  const gross=Number.isFinite(px)&&Number.isFinite(entry)&&Number.isSafeInteger(shares)&&shares>0
-  ?(px+divPerShare-entry)*shares:null;
+  ?Math.round((px+divPerShare-entry)*shares*100)/100:null;
  const cost=Number.isFinite(px)?fubonEstimatedTradeCost(entry,shares,px):null;
  const net=Number.isFinite(gross)&&Number.isFinite(cost)?gross-cost:null;
  return{gross,cost,net,ret:net!=null&&base>0?net/base*100:null,dividendPerShare:divPerShare,
