@@ -78,6 +78,15 @@ test('ordinary market with no systemic Gate and genuine corporate-action veto do
  h.model.hardVetoReason='市場/權值/廣度至少兩項急殺';h.quote.last=112.1;h.quote.low=111.9;
  assert.equal(h.obs().status,'OFF');
 });
+test('hard Gate disables formal buy recording and shows honest paused label while preserving independent manual path',()=>{
+ const app=fs.readFileSync(path.join(root,'public/app.js'),'utf8');
+ assert.match(app,/正式模型暫停/);
+ assert.match(app,/x\.r\.hardVeto\|\|x\.r\.noBuyToday\|\|x\.activeStatus!=='CONFIRMED_IN'/);
+ assert.match(app,/不能記作模型訊號/);
+ assert.match(app,/記錄自主買入/);
+ assert.match(app,/第\$\{i\}層價格已確認／正式買入暫停/);
+});
+
 test('all four ETF views include observational watch; formal Gate logic is not overwritten',()=>{
  const app=fs.readFileSync(path.join(root,'public/app.js'),'utf8'),
   html=fs.readFileSync(path.join(root,'public/index.html'),'utf8');
