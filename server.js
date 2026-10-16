@@ -2340,10 +2340,10 @@ async function buyModel(){
  // Per-ETF freshness isolation: one bad ETF quote must not hard-Gate the other three.
  const modelFreshByCode=Object.fromEntries(ETF.map(c=>[c,!!(marketFresh&&quoteStatus[c]?.ok)]));
  for(const c of ETF){try{const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;models[c]=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c])}catch(e){models[c]={code:c,error:e.message}}}
- // Shadow is computed in parallel and can never overwrite the official models object.
- // To keep /api/buy-model responsive, at most ONE uncached OOS calibration is computed per request; the others temporarily use baseline and warm on later cycles.
- let shadowCalibratedThisRequest=false;
- for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy&&!shadowCalibratedThisRequest){policy=shadowPolicyCalibration(c,rows);shadowCalibratedThisRequest=true}if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);const volumeSignal=volumeShadowSignal(c,etfLd?.quotes?.[c],hs[c],vh[c]),chipSignal=chipShadowSignal(c,hh[c],instWin,yc[c]);applyShadowExperimentalFactors(sr,volumeSignal,chipSignal);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
+ // Research-only Shadow calibration must never block the live buy-model endpoint.
+ // Off-hours background warming populates the policy cache independently.
+
+ for(const c of ETF){try{const rows=hs[c]?.rows||[],last=rows?.at(-1)?.date||'na',pkey=`${c}|${last}|${rows.length}`;let policy=SHADOW_POLICY_CACHE.get(pkey);if(!policy)policy={ready:false,code:c,q:[...META[c].cfg.q],selectedId:'baseline',wfYears:[],wfCount:0,confidence:'WARMING',source:'shadow-oos-warming',confirmRules:[{minScore:50,cycles:2},{minScore:46,cycles:2},{minScore:42,cycles:2}],note:'OOS Shadow校準背景暖機中；暫與正式quantile一致，不影響正式買點。'};const cfg={...META[c].cfg,q:policy.q};const env=buildEnvironment(c,ld,ctx,ovs,nf,hh[c]);env.liveMarket=ld.market;env.liveTsmc=ld.tsmc;const sr=modelOne(c,etfLd?.quotes?.[c],hs[c],env,hh[c],modelFreshByCode[c],{cfgOverride:cfg,variant:'shadow'});sr.shadowOnly=true;sr.shadowPolicy=policy;sr.criticalGate=shadowCriticalGate(c,sr,hs[c],hh[c],modelFreshByCode[c]);const volumeSignal=volumeShadowSignal(c,etfLd?.quotes?.[c],hs[c],vh[c]),chipSignal=chipShadowSignal(c,hh[c],instWin,yc[c]);applyShadowExperimentalFactors(sr,volumeSignal,chipSignal);shadowModels[c]=sr}catch(e){shadowModels[c]={code:c,error:e.message,shadowOnly:true}}}
  // Comparison is read-only; the actual modelOne() hardVeto remains untouched.
  const researchGateAudit=Object.fromEntries(ETF.map(c=>[c,CRASH_GATE_LAB.analyzeGate({
   marketPct:movePct(ld.market),tsmcPct:movePct(ld.tsmc),breadthRatio:ctx?.breadth?.ratio,
@@ -2557,6 +2557,24 @@ function shadowPolicyCalibration(code,rows){
   const out={ready:wf.length>0,code,q:selected.q,selectedId:selected.id,wfYears:wf,wfCount:wf.length,confidence,source:'3y-train-next-year-OOS-quantile-family',oosMetrics:oos,baselineOosMetrics:baselineOos,confirmRules,note:'Quantile由3年訓練→次年OOS選擇；Score/cycles先依OOS信心採保守Shadow候選，待實盤replay累積後再獨立校準。'};
   for(const k of SHADOW_POLICY_CACHE.keys())if(k.startsWith(code+'|')&&k!==key)SHADOW_POLICY_CACHE.delete(k);SHADOW_POLICY_CACHE.set(key,out);return out;
  }catch(e){const out={...fallback,error:e.message};SHADOW_POLICY_CACHE.set(key,out);return out}
+}
+// Research-only OOS calibration is costly; prepare one ETF per pass outside
+// the market/pre-open window, never synchronously on an HTTP request.
+let SHADOW_WARM_INDEX=0,SHADOW_WARM_BUSY=false;
+function shadowWarmWindow(clock=taipeiClock()){
+ const m=Number(clock.h)*60+Number(clock.m),weekday=['Mon','Tue','Wed','Thu','Fri'].includes(clock.weekday);
+ return !weekday||m<8*60||m>=14*60+10;
+}
+async function warmShadowPolicyOffHours(){
+ if(SHADOW_WARM_BUSY||!shadowWarmWindow()||RUNTIME.refreshing)return;
+ SHADOW_WARM_BUSY=true;
+ const code=ETF[SHADOW_WARM_INDEX++%ETF.length];
+ try{
+  const hist=await deadline(etfHistory(code).catch(()=>null),7500,null),rows=hist?.rows||[];
+  const last=rows.at(-1)?.date||'na',key=code+'|'+last+'|'+rows.length;
+  if(rows.length>=650&&!SHADOW_POLICY_CACHE.has(key))shadowPolicyCalibration(code,rows);
+ }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),'shadow-background:'+code+':'+String(e.message||e).slice(0,90)].slice(-20)}
+ finally{SHADOW_WARM_BUSY=false}
 }
 function shadowCriticalGate(code,r,hist,health,fresh=true){
  const checks=[];const add=(id,ok,detail)=>checks.push({id,ok:!!ok,detail});
@@ -3514,6 +3532,8 @@ server.listen(PORT,'0.0.0.0',()=>{
  // Dedicated 08:45~08:59:59 TXF sampler. It is idle outside the pre-open window and gives the 08:57/08:58/08:59 model the actual 12-minute day-session path.
  setTimeout(preopenTxfPump,2500);
  setInterval(preopenTxfPump,5000);
+ setTimeout(warmShadowPolicyOffHours,4*60*1000);
+ setInterval(warmShadowPolicyOffHours,4*60*1000);
  setTimeout(autoWarmAllHistory,45000);
  setInterval(autoWarmAllHistory,30*60*1000);
 });
