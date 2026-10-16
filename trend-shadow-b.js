@@ -91,6 +91,26 @@ function stats(events){
  const eligible=events.filter(x=>x.fakeBreak5!==null);
  return{signals:events.length,period,fakeBreak5:{samples:eligible.length,rate:eligible.length?pct(eligible.filter(x=>x.fakeBreak5).length/eligible.length*100,2):null}};
 }
+// Read-only next-day OPEN fill study; official model and separate Shadow-B stay unchanged.
+function entryBandResearch(events) {
+ const levels=[{id:'A',label:'保守',maxAtr:.30},{id:'B',label:'折衷',maxAtr:.45},{id:'C',label:'寬鬆',maxAtr:.60}];
+ const offset=e=>e.atr>0&&e.entry>0?(e.entry-e.breakout)/e.atr:null;
+ const feasible=events.map(e=>({...e,entryOffsetAtr:offset(e)})).filter(e=>finite(e.entryOffsetAtr));
+ const inBand=(e,maxAtr)=>e.entryOffsetAtr>=-.10000001&&e.entryOffsetAtr<=maxAtr+1e-8;
+ const bands=levels.map(x=>{
+  const samples=feasible.filter(e=>inBand(e,x.maxAtr));
+  return{id:x.id,label:x.label,maxAtr:x.maxAtr,lowerAtr:-.10,stats:stats(samples)};
+ });
+ const extras=[{id:'B_ONLY',label:'折衷新增',low:.30,high:.45},{id:'C_ONLY',label:'寬鬆新增',low:.45,high:.60}].map(x=>({
+  id:x.id,label:x.label,rangeAtr:[x.low,x.high],
+  stats:stats(feasible.filter(e=>e.entryOffsetAtr>x.low+1e-8&&e.entryOffsetAtr<=x.high+1e-8))
+ }));
+ return{version:'trend-band-research-v1',mode:'SHADOW_ONLY',signalPool:events.length,
+  assumptions:'共同訊號於日線收盤確認；隔一交易日開盤價若在突破價-0.10 ATR至突破價+各上限內才假設成交；固定持有5/20/60交易日，扣除估計來回費稅0.385%。',
+  limitations:'此為日線價格核心及次日開盤代理回測，未重播盤中觸價、動態評分、量價、風控Gate與實際成交；三組樣本並非相同成交集合，不可直接視為正式模型的實績或勝負。',
+  bands,extras};
+}
+
 function compare(rows){
  const key=[rows?.length||0,rows?.[0]?.date,rows?.at(-1)?.date,rows?.at(-1)?.close,rows?.at(-1)?.adjclose].join('|');
  const cached=CACHE.get(key);if(cached&&Date.now()-cached.at<15*60*1000)return cached.value;
@@ -105,12 +125,12 @@ function compare(rows){
    limitations:'並非完整重播正式盤中A版的分數、當日突破狀態、量價、雲端成交或強制Gate；B版78分條件亦無法由價格核心單獨重播。',
    ready:bars.length>=340&&coverage>=90,
    historyDays:bars.length,ohlcCoveragePct:pct(coverage,1),firstDate:bars[0]?.date||null,lastDate:bars.at(-1)?.date||null,
-   all:{A:stats(eventsA),B:stats(eventsB)},
+   all:{A:stats(eventsA),B:stats(eventsB)},entryBandResearch:entryBandResearch(eventsA),
    check2026:{A:stats(subset(eventsA,'2026')),B:stats(subset(eventsB,'2026'))},
    disclosure:'2026僅為近期區段檢查；B門檻制定時已看過近期損益，不可當作完全未接觸的樣本外證據。'
  };
- if(!result.ready){result.all=null;result.check2026=null;result.error='日K資料或OHLC覆蓋不足，禁止顯示A/B勝負'}
+ if(!result.ready){result.all=null;result.check2026=null;result.entryBandResearch=null;result.error='日K資料或OHLC覆蓋不足，禁止顯示A/B勝負'}
  if(CACHE.size>8)CACHE.clear();CACHE.set(key,{at:Date.now(),value:result});
  return result;
 }
-module.exports={VERSION,B,COST_PCT,live,barsFrom,signalCandidates,scoreEvent,stats,compare};
+module.exports={VERSION,B,COST_PCT,live,barsFrom,signalCandidates,scoreEvent,stats,entryBandResearch,compare};
