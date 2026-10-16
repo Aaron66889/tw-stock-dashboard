@@ -965,6 +965,37 @@ async function ensureEtfQuoteVolumes(etfLd){
  etfLd.volumeStatus=Object.fromEntries(ETF.map(c=>[c,{ok:Number(quotes[c]?.volume)>0,volume:Number(quotes[c]?.volume)||null,source:quotes[c]?.volumeSource||null}]));
  return etfLd;
 }
+// Supplemental volume backfill must never block a formal buy-model refresh.
+// The backfill works on a detached quote copy and only contributes volume to
+// later snapshots. Do not recycle stale open/high/low into official A signals.
+const VOLUME_BACKFILL={day:null,at:0,byCode:{},pending:null};
+function applyRecentBackgroundVolume(etfLd){
+ const quotes=etfLd?.quotes||{},day=ymdTaipei(),now=Date.now();
+ if(VOLUME_BACKFILL.day===day&&now-VOLUME_BACKFILL.at<45000){
+  for(const c of ETF){
+   const q=quotes[c],v=VOLUME_BACKFILL.byCode?.[c];
+   if(q&&!(Number(q.volume)>0)&&v?.volume>0){
+    q.volume=v.volume;
+    q.volumeSource=v.source+'（背景補量）';
+   }
+  }
+ }
+ const missing=ETF.filter(c=>quotes[c]&&!(Number(quotes[c].volume)>0));
+ if(!missing.length||VOLUME_BACKFILL.pending)return etfLd;
+ if(VOLUME_BACKFILL.day===day&&now-VOLUME_BACKFILL.at<30000)return etfLd;
+ const snapshot={quotes:Object.fromEntries(ETF.map(c=>[c,quotes[c]?{...quotes[c]}:null]))};
+ const task=ensureEtfQuoteVolumes(snapshot).then(()=>{
+  const byCode={};
+  for(const c of ETF){
+   const q=snapshot.quotes[c];
+   if(q&&Number(q.volume)>0)byCode[c]={volume:Number(q.volume),source:q.volumeSource||'背景來源'};
+  }
+  VOLUME_BACKFILL.day=day;VOLUME_BACKFILL.at=Date.now();VOLUME_BACKFILL.byCode=byCode;
+ }).catch(e=>{VOLUME_BACKFILL.day=day;VOLUME_BACKFILL.at=Date.now();VOLUME_BACKFILL.byCode={};});
+ VOLUME_BACKFILL.pending=task;
+ task.finally(()=>{if(VOLUME_BACKFILL.pending===task)VOLUME_BACKFILL.pending=null});
+ return etfLd;
+}
 function volumeShadowSignal(code,quote,hist,volumeFallback){
  const primary=(hist?.rows||[]).filter(x=>Number(x.volume)>0),fallback=(volumeFallback?.rows||[]).filter(x=>Number(x.volume)>0),byDate=new Map();
  for(const x of fallback)if(x?.date&&Number(x.volume)>0)byDate.set(x.date,{date:x.date,volume:Number(x.volume),source:volumeFallback?.source});
@@ -2326,7 +2357,8 @@ async function buyModel(){
   Promise.all(ETF.map(async c=>[c,await deadline(cachedSingleFlight('shadow-aux:volume:'+c,10*60*1000,()=>yahooVolumeWindow(c)).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:e.message})),350,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:'Shadow成交量背景資料暖機中'})])),
   Promise.all(ETF.map(async c=>[c,await deadline(cachedSingleFlight('shadow-aux:yahoo-chip:'+c,10*60*1000,()=>yahooInstitutionalDirect(c)).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:e.message})),350,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:'Shadow法人背景資料暖機中'})]))
  ]);
- await ensureEtfQuoteVolumes(etfLd).catch(()=>{});
+ // Volume is Shadow-only. Never wait for multiple MIS/Yahoo fallbacks before official A can respond.
+ applyRecentBackgroundVolume(etfLd);
  const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),vh=Object.fromEntries(volWindows||[]),yc=Object.fromEntries(yahooChips||[]),models={},shadowModels={};
  const marketAt=ld.fetchedAt?Date.parse(ld.fetchedAt):0,etfAt=etfLd?.fetchedAt?Date.parse(etfLd.fetchedAt):0,openRequired=twMarketOpenNow();
  const marketAgeMs=ld.lastGoodFallback
