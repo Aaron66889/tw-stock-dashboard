@@ -14,6 +14,7 @@ on:
       - fix/dip-watch-rebound-gap-20261015
       - feature/gate-blocked-forward-ledger-20261015
       - fix/model-page-latency-dividend-20261016
+      - fix/peak-hour-shadow-calibration-20261016
   pull_request:
     paths:
       - 'public/model-ab.js'
@@ -29,6 +30,7 @@ on:
       - 'public/gate-blocked-ui.js'
       - 'tests/gate-blocked-ledger.test.js'
       - 'tests/model-page-performance.test.js'
+      - 'tests/shadow-latency-isolation.test.js'
       - 'tests/signal-alerts.test.js'
       - 'tests/reliability.test.js'
       - 'tests/model-ab.test.js'
