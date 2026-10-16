@@ -67,3 +67,26 @@ test('2026 check is labeled as exploratory and not marketed as untouched OOS',()
  assert.ok(r.limitations.includes('並非完整重播'));
  assert.equal(r.execution.includes('次交易日開盤'),true);
 });
+test('Shadow entry bands are nested; extra ranges only count incremental fills',()=>{
+ const seq=rows(470,true),bars=b.barsFrom(seq),idx=370;
+ const ref=bars[idx].o,atr=1;
+ const make=offset=>b.scoreEvent({date:bars[idx-1].date,entryDate:bars[idx].date,
+  signalIndex:idx-1,entryIndex:idx,entry:ref,breakout:ref-offset*atr,atr,breakoutAtr:.1},bars);
+ const result=b.entryBandResearch([make(.20),make(.39),make(.52),make(.70),make(-.15)]);
+ assert.equal(result.mode,'SHADOW_ONLY');
+ assert.deepEqual(result.bands.map(x=>x.stats.signals),[1,2,3]);
+ assert.deepEqual(result.extras.map(x=>x.stats.signals),[1,1]);
+ assert.equal(result.signalPool,5);
+ assert.equal(result.bands[0].stats.period[20].samples,1);
+ assert.ok(result.assumptions.includes('隔一交易日'));
+});
+test('Research output is read-only: prior official A and B signals are unchanged',()=>{
+ const history=rows(500,true);
+ const baseline=b.signalCandidates(history);
+ const before=b.live(official({status:'WAIT'}),{open:100.9});
+ const output=b.compare(history);
+ const after=b.live(official({status:'WAIT'}),{open:100.9});
+ assert.deepEqual(before,after);
+ assert.equal(output.entryBandResearch?.mode,'SHADOW_ONLY');
+ assert.deepEqual(b.signalCandidates(history).candidateA,baseline.candidateA);
+});
