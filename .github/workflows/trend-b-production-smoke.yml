@@ -31,6 +31,32 @@ jobs:
           const script = await (await get('/trend-shadow-b-ui.js')).text();
           if (!script.includes('Shadow') || !script.includes('abPriceCore')) throw Error('frontend code not deployed');
           console.log('HTML and frontend script: PASS');
+
+          // Model / Validation no longer fires expensive four-ETF history on page open.
+          const modelUI=await(await get('/app.js')).text();
+          if(modelUI.includes('window.CrashGateLabUI?.load(false)'))
+            throw Error('Model page still eagerly starts all four historical crash backtests');
+          if(!modelUI.includes("if(id==='model'){renderSpecs(true);loadValidation(false);"))
+            throw Error('Lightweight validation no longer starts on visit');
+          if(!modelUI.includes("GateBlockedUI?.load(false)"))
+            throw Error('Gate-blocked summary not reachable');
+          const validationStarted=Date.now();
+          const validationResponse=await(await get('/api/validation',17000)).json();
+          const validationMs=Date.now()-validationStarted;
+          if(!validationResponse?.ok || !validationResponse.checks)
+            throw Error('Light model validation failed: '+JSON.stringify(validationResponse).slice(0,400));
+          const buyLatency=[];
+          for(let i=0;i<3;i++){
+            const t=Date.now(),d=await(await get('/api/buy-model',17000)).json();
+            buyLatency.push(Date.now()-t);
+            if(!d?.ok || !d.models?.['0050'] || !d.models?.['0056'] ||
+               !d.models?.['00878'] || !d.models?.['00919'])
+              throw Error('Official 4-ETF buy model degraded: '+JSON.stringify(d).slice(0,400));
+          }
+          console.log('MODEL_PAGE_LATENCY_SMOKE PASS',JSON.stringify({
+            validationMs,officialBuyModelMs:buyLatency,
+            heavyHistoricalAuto:false}));
+
           const stockUI = await (await get('/app.js')).text();
           for(const t of ['dividendTimelineMarkup(', 'nextForecast:auto.nextForecast', '下一次配息預估（未計入報酬）', '已除息待入帳'])
             if(!stockUI.includes(t))throw Error('Holdings dividend UI missing '+t);
