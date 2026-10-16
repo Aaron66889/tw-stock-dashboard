@@ -160,7 +160,7 @@ jobs:
 
 
           if(!html.includes('id="crashGateResearchResult"') || !html.includes('/crash-gate-lab-ui.js'))throw Error('Crash Gate research UI not deployed');
-          if(!stockUI.includes('window.CrashGateLabUI?.auditSnippet') || !stockUI.includes('window.CrashGateLabUI?.load(false)'))throw Error('Crash Gate study UI hooks not deployed');
+          if(!stockUI.includes('window.CrashGateLabUI?.auditSnippet') || stockUI.includes('window.CrashGateLabUI?.load(false)') || !html.includes('onclick="window.CrashGateLabUI?.load(true)"'))throw Error('Crash Gate study must be explicit, never eagerly loaded');
           const labModule=await (await get('/crash-gate-lab-ui.js')).text();
           if(!labModule.includes('no-lookahead')&&!labModule.includes('次一交易日開盤'))throw Error('Lab research caution missing');
           const study=await (await get('/api/crash-gate-lab',55000)).json();
