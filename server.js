@@ -2319,9 +2319,12 @@ async function buyModel(){
   deadline(nightFuture().catch(()=>null),6000,null),
   Promise.all(ETF.map(async c=>[c,await deadline(etfHistory(c).catch(e=>({ok:false,rows:[],source:'history error',validation:{fullHistoryPass:false},error:e.message})),7000,historyTimeout(c))])),
   Promise.all(ETF.map(async c=>[c,await deadline(constituentHealth(c).catch(e=>({ok:false,code:c,usable:false,score:null,divergence:'成分來源錯誤',sourceCoverage:0,quoteCoverage:0,reason:e.message})),6000,healthTimeout(c))])),
-  deadline(institutionalRecentWindow(5).catch(e=>({ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:e.message,reason:e.message})),7800,{ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:'institutional window deadline exceeded',reason:'T86視窗建立逾時'}),
-  Promise.all(ETF.map(async c=>[c,await deadline(yahooVolumeWindow(c).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:e.message})),5500,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:'Yahoo量能視窗逾時'})])),
-  Promise.all(ETF.map(async c=>[c,await deadline(yahooInstitutionalDirect(c).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:e.message})),5500,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:'Yahoo法人頁逾時'})]))
+  // Shadow-only institutional history: start the source in the background,
+  // then consume an existing cached value with a tiny wait budget. This must
+  // never delay the official A decision, whose inputs are above.
+  deadline(cachedSingleFlight('shadow-aux:inst-r1',5*60*1000,()=>institutionalRecentWindow(5)).catch(e=>({ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',error:e.message,reason:e.message})),350,{ok:false,days:0,reports:[],asOf:null,source:'TWSE T86',reason:'Shadow法人背景資料暖機中'}),
+  Promise.all(ETF.map(async c=>[c,await deadline(cachedSingleFlight('shadow-aux:volume:'+c,10*60*1000,()=>yahooVolumeWindow(c)).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:e.message})),350,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo Finance 6M日成交量',reason:'Shadow成交量背景資料暖機中'})])),
+  Promise.all(ETF.map(async c=>[c,await deadline(cachedSingleFlight('shadow-aux:yahoo-chip:'+c,10*60*1000,()=>yahooInstitutionalDirect(c)).catch(e=>({ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:e.message})),350,{ok:false,code:c,rows:[],days:0,asOf:null,source:'Yahoo股市 ETF法人逐日買賣超',reason:'Shadow法人背景資料暖機中'})]))
  ]);
  await ensureEtfQuoteVolumes(etfLd).catch(()=>{});
  const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),vh=Object.fromEntries(volWindows||[]),yc=Object.fromEntries(yahooChips||[]),models={},shadowModels={};
