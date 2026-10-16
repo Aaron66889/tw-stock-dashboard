@@ -16,6 +16,7 @@ on:
       - fix/model-page-latency-dividend-20261016
       - fix/peak-hour-shadow-calibration-20261016
       - fix/validation-lightweight-backtest-20261016
+      - fix/shadow-aux-nonblocking-20261016
   pull_request:
     paths:
       - 'public/model-ab.js'
@@ -33,6 +34,7 @@ on:
       - 'tests/model-page-performance.test.js'
       - 'tests/shadow-latency-isolation.test.js'
       - 'tests/validation-lightweight.test.js'
+      - 'tests/shadow-aux-fast.test.js'
       - 'tests/signal-alerts.test.js'
       - 'tests/reliability.test.js'
       - 'tests/model-ab.test.js'
