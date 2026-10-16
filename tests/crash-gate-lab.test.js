@@ -102,6 +102,7 @@ test('frontend and backend keep study segregated from official model and have no
  assert.match(html,/id="crashGateResearchResult"/);
  assert.ok(html.indexOf('/crash-gate-lab-ui.js')<html.indexOf('/app.js?v='));
  assert.match(app,/window\.CrashGateLabUI\?\.auditSnippet/);
- assert.match(app,/window\.CrashGateLabUI\?\.load\(false\)/);
+ assert.doesNotMatch(app,/window\.CrashGateLabUI\?\.load\(false\)/);
+ assert.match(html,/onclick="window\.CrashGateLabUI\?\.load\(true\)"/);
  assert.ok(!ui.includes('localStorage.setItem('));
 });

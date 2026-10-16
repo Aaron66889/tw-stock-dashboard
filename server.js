@@ -47,7 +47,7 @@ const META={
  '00919':{name:'群益台灣精選高息',listed:'2022-10-20',expected:40,source:'Capital',url:'https://www.capitalfund.com.tw/etf/product/detail/195/buyback',portfolioUrl:'https://www.capitalfund.com.tw/etf/product/detail/195/portfolio',
    cfg:{q:[.50,.28,.12],chaseBase:22,chasePctile:68,chaseDev:590,chaseR20:180,envShiftNeg:.017,envShiftPos:.0038,healthShift:.0034,reanchor:.20,firstReanchor:.31}}
 };
-const cache=new Map(),nightSamples=[],preopenTxfSamples=[],CHASE_CAL_CACHE=new Map(),SHADOW_POLICY_CACHE=new Map();
+const cache=new Map(),CACHE_INFLIGHT=new Map(),nightSamples=[],preopenTxfSamples=[],CHASE_CAL_CACHE=new Map(),SHADOW_POLICY_CACHE=new Map();
 let OP_META_RESTORED=false,OP_META_RESTORE_PROMISE=null;
 const CHASE_DAILY_LOCK_FILE='chase_calibration_daily.json';
 const HISTORY_JOBS=new Map(),WARM_QUEUE=[],DIV_MIN={'0050':20,'0056':12,'00878':12,'00919':8};
@@ -103,6 +103,13 @@ async function getText(url,headers={},tries=2){let e;for(let i=0;i<tries;i++){tr
 async function postText(url,headers={},ms=15000){const r=await fetchTimeout(url,{method:'POST',headers:{'User-Agent':'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0)','Accept':'text/html,application/xhtml+xml,*/*','Accept-Language':'zh-TW,zh;q=0.9','Content-Type':'application/x-www-form-urlencoded','Cache-Control':'no-cache','Pragma':'no-cache','If-Modified-Since':'Sat, 1 Jan 2000 00:00:00 GMT',...headers},body:''},ms);if(!r.ok)throw Error('HTTP '+r.status);return await r.text()}
 async function getBuffer(url,headers={}){const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'*/*',...headers}},12000);if(!r.ok)throw Error('HTTP '+r.status);return Buffer.from(await r.arrayBuffer())}
 async function cached(key,ttl,fn){const c=cache.get(key),now=Date.now();if(c&&now-c.at<ttl)return {...c.v,cached:true};const v=await fn();cache.set(key,{at:now,v});return {...v,cached:false}}
+// Collapse concurrent requests for the same expensive model. Failed computations
+// never enter the TTL cache, so a later request can retry normally.
+async function cachedSingleFlight(key,ttl,fn){
+ const existing=CACHE_INFLIGHT.get(key);if(existing)return existing;
+ const work=cached(key,ttl,fn);CACHE_INFLIGHT.set(key,work);
+ try{return await work}finally{if(CACHE_INFLIGHT.get(key)===work)CACHE_INFLIGHT.delete(key)}
+}
 function stripTags(s){return String(s||'').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/&#x27;|&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g,' ').trim()}
 function ymdTaipei(d=new Date()){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(d)}
 function taipeiClock(d=new Date()){const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',weekday:'short',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(d).map(x=>[x.type,x.value]));return{day:ymdTaipei(d),weekday:parts.weekday,h:Number(parts.hour),m:Number(parts.minute),s:Number(parts.second)}}
@@ -2594,7 +2601,7 @@ async function preopenTxfPump(){
   if(tickMins===539&&tick.s>=30){const old=getPreopenSnapshot(tick.day);if(old&&!old.locked)savePreopenSnapshot({...old,locked:true,lockedAt:new Date().toISOString(),source:'server-auto-08:57-lock'})}
   const nf=await nightFuture();RUNTIME.nf=nf;
   if(tickMins>=537){
-   const bm=await deadline(cached('buymodel',8000,buyModel),9500,null);
+   const bm=await deadline(cachedSingleFlight('buymodel',8000,buyModel),9500,null);
    if(bm?.models){
     const models={};for(const c of ETF){const r=bm.models[c];if(r&&!r.error&&r.raw)models[c]=r.raw}
     if(Object.keys(models).length){
@@ -2607,7 +2614,7 @@ async function preopenTxfPump(){
  }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}
  finally{PREOPEN_PUMP_RUNNING=false}
 }
-async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cached('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
+async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cachedSingleFlight('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
 function V(status,evidence,detail='',updatedAt=new Date().toISOString()){return{status,evidence,detail,updatedAt}}
 async function validationReport(deep=false){
  const out={},errors=[...(RUNTIME.errors||[])],ld=RUNTIME.live,ctx=RUNTIME.ctx,nf=RUNTIME.nf,ovs=RUNTIME.ovs,bm=RUNTIME.bm;
@@ -3209,7 +3216,7 @@ async function dividendAutoReport(){
   const upcoming=(allEvents[code]||[]).filter(e=>e.exDate>today).map(e=>{const shares=Math.max(0,Number(currentHoldings?.[code])||0);return{...e,sharesEstimate:shares,cashEstimate:Math.max(0,Math.round(shares*Number(e.amount)))}})[0]||null;
   const ann=announcementByCode[code]||null,sharesEstimate=Math.max(0,Number(currentHoldings?.[code])||0);
   const estimatedUpcoming=ann&&ann.exDate>=today&&(!upcoming||upcoming.exDate!==ann.exDate)?{...ann,sharesEstimate,cashEstimate:Math.max(0,Math.round(sharesEstimate*Number(ann.amount)))}:null;
-  const nextForecast=dividendNextForecast(code,events,ann,currentHoldings?.[code],today);
+  const nextForecast=dividendNextForecast(code,allEvents[code]||[],ann,currentHoldings?.[code],today);
   const nextPending=pendingLocks[0]||null,lastPaid=paidLocks.at(-1)||null;
   byCode[code]={code,base:Number(DIVIDEND_BASE[code])||0,baseAsOf:DIVIDEND_BASE_ASOF,autoPaid,received,pending,nextPending,lastPaid,upcoming,estimatedUpcoming,nextForecast,forecastSharesAsOf:latestCloud.updatedAt||latestSnap?.recordedAt||null,locks:locks.slice(-12),snapshotDay:latestSnap?.day||null,source:sourceByCode[code]?.source||'TWSE ETF e添富',sourceOk:!!sourceByCode[code]?.ok,sourceErrors:[...(sourceByCode[code]?.errors||[]),...(announcementReport?.errors||[])].slice(0,8),version:'div-auto-v2'};
  }
@@ -3298,7 +3305,7 @@ function dayPhrase(day,arr){const k=Number(String(day||'').replace(/\D/g,''))||0
 async function portfolioCommentary(inputHoldings,clientSnapshot={}){
  const holdings=cleanCommentaryHoldings(inputHoldings),session=commentarySession(),day=ymdTaipei();
  if(!holdings.length)return{ok:true,build:BUILD,day,session,generatedAt:new Date().toISOString(),empty:true,headline:'目前沒有持股資料',summary:['請先在「我的持股」建立持股，點評頁才會依實際股數與成本分析。'],focus:[],disclaimer:'即時點評依網站資料與規則產生，僅供紀錄與決策輔助，不代表投資建議。'};
- const serverBm=await deadline(cached('buymodel',8000,buyModel),10000,null);
+ const serverBm=await deadline(cachedSingleFlight('buymodel',8000,buyModel),10000,null);
  const bm=serverBm?.ok?serverBm:{ok:true,quotes:{},models:{},market:null,context:null};
  const snap=(clientSnapshot&&typeof clientSnapshot==='object')?clientSnapshot:{};
  const extras=holdings.map(h=>h.t).filter(c=>!ETF.includes(c));
@@ -3471,7 +3478,7 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/taiex-history')return safeApi(res,'taiex-history',async()=>{const h=await taiexHistory();return{...h,ret5:periodReturn(h.rows,5),ret20:periodReturn(h.rows,20)}});
  if(u.pathname==='/api/overseas')return safeApi(res,'overseas',()=>cached('ovs',45000,overseas));
  if(u.pathname==='/api/night-future')return safeApi(res,'night-future',()=>nightFuture());
- if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(cached('buymodel',8000,buyModel),9500,null);return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'模型外部資料逾時；不阻塞頁面，30秒後自動重試',fetchedAt:new Date().toISOString()}});
+ if(u.pathname==='/api/buy-model')return safeApi(res,'buy-model',async()=>{const d=await deadline(cachedSingleFlight('buymodel',8000,buyModel),9500,null);return d||{ok:false,status:'TIMEOUT',source:'buy-model',error:'模型外部資料逾時；不阻塞頁面，30秒後自動重試',fetchedAt:new Date().toISOString()}});
  if(u.pathname==='/api/trend-entry')return safeApi(res,'trend-entry',()=>cached('trend-entry',30000,trendEntryModel));
  if(u.pathname==='/api/trend-ab-forward'&&req.method==='GET')return safeApi(res,'trend-ab-forward',()=>cached('trend-ab-forward',20000,trendLedgerReport));
  if(u.pathname==='/api/gate-blocked-forward'&&req.method==='GET')return safeApi(res,'gate-blocked-forward',()=>cached('gate-blocked-forward:v1',30000,gateLedgerReport));
