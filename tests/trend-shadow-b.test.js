@@ -287,3 +287,18 @@ test('ONE-OFF 0050 prod vs vendor OHLC 2009-2026 detect wrong split factor',{tim
   console.log('PROD_0050_INTERNAL_JUMPS',JSON.stringify(bad.slice(0,30)));
  }catch(e){console.log('PROD_0050_COMPARE_ERROR',String(e))}
 });
+
+test('ONEOFF inspect 0050 dividend tables HTML for robust parsing',{timeout:50000},async()=>{
+ const urls=['https://tw.stock.yahoo.com/quote/0050.TW/dividend','https://finlab.finance/stocks/0050/dividend','https://www.cmoney.tw/etf/tw/0050/cashdividend'];
+ for(const url of urls){
+  try{
+   const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0'},signal:AbortSignal.timeout(12000)});
+   const h=await r.text(),plain=h.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/\s+/g,' ');
+   let hit=[];
+   for(const key of ['2009/10/23','2009-10-23','2012/10/24','2012-10-24','2020/01/31','2020-01-31','2022/08/02']){
+    const k=h.indexOf(key),p=plain.indexOf(key);hit.push({key,htmlIndex:k,plainIndex:p,plainNearby:p>=0?plain.slice(Math.max(0,p-140),p+140):null,htmlNearby:k>=0?h.slice(Math.max(0,k-80),k+100):null});
+   }
+   console.log('0050_DIVIDEND_HTML_STRUCTURE',JSON.stringify({url,status:r.status,bytes:h.length,plainBytes:plain.length,yearCount: (plain.match(/2009|2010|2011|2012/g)||[]).length,hits:hit}));
+  }catch(e){console.log('0050_DIVIDEND_HTML_STRUCTURE',url,String(e))}
+ }
+});
