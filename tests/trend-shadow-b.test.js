@@ -233,3 +233,44 @@ test('0056 isolated source correction dry-run is disabled by default and preserv
  assert.strictEqual(v.hist,h);
  assert.equal(select0056History({...h,code:'0050'},{enabled:true}).switched,false);
 });
+
+test('one-off live 0056 cash QA check, no activation',{timeout:115000},async()=>{
+ const base='https://tw-stock-dashboard-5.onrender.com';
+ const paths=['/health','/api/0056-dividend-audit','/api/buy-model','/api/trend-entry'];
+ const results={};
+ for(const p of paths){
+  const started=Date.now();
+  try{
+   const response=await fetch(base+p,{signal:AbortSignal.timeout(55000)});
+   results[p]={http:response.status,ms:Date.now()-started,body:await response.json()};
+  }catch(e){results[p]={error:String(e),ms:Date.now()-started}}
+ }
+ for(const p of paths) {
+  const r=results[p],m=r.body?.models;
+  console.log('CASH0056_LIVE_PROBE',JSON.stringify({p,http:r.http,error:r.error,ms:r.ms,ok:r.body?.ok,
+   qa:r.body?.qaStatus,reason:r.body?.qaReason,active:r.body?.formalHistoryActive,
+   events:r.body?.verifiedEvents,anchors:r.body?.recentDividendChecks,
+   ma:r.body?.movingAverages,first:r.body?.first,last:r.body?.last,
+   models:m?Object.fromEntries(['0050','0056','00878','00919'].map(code=>[code,{
+    score:m[code]?.score,source:m[code]?.historySource,gate:m[code]?.decisionGate?.status,
+    cash:m[code]?.cashHistory?.status??null,first:m[code]?.raw?.first?.center||null,
+    second:m[code]?.raw?.second?.center||null,third:m[code]?.raw?.third?.center||null
+   }])):undefined}));
+ }
+ const a=results['/api/0056-dividend-audit'];
+ assert.equal(results['/health'].http,200);
+ assert.equal(a.http,200);
+ assert.equal(a.body?.qaStatus,'ACTIVE',a.body?.qaReason||'0056 failed');
+ assert.equal(a.body?.formalHistoryActive,false,'formal flag unexpectedly enabled');
+ assert.equal(a.body?.verifiedEvents?.length,3);
+ assert.equal(a.body?.priceBars,4608);
+ assert.equal(a.body?.last?.old,a.body?.last?.corrected);
+ for(const item of Object.values(a.body?.movingAverages||{}))
+  assert.ok(Math.abs(item.delta)<1e-8,'recent SMA changed');
+ for(const p of ['/api/buy-model','/api/trend-entry']){
+  const r=results[p];assert.equal(r.http,200,p+' not ready');assert.equal(r.body?.ok,true);
+  assert.equal(r.body?.models?.['0056']?.cashHistory??null,null,'0056 enabled too early');
+  assert.equal(r.body?.models?.['0050']?.cashHistory?.status,'ACTIVE','0050 regressed');
+  assert.ok(r.body?.models?.['00878']);assert.ok(r.body?.models?.['00919']);
+ }
+});
