@@ -206,3 +206,30 @@ test('UI replaces saved valid Shadow stats when only hidden historical bars chan
  assert.equal(second.changedYears.join(','),'2012');
  assert.equal(second.snapshot.fingerprint.hash,'b');
 });
+
+
+test('ONE-OFF PRODUCTION READONLY 0050 source QA (never merge)',{timeout:165000},async()=>{
+ for(const path of ['/api/history-status','/api/0050-cash-audit']){
+  try{
+   const start=Date.now(),resp=await fetch('https://tw-stock-dashboard-5.onrender.com'+path,
+     {headers:{Accept:'application/json'},signal:AbortSignal.timeout(115000)});
+   const payload=await resp.json();
+   console.log('PRODUCTION_DIAGNOSTIC_HTTP',path,resp.status,Date.now()-start);
+   if(path.includes('cash-audit')){
+    console.log('PRODUCTION_0050_QA',JSON.stringify({
+     ok:payload.ok,state:payload.state,dividendCount:payload.qa?.dividendCount,
+     normalizedDividendCount:payload.qa?.normalizedDividendCount,dividendBasis:payload.qa?.dividendBasis,
+     issues:payload.qa?.issues,warnings:payload.qa?.warnings,coverageByYear:payload.qa?.coverageByYear,
+     anchorChecks:payload.qa?.anchorChecks,historyOfficial:payload.historyOfficial,
+     dividendFeedReportedComplete:payload.dividendFeedReportedComplete,
+     dividendErrors:payload.dividendErrors,splitBoundary:payload.qa?.splitBoundary,
+     comparison:payload.comparison&&{splitOnly:payload.comparison.splitOnly,cashAdjusted:payload.comparison.cashAdjusted}
+    }));
+   }else{
+    const x=(payload.history||[]).find(v=>v.code==='0050');
+    console.log('PRODUCTION_0050_HISTORY',JSON.stringify({rows:x?.rows,first:x?.first,last:x?.last,
+     status:x?.status,fullHistoryPass:x?.fullHistoryPass,backtestReadyPass:x?.backtestReadyPass,error:x?.error}));
+   }
+  }catch(e){console.log('PRODUCTION_DIAGNOSTIC_ERROR',path,String(e))}
+ }
+});
