@@ -233,3 +233,96 @@ test('0056 isolated source correction dry-run is disabled by default and preserv
  assert.strictEqual(v.hist,h);
  assert.equal(select0056History({...h,code:'0050'},{enabled:true}).switched,false);
 });
+
+
+test('ONEOFF 00878 full 2020-2026 dividend action and adjusted-price source audit (read-only)',{timeout:160000},async()=>{
+ const root='https://tw-stock-dashboard-5.onrender.com';
+ const chart='https://query2.finance.yahoo.com/v8/finance/chart/00878.TW?period1=1595203200&period2=1798761600&interval=1d&includeAdjustedClose=true&events=div%2Csplits';
+ const urls={
+  liveHistory:root+'/api/etf-history?code=00878',
+  liveBuy:root+'/api/buy-model',
+  liveTrend:root+'/api/trend-entry',
+  yahooPolicy:'https://tw.stock.yahoo.com/quote/00878/dividend',
+  yahooPolicyTw:'https://tw.stock.yahoo.com/quote/00878.TW/dividend',
+  yahooChart:chart,
+  twse:'https://www.twse.com.tw/zh/ETFortune/dividendList?startDate=2020&endDate=2026&stkNo=00878'
+ };
+ const got=await Promise.all(Object.entries(urls).map(async([name,url])=>{
+  const start=Date.now();
+  try{
+   const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html,application/json,*/*'},
+    signal:AbortSignal.timeout(name.includes('live')?72000:20000)});
+   return[name,{status:r.status,text:await r.text(),ms:Date.now()-start}];
+  }catch(e){return[name,{error:String(e),ms:Date.now()-start}]}
+ }));
+ const res=Object.fromEntries(got);
+ console.log('AUDIT_00878_FETCH',JSON.stringify(Object.fromEntries(got.map(([k,v])=>[k,{http:v.status,bytes:v.text?.length,ms:v.ms,error:v.error}]))));
+ const history=JSON.parse(res.liveHistory?.text||'{}'),buy=JSON.parse(res.liveBuy?.text||'{}'),
+  trend=JSON.parse(res.liveTrend?.text||'{}'),raw=history.rows||[];
+ const live=buy.models?.['00878']||{};
+ console.log('AUDIT_00878_LIVE_MODEL',JSON.stringify({code:history.code,ok:history.ok,rows:raw.length,
+  first:raw[0],last:raw.at(-1),source:history.source,normalizationVersion:history.normalizationVersion,
+  validation:history.validation,model:{score:live.score,source:live.historySource,gate:live.decisionGate?.status,
+   cashHistory:live.cashHistory,l1:live.raw?.first?.center,l2:live.raw?.second?.center,l3:live.raw?.third?.center},
+  trend:{score:trend.models?.['00878']?.score,source:trend.models?.['00878']?.historySource}}));
+ const r=JSON.parse(res.yahooChart?.text||'{}').chart?.result?.[0]||{},q=r.indicators?.quote?.[0]||{},
+  adj=r.indicators?.adjclose?.[0]?.adjclose||[],timestamps=r.timestamp||[];
+ const yahooRows=timestamps.map((t,i)=>({date:new Date(t*1000).toISOString().slice(0,10),
+  raw:Number(q.close?.[i]),adj:Number(adj[i]),open:Number(q.open?.[i]),high:Number(q.high?.[i]),low:Number(q.low?.[i])}))
+  .filter(x=>x.raw>0&&x.adj>0);
+ const yh=new Map(yahooRows.map(x=>[x.date,x]));
+ const mismatches=raw.map(x=>{
+  const b=yh.get(x.date);
+  if(!b)return{date:x.date,type:'MISSING_DAY'};
+  const delta=Number(x.close)-b.adj;
+  if(Math.abs(delta)>Math.max(.006,b.adj*.00005))return{date:x.date,type:'ADJCLOSE_PARITY',live:x.close,yahoo:b.adj};
+  return null;
+ }).filter(Boolean);
+ const policyText=String(res.yahooPolicy?.text||'').replace(/\\"/g,'"');
+ const polTwText=String(res.yahooPolicyTw?.text||'').replace(/\\"/g,'"');
+ const reg=/"exDate":"(\d{4}-\d{2}-\d{2})T[^"]*","year":"[^"]+","period":"[^"]+","symbol":"([^"]+)","totalDividend":"([0-9.]+)"/g;
+ const policyMap=new Map();
+ for(const text of [policyText,polTwText]){
+  for(const a of text.matchAll(reg)){
+   if(!String(a[4]).startsWith('00878'))continue;
+   policyMap.set(a[1],Number(a[5]));
+  }
+ }
+ const policy=[...policyMap].sort(([a],[b])=>a.localeCompare(b)).map(([date,amount])=>({date,amount}))
+  .filter(x=>x.amount>0&&x.date<='2026-10-20');
+ const chartEvents=Object.values(r.events?.dividends||{}).map(x=>({
+  date:new Date(x.date*1000).toISOString().slice(0,10),amount:x.amount
+ })).sort((a,b)=>a.date.localeCompare(b.date));
+ console.log('AUDIT_00878_ACTION_SOURCE',JSON.stringify({policyEvents:policy,chartEvents,rawMatches:policyText.match(/"symbol":"00878"/g)?.length||0,
+  policyBytes:policyText.length,twBytes:polTwText.length,containsExample:policyText.includes('2020-11-17'),
+  chartDividendCount:chartEvents.length}));
+ const index=new Map(yahooRows.map((x,i)=>[x.date,i]));
+ const inferred=(date,amount)=>{
+  const i=index.get(date),p=i>0?yahooRows[i-1]:null,d=i>0?yahooRows[i]:null;
+  if(!p||!d)return{date,amount,error:'NO_EXDATE_BAR'};
+  const priorFactor=p.adj/p.raw,afterFactor=d.adj/d.raw;
+  const obs=p.raw*(1-priorFactor/afterFactor);
+  return{date,expected:amount,observed:Number(obs.toFixed(5)),errorPct:amount>0?Number(((obs/amount-1)*100).toFixed(4)):null,
+   mismatch:Math.abs(obs-amount)>.08,rawChangePct:Number(((d.raw/p.raw-1)*100).toFixed(2)),
+   adjChangePct:Number(((d.adj/p.adj-1)*100).toFixed(2))};
+ };
+ const policyParity=policy.map(x=>inferred(x.date,x.amount));
+ const chartParity=chartEvents.filter(x=>x.date<='2026-10-20').map(x=>inferred(x.date,x.amount));
+ const missing=policyParity.filter(x=>x.mismatch||x.error);
+ const plus=chartEvents.filter(x=>x.date<='2026-10-20'&&!policyMap.has(x.date));
+ const jumps=yahooRows.map((x,i)=>i>0?{date:x.date,changePct:Number(((x.adj/yahooRows[i-1].adj-1)*100).toFixed(2))}:null)
+  .filter(x=>x&&Math.abs(x.changePct)>12);
+ const official=(res.twse?.text||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ');
+ console.log('AUDIT_00878_PRICE_PARITY',JSON.stringify({historyRows:raw.length,yahooRows:yahooRows.length,mismatches:mismatches.slice(0,20),
+   priceMismatchCount:mismatches.length,policyCount:policy.length,chartCount:chartEvents.length,
+   inferredPolicy:policyParity,missing,chartExtra:plus,chartParityWrong:chartParity.filter(x=>x.mismatch||x.error),
+   adjustedJumps:jumps,twseSnippet:official.slice(Math.max(0,official.indexOf('00878')-50),official.indexOf('00878')+500),
+   twseContains:official.includes('00878')}));
+ assert.equal(res.liveHistory.status,200);
+ assert.equal(res.liveBuy.status,200);
+ assert.equal(res.liveTrend.status,200);
+ assert.equal(history.code,'00878');
+ assert.ok(raw.length>=1300);
+ assert.equal(res.yahooChart.status,200);
+ assert.equal(mismatches.length,0,'00878 live historical close differs from Yahoo adjusted');
+});
