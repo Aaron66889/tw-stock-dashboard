@@ -223,3 +223,26 @@ test('Regression: 0050 cash adjusted historical data preserves missing source OP
  assert.equal(result.status,'ACTIVE');
  assert.equal(result.hist.rows.find(x=>x.date==='2024-05-28').adjopen,null);
 });
+
+test('ONEOFF post-parity 0050 cash rollout exact production preview and all four trend health',{timeout:90000},async()=>{
+ const base='https://tw-stock-dashboard-5.onrender.com';
+ const [pre,tr]=await Promise.all([
+  fetch(base+'/api/0050-cash-switch-preview',{signal:AbortSignal.timeout(85000)}),
+  fetch(base+'/api/trend-entry',{signal:AbortSignal.timeout(85000)})
+ ]);
+ const preview=await pre.json(),trend=await tr.json(),p=preview.summary||{};
+ console.log('0050_CASH_PREFLIGHT_LIVE',JSON.stringify({http:pre.status,summary:p}));
+ console.log('0050_TREND_PREFLIGHT_LIVE',JSON.stringify({
+  http:tr.status,ok:trend.ok,
+  models:Object.fromEntries(['0050','0056','00878','00919'].map(c=>[c,{status:trend.models?.[c]?.status,
+   score:trend.models?.[c]?.score,historySource:trend.models?.[c]?.historySource,
+   cashHistory:trend.models?.[c]?.cashHistory||null}]))
+ }));
+ assert.equal(pre.status,200);
+ assert.equal(p.activeFlag,false);
+ assert.equal(p.status,'ACTIVE',JSON.stringify(p));
+ assert.equal(p.priceBarParity,true);
+ assert.equal(p.legacyRows,4354);
+ assert.equal(p.latestCashClose,p.latestAdjustedClose);
+ assert.equal(p.sourceVerified,true);
+});
