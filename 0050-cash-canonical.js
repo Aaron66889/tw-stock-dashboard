@@ -32,6 +32,16 @@ function select0050CashHistory(hist,dividendResponse,{enabled=false,asOfDate='20
  const last=src.at(-1),latest=corrected.at(-1);
  if(Math.abs(latest.adjclose-last.close)>0.000001||latest.adjclose<=0)
   return{hist:legacy,switched:false,status:'FALLBACK',reason:'LATEST_PRICE_ANCHOR_CHANGED'};
+ // Guard against unexpected short-term signal drift. These bounds apply
+ // ONLY to switching historical data sources, never change L1/L2/L3 or Gate formulas.
+ // Failure returns exact original history.
+ const avg=(a,k)=>a.slice(-k).reduce((acc,r)=>acc+Number(r.adjclose??r.close),0)/k;
+ for(const [days,maxPct] of [[20,.6],[60,.6],[120,1.2],[250,2.5]]){
+  const before=avg(src,days),after=avg(corrected,days);
+  if(!(before>0&&after>0)||Math.abs(after/before-1)*100>maxPct)
+   return{hist:legacy,switched:false,status:'FALLBACK',reason:'ROLLING_SMA_DRIFT_GUARD',days,
+    deltaPct:before>0?Math.abs(after/before-1)*100:null};
+ }
  const converted=corrected.map(({researchOnly,...r})=>({...r,priceBasis:VERSION}));
  // Never write adjusted history back to the legacy local disk cache.
  const h={...hist,rows:converted,source:hist.source+'｜現金配息校正(2009起、來源QA通過)',
