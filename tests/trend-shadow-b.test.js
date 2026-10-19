@@ -311,3 +311,22 @@ test('ONEOFF parse structured dividend embedded records from Yahoo Taiwan',{time
  const uniq=[...new Map(ev.map(e=>[e.date,e])).values()];
  console.log('YAHOO_TAIWAN_FULL_DIVIDEND_PARSE',JSON.stringify({count:ev.length,unique:uniq.length,first:uniq.slice(-7),last:uniq.slice(0,7),has2009:uniq.some(x=>x.date==='2009-10-23'),has2026:uniq.some(x=>x.date==='2026-07-21'),extra20220802:uniq.some(x=>x.date==='2022-08-02')}));
 });
+
+test('ONE-OFF POST DEPLOY 0050 public cash research audit consistency',{timeout:125000},async()=>{
+ const t=Date.now();
+ const res=await fetch('https://tw-stock-dashboard-5.onrender.com/api/0050-cash-audit',{headers:{Accept:'application/json'},signal:AbortSignal.timeout(115000)});
+ const d=await res.json();
+ console.log('POST_DEPLOY_0050_AUDIT',JSON.stringify({http:res.status,elapsedMs:Date.now()-t,
+  ok:d.ok,state:d.state,source:d.dividendsFrom,sourceUrl:d.sourceUrl,feedComplete:d.dividendFeedReportedComplete,
+  sourceQA:d.dividendSourceQA,qa:{issues:d.qa?.issues,warning:d.qa?.warnings,sourcePriceBasis:d.qa?.sourcePriceBasis,
+   splitBoundary:d.qa?.splitBoundary,dividendBasis:d.qa?.dividendBasis,
+   dividendCount:d.qa?.dividendCount,normalizedDividendCount:d.qa?.normalizedDividendCount},
+  comparison:d.comparison,dividendErrors:d.dividendErrors,verdict:d.verdict
+ }));
+ assert.equal(res.status,200);
+ assert.equal(d.state,'RESEARCH_READY',JSON.stringify(d.qa?.issues));
+ assert.equal(d.qa?.dividendBasis,'HISTORICAL_PER_SHARE');
+ assert.equal(d.qa?.normalizedDividendCount,28);
+ assert.ok(d.comparison?.cashAdjusted?.priceCore20);
+ assert.equal(d.verdict,'NO_LIVE_MODEL_CHANGE');
+});
