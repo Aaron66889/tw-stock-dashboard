@@ -117,3 +117,62 @@ test('Last-good research data stays visible but is never considered a buy signal
  assert.match(app,/本輪不得視為買入訊號/);
  assert.match(app,/bt=hist\.snapshot\?\.backtest\|\|\{\}/);
 });
+
+test('Risk Shadow computes seven candidates but cannot change formal live permissions',()=>{
+ const data=rows(750,true).map((r,i)=>({...r,low:r.close-.25,high:r.close+.024}));
+ const baselineLive=b.live(official(),{open:101.1});
+ const research=b.riskResearch(data,[]);
+ assert.equal(research.mode,'SHADOW_ONLY');
+ assert.equal(research.recommendation,'NO_AUTO_PROMOTION');
+ assert.equal(research.variants.extension2.stats.signals<=research.variants.extension25.stats.signals,true);
+ assert.equal(research.variants.extension25.stats.signals<=research.variants.extension3.stats.signals,true);
+ assert.equal(research.variants.extension3.stats.signals<=research.variants.baseline.stats.signals,true);
+ assert.deepEqual(b.live(official(),{open:101.1}),baselineLive);
+ assert.equal(research.variants.marketGuard.stats.signals,0);
+ assert.equal(research.variants.combined.stats.signals,0);
+});
+test('Data QA flags suspicious historical price discontinuity without changing any bars',()=>{
+ const data=rows(750,true).map((r,i)=>({...r,low:r.close-.25,high:r.close+.024}));
+ data[370]={...data[370],open:data[370].open/4,high:data[370].high/4,low:data[370].low/4,close:data[370].close/4,adjclose:data[370].adjclose/4};
+ const before=JSON.stringify(data);
+ const study=b.riskResearch(data);
+ assert.equal(study.ready,false);
+ assert.equal(study.dataStatus,'PRICE_QA_WARNING');
+ assert.ok(study.qa.issues.some(x=>x.type==='DAILY_DISCONTINUITY'));
+ assert.equal(JSON.stringify(data),before);
+});
+test('Risk comparison retains common signal days and discounts confirmed fills until later open',()=>{
+ const data=rows(750,true).map(r=>({...r,low:r.close-.25,high:r.close+.024}));
+ const r=b.compare(data);
+ assert.equal(r.riskResearch.mode,'SHADOW_ONLY');
+ assert.match(r.riskResearch.assumptions,/次交易日開盤/);
+ const base=r.riskResearch.variants.baseline,confirmed=r.riskResearch.variants.nextClose;
+ assert.equal(base.stats.signals>=confirmed.stats.signals,true);
+ assert.ok(confirmed.pairedDelta20.samples<=confirmed.stats.period[20].samples);
+ assert.ok(confirmed.rejected.signals>=0);
+});
+
+test('Performance export flags unclear entry snapshots and groups same-breakout trend fills as one episode',()=>{
+ const fs=require('node:fs'),vm=require('node:vm');
+ const app=fs.readFileSync(require('node:path').join(__dirname,'../public/app.js'),'utf8');
+ const begin=app.indexOf('function modelTradeDataAudit('),end=app.indexOf('function performanceDiagnosticPayload(){',begin);
+ assert.ok(begin>0&&end>begin);
+ const audit=vm.runInNewContext(app.slice(begin,end)+';modelTradeDataAudit',{
+  modelFamilyOf:t=>t.tradeType==='manual'?'manual':t.modelFamily
+ });
+ const trade=(id,code,modelFamily,day,status)=>({id,code,modelFamily,entryDate:day,tradeType:'model',shares:10,
+  snapshot:{modelStatusText:status}});
+ const result=audit([
+  trade('t1','0050','trend','2026-10-06','強勢突破／可小額加碼'),
+  trade('t2','0050','trend','2026-10-06','強勢突破／可小額加碼'),
+  trade('t3','0050','trend','2026-10-07','突破後回踩／可小額加碼'),
+  trade('t4','0056','trend','2026-10-05','順勢買點成立／可小額'),
+  trade('t5','0050','reasonable','2026-10-13','Gate暫停')
+ ]);
+ assert.equal(result.trendTradeCount,4);
+ assert.equal(result.trendEpisodes,2);
+ assert.equal(result.episodes.find(x=>x.code==='0050').entries,3);
+ assert.equal(result.potentialSnapshotInconsistencies.length,1);
+ assert.equal(result.potentialSnapshotInconsistencies[0].flag,'REVIEW_CONFIRMATION_OR_GATE');
+ assert.match(app,/audit:modelTradeDataAudit\(MODEL_TRADES\)/);
+});
