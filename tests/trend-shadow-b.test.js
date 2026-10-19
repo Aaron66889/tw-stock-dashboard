@@ -223,3 +223,46 @@ test('Regression: 0050 cash adjusted historical data preserves missing source OP
  assert.equal(result.status,'ACTIVE');
  assert.equal(result.hist.rows.find(x=>x.date==='2024-05-28').adjopen,null);
 });
+
+test('ONE-OFF LIVE 0050 activated adjusted-history four ETF integrity', {timeout:110000},async()=>{
+ const base='https://tw-stock-dashboard-5.onrender.com';
+ const paths=['/api/0050-cash-switch-preview','/api/buy-model','/api/trend-entry'];
+ const vals=await Promise.all(paths.map(async path=>{
+  try{const t=Date.now(),resp=await fetch(base+path,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(90000)}),
+    body=await resp.json();return{path,http:resp.status,ms:Date.now()-t,body}}
+  catch(e){return{path,error:String(e)}}}));
+ for(const r of vals){
+  if(r.path.includes('switch-preview')){
+   console.log('FINAL_0050_ACTIVATION_PREVIEW',JSON.stringify({http:r.http,ms:r.ms,
+    summary:r.body?.summary,error:r.error||r.body?.error}));
+  }else{
+   console.log('FINAL_0050_ACTIVATION_'+(r.path.includes('buy-model')?'L123_GATES':'TREND'),
+    JSON.stringify({http:r.http,ok:r.body?.ok,error:r.error||r.body?.error,models:Object.fromEntries(
+     ['0050','0056','00878','00919'].map(c=>{const m=r.body?.models?.[c]||{};
+      return[c,{score:m.score,status:m.status,cashHistory:m.cashHistory||null,
+       source:m.historySource||null,hardVeto:m.hardVeto,gate:m.decisionGate?.status,
+       L1:m.raw?.first?.center,L2:m.raw?.second?.center,L3:m.raw?.third?.center,
+       sma20:m.history?.sma20,sma60:m.history?.sma60,sma120:m.history?.sma120,sma250:m.history?.sma250
+      }]}))}));
+  }
+ }
+ const p=vals.find(x=>x.path.includes('switch-preview')),b=vals.find(x=>x.path.includes('buy-model')),t=vals.find(x=>x.path.includes('trend-entry'));
+ assert.equal(p.http,200);
+ assert.equal(p.body?.summary?.activeFlag,true,'feature flag did not activate');
+ assert.equal(p.body?.summary?.status,'ACTIVE','history failed QA / reverted');
+ assert.equal(b.http,200);
+ assert.equal(t.http,200);
+ assert.equal(b.body?.models?.['0050']?.cashHistory?.status,'ACTIVE','official L1/2/3 not using verified adjusted 0050 history');
+ assert.equal(t.body?.models?.['0050']?.cashHistory?.status,'ACTIVE','strong trend not using verified adjusted 0050 history');
+ for(const c of ['0056','00878','00919']) {
+  assert.equal(b.body?.models?.[c]?.cashHistory??null,null,c+' got 0050 cash history');
+  assert.equal(t.body?.models?.[c]?.cashHistory??null,null,c+' trend got 0050 cash history');
+ }
+ const core=b.body.models['0050'];const previous=[108.17458200011296,106.73873516362227,105.91119629065712];
+ for(const [i,k] of ['first','second','third'].entries()){
+  const current=core.raw?.[k]?.center;
+  assert.ok(Number.isFinite(current),'invalid '+k);
+  assert.ok(Math.abs(current/previous[i]-1)<.015,k+' moved >1.5% from prior stable baseline');
+ }
+ assert.equal(core.hardVeto,false,'0050 unexpectedly blocked by hard Gate on same-date benchmark');
+});
