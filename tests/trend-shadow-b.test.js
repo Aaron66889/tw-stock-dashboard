@@ -223,3 +223,13 @@ test('Regression: 0050 cash adjusted historical data preserves missing source OP
  assert.equal(result.status,'ACTIVE');
  assert.equal(result.hist.rows.find(x=>x.date==='2024-05-28').adjopen,null);
 });
+
+
+test('0056 isolated source correction dry-run is disabled by default and preserves raw data',()=>{
+ const {select0056History}=require('../0056-dividend-correction');
+ const h={code:'0056',rows:[{date:'2008-01-02',close:12,rawClose:25,preAdjusted:true}]};
+ const v=select0056History(h);
+ assert.equal(v.status,'DISABLED');
+ assert.strictEqual(v.hist,h);
+ assert.equal(select0056History({...h,code:'0050'},{enabled:true}).switched,false);
+});
