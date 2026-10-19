@@ -115,5 +115,5 @@ test('Last-good research data stays visible but is never considered a buy signal
  assert.equal(updated.stale,false);
  assert.ok(updated.persist);
  assert.match(app,/本輪不得視為買入訊號/);
- assert.match(app,/hist\.snapshot\?\.backtest\|\|m\.backtest/);
+ assert.match(app,/bt=hist\.snapshot\?\.backtest\|\|\{\}/);
 });
