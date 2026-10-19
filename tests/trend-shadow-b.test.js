@@ -233,3 +233,57 @@ test('0056 isolated source correction dry-run is disabled by default and preserv
  assert.strictEqual(v.hist,h);
  assert.equal(select0056History({...h,code:'0050'},{enabled:true}).switched,false);
 });
+
+
+test('ONEOFF 0056 cash active live verification',{timeout:165000},async()=>{
+ const root='https://tw-stock-dashboard-5.onrender.com',paths=['/health','/api/0056-dividend-audit','/api/buy-model','/api/trend-entry'];
+ const r={};
+ for(const path of paths){
+  const ms=Date.now();
+  try{
+   const q=await fetch(root+path,{signal:AbortSignal.timeout(55000)});
+   r[path]={http:q.status,ms:Date.now()-ms,body:await q.json()};
+  }catch(e){r[path]={error:String(e),ms:Date.now()-ms}}
+ }
+ for(const p of paths){
+  const x=r[p],models=x.body?.models;
+  const d={p,http:x.http,error:x.error,ms:x.ms,ok:x.body?.ok,
+   qaStatus:x.body?.qaStatus,reason:x.body?.qaReason,flag:x.body?.formalHistoryActive,
+   events:x.body?.verifiedEvents?.length,historyDays:x.body?.priceBars,
+   oldClose:x.body?.last?.old,correctedClose:x.body?.last?.corrected,
+   movingAverages:x.body?.movingAverages,
+   models:models?Object.fromEntries(['0050','0056','00878','00919'].map(c=>{
+    const m=models[c]||{};
+    return[c,{score:m.score,gate:m.decisionGate?.status||null,hardVeto:m.hardVeto??null,
+     source:m.historySource||null,cash:m.cashHistory||null,
+     l1:m.raw?.first?.center||null,l2:m.raw?.second?.center||null,l3:m.raw?.third?.center||null}];
+   })):undefined};
+  console.log('LIVE_0056_CORRECTION_FINAL',JSON.stringify(d));
+ }
+ const audit=r['/api/0056-dividend-audit'],buy=r['/api/buy-model'],trend=r['/api/trend-entry'];
+ assert.equal(r['/health'].http,200);
+ assert.equal(audit.http,200);
+ assert.equal(audit.body?.formalHistoryActive,true);
+ assert.equal(audit.body?.qaStatus,'ACTIVE');
+ assert.equal(audit.body?.verifiedEvents?.length,3);
+ assert.equal(audit.body?.priceBars,4608);
+ assert.equal(audit.body?.last?.old,audit.body?.last?.corrected);
+ for(const a of Object.values(audit.body?.movingAverages||{}))assert.ok(Math.abs(a.delta)<1e-8);
+ for(const m of [buy,trend]){
+  assert.equal(m.http,200);
+  assert.equal(m.body?.ok,true);
+  assert.equal(m.body?.models?.['0056']?.cashHistory?.status,'ACTIVE');
+  assert.equal(m.body?.models?.['0050']?.cashHistory?.status,'ACTIVE');
+  for(const code of ['00878','00919']) {
+   assert.equal(m.body?.models?.[code]?.cashHistory??null,null);
+   assert.ok(m.body?.models?.[code]?.score>=0);
+  }
+ }
+ const m=buy.body.models['0056'];
+ assert.equal(m.decisionGate?.status,'PASS');
+ assert.equal(m.hardVeto,false);
+ assert.ok(m.raw.first.center>m.raw.second.center&&m.raw.second.center>m.raw.third.center);
+ for(const [key,prior] of [['first',58.36600448382],['second',58.08725425494],['third',57.70914812694]]) {
+  const px=m.raw[key].center;assert.ok(px>0&&Math.abs(px/prior-1)<.015,key+' changed over1.5pct');
+ }
+});
