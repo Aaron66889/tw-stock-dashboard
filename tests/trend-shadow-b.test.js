@@ -246,3 +246,15 @@ test('ONEOFF post-parity 0050 cash rollout exact production preview and all four
  assert.equal(p.latestCashClose,p.latestAdjustedClose);
  assert.equal(p.sourceVerified,true);
 });
+
+test('ONEOFF pre-enable public 4ETF buy-model L1/L2/L3 and Gate baseline',{timeout:60000},async()=>{
+ const resp=await fetch('https://tw-stock-dashboard-5.onrender.com/api/buy-model',{signal:AbortSignal.timeout(50000)});
+ const obj=await resp.json();
+ console.log('0050_ROLLOUT_BUY_MODEL_BASELINE',JSON.stringify({http:resp.status,ok:obj.ok,
+  models:Object.fromEntries(['0050','0056','00878','00919'].map(c=>{const m=obj.models?.[c]||{};
+   return[c,{score:m.score,gate:m.decisionGate,raw:m.raw,hardVeto:m.hardVeto,
+    noBuyToday:m.noBuyToday,historySource:m.historySource,cashHistory:m.cashHistory||null,
+    history:{sma20:m.history?.sma20,sma60:m.history?.sma60,sma120:m.history?.sma120,
+     sma250:m.history?.sma250,atr14:m.history?.atr14}}]}))}));
+ assert.equal(resp.status,200);
+});
