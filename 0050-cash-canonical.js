@@ -32,6 +32,18 @@ function select0050CashHistory(hist,dividendResponse,{enabled=false,asOfDate='20
  const last=src.at(-1),latest=corrected.at(-1);
  if(Math.abs(latest.adjclose-last.close)>0.000001||latest.adjclose<=0)
   return{hist:legacy,switched:false,status:'FALLBACK',reason:'LATEST_PRICE_ANCHOR_CHANGED'};
+ // A converted cash history must not cause surprise intraday threshold jumps.
+ // These are data-integrity bounds, NOT new trading entry rules. Exceeding
+ // them leaves the old 0050 model untouched and reports the guard failure.
+ const avgLast=(rows,n)=>{
+  const x=rows.slice(-n);return x.reduce((a,r)=>a+Number(r.adjclose??r.close),0)/x.length;
+ };
+ for(const [days,maxDeltaPct] of [[20,.5],[60,.5],[120,1],[250,2.5]]){
+  const oldAvg=avgLast(src,days),newAvg=avgLast(corrected,days);
+  const deltaPct=Math.abs(newAvg/oldAvg-1)*100;
+  if(!Number.isFinite(deltaPct)||deltaPct>maxDeltaPct)
+   return{hist:legacy,switched:false,status:'FALLBACK',reason:'RECENT_HISTORY_DRIFT_GUARD',days,deltaPct};
+ }
  const converted=corrected.map(({researchOnly,...r})=>({...r,priceBasis:VERSION}));
  // Never write adjusted history back to the legacy local disk cache.
  const h={...hist,rows:converted,source:hist.source+'｜現金配息校正(2009起、來源QA通過)',

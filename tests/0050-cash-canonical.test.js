@@ -49,3 +49,23 @@ test('0050 old source has a missing 2009 open: preserve null without disabling o
  assert.equal(result.hist.rows[148].open,null);
  assert.equal(result.hist.rows[148].close,target.close);
 });
+
+test('safe activation rejects unexpectedly large recent adjusted-average drift',()=>{
+ const h=hist();
+ // Keep valid OHLC shape but introduce an unrealistic latest historical
+ // source factor through a large cash-adjustment divergence.
+ const f=feed();
+ f.events[f.events.length-1].amount=20;
+ const result=select0050CashHistory(h,f,{enabled:true});
+ assert.equal(result.switched,false);
+ assert.strictEqual(result.hist,h);
+});
+test('deployment code keeps explicit off switch and 0050-only scope',()=>{
+ const fs=require('node:fs'),path=require('node:path'),s=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
+ assert.match(s,/function enabled0050CashAdjustment\(/);
+ assert.match(s,/ETF0050_CASH_ADJUSTED\?\?'1'/);
+ assert.match(s,/code!=='0050'\|\|!enabled0050CashAdjustment\(\)/);
+ assert.match(s,/activeFlag:enabled0050CashAdjustment\(\)/);
+ assert.match(s,/fetch0050DividendHistory\(\)\.catch/);
+ assert.match(s,/CASH_0050_CANONICAL\.select0050CashHistory/);
+});
