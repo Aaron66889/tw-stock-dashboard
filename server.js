@@ -8,6 +8,7 @@ const TREND_SHADOW_B=require('./trend-shadow-b');
 const HISTORY_IDENTITY=require('./history-identity');
 const CASH_0050_AUDIT=require('./0050-cash-audit');
 const CASH_0050_DIVIDEND_SOURCE=require('./0050-dividend-source');
+const CASH_0050_CANONICAL=require('./0050-cash-canonical');
 const TREND_LEDGER=require('./trend-forward-ledger');
 const CRASH_GATE_LAB=require('./crash-gate-lab');
 const GATE_LEDGER=require('./gate-blocked-ledger');
@@ -1607,10 +1608,23 @@ async function yahooHistoryFallback(code){
  for(let i=0;i<ts.length;i++){const close=n(q.close?.[i]);if(close>0)rows.push({date:new Date(ts[i]*1000).toISOString().slice(0,10),open:n(q.open?.[i]),high:n(q.high?.[i]),low:n(q.low?.[i]),close,adjclose:n(adj[i]),volume:n(q.volume?.[i]),ohlc:true,source:'Yahoo fallback'})}
  return{ok:rows.length>=120,code,source:'Yahoo fallback（TWSE官方全歷史尚未暖機）',rows,validation:{fullHistoryPass:false,precision:'fallback'},fetchedAt:new Date().toISOString()};
 }
-async function etfHistory(code){
+async function legacyEtfHistory(code){
  const ready=diskRead(`twse_${code}_official_ready.json`);if(ready?.rows?.length>100&&ready?.validation?.backtestReadyPass)return {...ready,source:HISTORY_IDENTITY.label(code,ready)};
  // Never label or silently use a failed official build as complete history. Until PASS, keep a clearly marked fallback for live model continuity.
  return cached('fallback:'+code,30*60*1000,()=>yahooHistoryFallback(code));
+}
+async function etfHistory(code){
+ const hist=await legacyEtfHistory(code);
+ // Explicit activation, 0050 only; no data fetch for the other three ETFs.
+ if(code!=='0050'||process.env.ETF0050_CASH_ADJUSTED!=='1')return hist;
+ let divs=null;
+ try{divs=await deadline(fetch0050DividendHistory().catch(()=>null),2500,null)}catch(_){}
+ const selection=CASH_0050_CANONICAL.select0050CashHistory(hist,divs,{enabled:true,asOfDate:ymdTaipei()});
+ if(selection.switched)return selection.hist;
+ // Only the historical price-basis provider falls back. Trading formulas,
+ // holdings and cloud synchronization remain unchanged.
+ return {...hist,cashAdjusted:{status:'FALLBACK',reason:selection.reason||'UNKNOWN'},
+  source:hist.source+'｜0050含息校正未通過QA（沿用原始歷史價格）'};
 }
 function adjustedRows(rows){return rows.map(x=>{const ac=x.adjclose??x.close,f=x.close>0&&ac>0?ac/x.close:1;return{...x,aOpen:x.adjopen??(x.open!=null?x.open*f:null),aHigh:x.adjhigh??(x.high!=null?x.high*f:null),aLow:x.adjlow??(x.low!=null?x.low*f:null),aClose:ac,precision:x.high!=null&&x.low!=null?'ohlc':'close'}}).filter(x=>x.aClose>0)}
 function sma(a,k){if(a.length<k)return null;return a.slice(-k).reduce((s,x)=>s+x,0)/k}
@@ -2351,7 +2365,7 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  const historyView={...st,sma20:Number.isFinite(st.sma20)?st.sma20*actionFactor:st.sma20,sma60:Number.isFinite(st.sma60)?st.sma60*actionFactor:st.sma60,sma120:Number.isFinite(st.sma120)?st.sma120*actionFactor:st.sma120,sma250:Number.isFinite(st.sma250)?st.sma250*actionFactor:st.sma250,atr14:atr};
  // Confirmation cycles must represent distinct market observations, not two browser/model refreshes of the same quote.
  const quoteObservationKey=[quote?.date||'',quote?.time||'',n(quote?.last)??'',n(quote?.high)??'',n(quote?.low)??'',n(quote?.volume)??''].join('|');
- return{code,name:META[code].name,price:px,prevClose:prev,rawPrevClose:rawPrev,effectivePrevClose:prev,referenceSource:quote?.referenceSource||'行情昨收',referenceReliable:quote?.referenceReliable!==false,corporateAction:quote?.corporateAction||null,corporateActionAdjusted:!!quote?.corporateActionAdjusted,corporateActionReferenceMissing:!!quote?.corporateActionReferenceMissing,quoteObservationKey,quoteObservedAt:quote?.time||null,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:hardReason,noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...historyView,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull,corporateActionScaleFactor:actionFactor},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),modelVariant:options.variant||'official',method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold + daily locked calibration + TWSE TWT49U effective ex-right/ex-dividend reference'};
+ return{code,name:META[code].name,price:px,prevClose:prev,rawPrevClose:rawPrev,effectivePrevClose:prev,referenceSource:quote?.referenceSource||'行情昨收',referenceReliable:quote?.referenceReliable!==false,corporateAction:quote?.corporateAction||null,corporateActionAdjusted:!!quote?.corporateActionAdjusted,corporateActionReferenceMissing:!!quote?.corporateActionReferenceMissing,quoteObservationKey,quoteObservedAt:quote?.time||null,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:hardReason,noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...historyView,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull,corporateActionScaleFactor:actionFactor},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,cashHistory:hist.cashAdjusted||null,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),modelVariant:options.variant||'official',method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold + daily locked calibration + TWSE TWT49U effective ex-right/ex-dividend reference'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
@@ -2479,7 +2493,7 @@ function trendEntryOne(code,q,hist,marketHist,marketQuote){
  const trendBase={status,score,price:px,levels:{breakout20:br20,entryLow,entryHigh,maxChase},trend:{atr}};
  const shadowB=TREND_SHADOW_B.live(trendBase,q);
  const abPriceCore=TREND_SHADOW_B.compare(hist?.rows||[],marketHist?.rows||[]);
- return{ok:true,code,name:META[code].name,price:px,prevClose:Number(q?.effectivePrevClose||q?.prevClose)||null,changePct:Number(q?.effectivePrevClose||q?.prevClose)>0?(px/Number(q?.effectivePrevClose||q?.prevClose)-1)*100:null,score,scoreLabel:'ETF趨勢強度',scoreGroups,status,statusText,action,levels:{breakout20:br20,breakout55:br55,entryLow,entryHigh,maxChase},trend:{sma20:s20,sma60:s60,sma120:s120,sma250:s250,weekly20:w20,weekly40:w40,momentum20:mom20,momentum60:mom60,marketMomentum20:marketMom20,marketMomentum60:marketMom60,relative20,relative60,atr,distBreakAtr,distSma20Atr,brokeToday},regime:{allTimeHigh,priorAllTimeHigh,athDistancePct,athBasis,athDataAvailable},parts,backtest:bt,shadowB,abPriceCore,historySource:hist?.source||null,historyIdentity:HISTORY_IDENTITY.inspect(code,hist),historyOfficial:!!hist?.validation?.fullHistoryPass,historyDays:hist?.rows?.length||0,marketHistorySource:marketHist?.source||null};
+ return{ok:true,code,name:META[code].name,price:px,prevClose:Number(q?.effectivePrevClose||q?.prevClose)||null,changePct:Number(q?.effectivePrevClose||q?.prevClose)>0?(px/Number(q?.effectivePrevClose||q?.prevClose)-1)*100:null,score,scoreLabel:'ETF趨勢強度',scoreGroups,status,statusText,action,levels:{breakout20:br20,breakout55:br55,entryLow,entryHigh,maxChase},trend:{sma20:s20,sma60:s60,sma120:s120,sma250:s250,weekly20:w20,weekly40:w40,momentum20:mom20,momentum60:mom60,marketMomentum20:marketMom20,marketMomentum60:marketMom60,relative20,relative60,atr,distBreakAtr,distSma20Atr,brokeToday},regime:{allTimeHigh,priorAllTimeHigh,athDistancePct,athBasis,athDataAvailable},parts,backtest:bt,shadowB,abPriceCore,historySource:hist?.source||null,cashHistory:hist?.cashAdjusted||null,historyIdentity:HISTORY_IDENTITY.inspect(code,hist),historyOfficial:!!hist?.validation?.fullHistoryPass,historyDays:hist?.rows?.length||0,marketHistorySource:marketHist?.source||null};
 }
 async function trendEntryModel(){
  let quotes=null,quoteSource='';const bm=RUNTIME.bm,age=bm?.fetchedAt?Date.now()-Date.parse(bm.fetchedAt):Infinity;
@@ -3530,8 +3544,34 @@ const server=http.createServer(async(req,res)=>{
   const con=await Promise.all(ETF.map(async code=>{try{const x=await deadline(constituents(code),15000,null);if(!x)throw Error('official constituent source timed out');const expected=x.expected||META[code].expected,actual=x.items?.length||0,weighted=x.items?.filter(z=>Number.isFinite(z.weight)).length||0,official=!!x.officialOnly&&isOfficialHostFor(code,x.sourceUrl||META[code].url);return{code,pass:!!(x.complete&&official&&actual>=expected&&weighted>=expected),official,expected,actual,weighted,source:x.source,sourceUrl:x.sourceUrl}}catch(e){return{code,pass:false,expected:META[code].expected,actual:0,weighted:0,error:e.message}}}));
   return{ok:true,build:BUILD,modelTrade,constituents:{allPass:con.every(x=>x.pass),items:con},history:{allPass:hist.every(x=>x.fullHistoryPass===true),items:hist},allPass:modelTrade.pass&&con.every(x=>x.pass)&&hist.every(x=>x.fullHistoryPass===true)}
  });
+ if(u.pathname==='/api/0050-cash-switch-preview'&&req.method==='GET')return safeApi(res,'0050-cash-switch-preview',()=>cachedSingleFlight('0050:switch-preview:v1',60000,async()=>{
+ const [raw,divs]=await Promise.all([legacyEtfHistory('0050'),fetch0050DividendHistory().catch(e=>({complete:false,errors:[e.message],events:[]}))]);
+ const out=CASH_0050_CANONICAL.select0050CashHistory(raw,divs,{enabled:true,asOfDate:ymdTaipei()});
+ const prices=h=>h.rows.slice(-250).map(x=>x.adjclose??x.close),avg=(a,n)=>a.slice(-n).reduce((x,y)=>x+y,0)/n;
+ const diff=(a,b)=>a>0?Number(((b/a-1)*100).toFixed(5)):null;
+ const oldP=prices(raw),newP=prices(out.hist);
+ const pCfg=META['0050'].cfg.q;
+ const oldStats=histStats(raw.rows,pCfg),newStats=histStats(out.hist.rows,pCfg);
+ const summary={status:out.status,reason:out.reason||null,issues:out.issues||[],
+  activeFlag:process.env.ETF0050_CASH_ADJUSTED==='1',
+  legacyRows:raw.rows.length,correctedRows:out.hist.rows.length,
+  priceBarParity:out.switched,latestCashClose:raw.rows.at(-1)?.close??null,
+  latestAdjustedClose:out.hist.rows.at(-1)?.adjclose??null,
+  source:divs.source||null,sourceVerified:divs.complete===true,
+  formulasUnchanged:true,entryPricesMayChangeWhenEnabled:true,
+  movingAverages:out.switched?Object.fromEntries([20,60,120,250].map(n=>{
+    const old=avg(oldP,n),corrected=avg(newP,n);
+    return[n,{old,corrected,deltaPct:diff(old,corrected)}];
+  })):null,
+  historicalQuantiles:out.switched?Object.fromEntries(['q45','q25','q10','atr14','r20'].map(k=>[k,{
+    old:oldStats[k],corrected:newStats[k],deltaPct:diff(oldStats[k],newStats[k])
+  }])):null,
+  assertion:'Previews actual inputs to 0050 L1/L2/L3 and trend. It does not promise buy-price parity; official uses legacy until rollout flag enabled.'};
+ return{ok:true,mode:'READ_ONLY',summary};
+ }));
+
  if(u.pathname==='/api/0050-cash-audit'&&req.method==='GET')return safeApi(res,'0050-cash-audit',()=>cachedSingleFlight('0050:cash-audit:research-v2',60000,async()=>{
-  const [hist,divs]=await Promise.all([etfHistory('0050').catch(e=>({code:'0050',rows:[],error:e.message})),
+  const [hist,divs]=await Promise.all([legacyEtfHistory('0050').catch(e=>({code:'0050',rows:[],error:e.message})),
    fetch0050DividendHistory().catch(e=>({events:[],complete:false,errors:[e.message],source:'Yahoo Taiwan 0050 股利政策（讀取失敗）'}))]);
   const source=hist?.source||null,qa=CASH_0050_AUDIT.create0050CashResearch(hist?.rows||[],divs?.events||[],{asOfDate:ymdTaipei()});
   const sample=r=>r?{date:r.date,cashClose:r.close,adjustedClose:r.adjclose}:null;
