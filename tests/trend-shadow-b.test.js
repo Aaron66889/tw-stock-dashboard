@@ -231,3 +231,17 @@ test('ONE-OFF LIVE 0050 cash price-basis preflight and unaffected ETF model chec
  assert.ok(preview.body?.summary?.historicalQuantiles);
  assert.equal(preview.body?.summary?.latestCashClose,preview.body?.summary?.latestAdjustedClose);
 });
+
+test('ONE-OFF identify 0050 historic OHLC parity blocking row with no live writes',{timeout:100000},async()=>{
+ const {select0050CashHistory}=require('../0050-cash-canonical');
+ const {parse0050Dividends}=require('../0050-dividend-source');
+ const [hs,ds]=await Promise.all([
+  fetch('https://tw-stock-dashboard-5.onrender.com/api/etf-history?code=0050',{signal:AbortSignal.timeout(80000)}),
+  fetch('https://tw.stock.yahoo.com/quote/0050.TW/dividend',{signal:AbortSignal.timeout(80000)})
+ ]);
+ const hist=await hs.json(),feed=parse0050Dividends(await ds.text(),{asOfDate:'2026-10-19'});
+ const out=select0050CashHistory(hist,feed,{enabled:true,asOfDate:'2026-10-19'});
+ const ix=hist.rows.findIndex(x=>x.date===out.at);
+ const row=hist.rows[ix],neighbors=hist.rows.slice(Math.max(0,ix-1),ix+2).map(x=>({date:x.date,close:x.close,open:x.open,high:x.high,low:x.low,adjclose:x.adjclose,priceBasis:x.priceBasis}));
+ console.log('0050_BLOCKING_PRICE_BAR',JSON.stringify({reason:out.reason,at:out.at,index:ix,neighbors,sourceComplete:feed.complete,sourceCount:feed.events?.length,rows:hist.rows.length}));
+});
