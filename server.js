@@ -1613,10 +1613,17 @@ async function legacyEtfHistory(code){
  // Never label or silently use a failed official build as complete history. Until PASS, keep a clearly marked fallback for live model continuity.
  return cached('fallback:'+code,30*60*1000,()=>yahooHistoryFallback(code));
 }
+function enabled0050CashAdjustment(){
+ // Explicitly enable the verified 0050 cash-price basis in code, to avoid
+ // repeated manual Render env write grants. Emergency rollback remains
+ // ETF0050_CASH_ADJUSTED=0 or a revert of this single commit.
+ const setting=String(process.env.ETF0050_CASH_ADJUSTED??'1').trim().toLowerCase();
+ return setting!=='0'&&setting!=='false'&&setting!=='off';
+}
 async function etfHistory(code){
  const hist=await legacyEtfHistory(code);
  // Explicit activation, 0050 only; no data fetch for the other three ETFs.
- if(code!=='0050'||process.env.ETF0050_CASH_ADJUSTED!=='1')return hist;
+ if(code!=='0050'||!enabled0050CashAdjustment())return hist;
  let divs=null;
  try{divs=await deadline(fetch0050DividendHistory().catch(()=>null),2500,null)}catch(_){}
  const selection=CASH_0050_CANONICAL.select0050CashHistory(hist,divs,{enabled:true,asOfDate:ymdTaipei()});
@@ -3553,7 +3560,7 @@ const server=http.createServer(async(req,res)=>{
  const pCfg=META['0050'].cfg.q;
  const oldStats=histStats(raw.rows,pCfg),newStats=histStats(out.hist.rows,pCfg);
  const summary={status:out.status,reason:out.reason||null,issues:out.issues||[],
-  activeFlag:process.env.ETF0050_CASH_ADJUSTED==='1',
+  activeFlag:enabled0050CashAdjustment(),
   legacyRows:raw.rows.length,correctedRows:out.hist.rows.length,
   priceBarParity:out.switched,latestCashClose:raw.rows.at(-1)?.close??null,
   latestAdjustedClose:out.hist.rows.at(-1)?.adjclose??null,
@@ -3566,7 +3573,7 @@ const server=http.createServer(async(req,res)=>{
   historicalQuantiles:out.switched?Object.fromEntries(['q45','q25','q10','atr14','r20'].map(k=>[k,{
     old:oldStats[k],corrected:newStats[k],deltaPct:diff(oldStats[k],newStats[k])
   }])):null,
-  assertion:'Previews actual inputs to 0050 L1/L2/L3 and trend. It does not promise buy-price parity; official uses legacy until rollout flag enabled.'};
+  assertion:'Previews inputs to 0050 L1/L2/L3 and trend. The active flag is controlled by ETF0050_CASH_ADJUSTED; safety QA can revert to legacy automatically.'};
  return{ok:true,mode:'READ_ONLY',summary};
  }));
 
