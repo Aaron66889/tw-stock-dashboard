@@ -311,3 +311,59 @@ test('ONEOFF 0056 2007-2026 historical dividends and Yahoo-adjusted live archive
  assert.equal(data.yahooChart.status,200,'no independent adjusted-price chart returned');
  assert.equal(priceMismatch.length,0,'published 0056 historical adjusted closes diverge from Yahoo chart');
 });
+
+
+test('ONEOFF 0056 historical 3 missed dividends: isolated theoretical correction and price-core A/B comparison',{timeout:150000},async()=>{
+ const r=await fetch('https://tw-stock-dashboard-5.onrender.com/api/etf-history?code=0056',{signal:AbortSignal.timeout(100000)});
+ assert.equal(r.status,200);
+ const d=await r.json(),original=d.rows,copy=original.map(x=>({...x}));
+ const events=[{date:'2009-10-23',amount:2},{date:'2011-10-26',amount:2.2},{date:'2012-10-24',amount:1.3}];
+ const applied=[];
+ for(const e of events){
+  const idx=copy.findIndex(x=>x.date===e.date);
+  assert.ok(idx>0,'missing '+e.date);
+  const prevRaw=Number(original[idx-1]?.rawClose),cashRatio=(prevRaw-e.amount)/prevRaw;
+  assert.ok(cashRatio>.8&&cashRatio<1);
+  for(let i=0;i<idx;i++){
+   for(const k of ['close','adjclose','open','high','low','adjopen','adjhigh','adjlow']){
+    if(copy[i][k]!=null)copy[i][k]=copy[i][k]*cashRatio;
+   }
+  }
+  applied.push({date:e.date,amount:e.amount,rawPrev:prevRaw,correctionFactor:cashRatio,
+    sourceRawExDate:original[idx].rawClose,oldAdjustedExClose:original[idx].adjclose,
+    correctedAdjustedExClose:copy[idx].adjclose});
+ }
+ const oldCore=b.compare(original),newCore=b.compare(copy);
+ const q=(arr,p)=>{const a=arr.filter(Number.isFinite).sort((x,y)=>x-y),v=(a.length-1)*p,l=Math.floor(v),h=Math.ceil(v);return l===h?a[l]:a[l]+(a[h]-a[l])*(v-l)};
+ const quant=(rows,p)=>{
+  const lows=[];for(let i=1;i<rows.length;i++){
+   const today=rows[i],previous=rows[i-1];if(today.low>0&&previous.close>0)lows.push(today.low/previous.close-1);
+  }return q(lows,p);
+ };
+ const active=Object.fromEntries([20,60,120,250].map(n=>[n,{
+  old:Number((original.slice(-n).reduce((x,r)=>x+r.adjclose,0)/n).toFixed(6)),
+  corrected:Number((copy.slice(-n).reduce((x,r)=>x+r.adjclose,0)/n).toFixed(6))}]));
+ const years=['2009','2010','2011','2012','2013','2023','2024','2025','2026'];
+ const yearSignals=rows=>b.signalCandidates(rows).candidateA;
+ const first=yearSignals(original),second=yearSignals(copy);
+ const perYear=Object.fromEntries(years.map(y=>[y,{old:first.filter(x=>x.date.startsWith(y)).length,
+   corrected:second.filter(x=>x.date.startsWith(y)).length}]));
+ const latest=copy.at(-1);
+ const output={applied,firstRow:{before:original[0].adjclose,after:copy[0].adjclose},
+  lastRow:{before:original.at(-1).adjclose,after:latest.adjclose},
+  recentMA:active,quantiles:{fullQ45:{old:quant(original,.45),corrected:quant(copy,.45)},
+   fullQ25:{old:quant(original,.25),corrected:quant(copy,.25)},
+   fullQ10:{old:quant(original,.10),corrected:quant(copy,.10)}},
+  modelBenchmark:{
+   before:{A:oldCore.all?.A,signalCount:oldCore.all?.A?.signalCount,days:oldCore.historyDays},
+   after:{A:newCore.all?.A,signalCount:newCore.all?.A?.signalCount,days:newCore.historyDays},
+   annualSignalCounts:perYear,
+   caveat:'price-core trend proxy only, not live L1-L2-L3, gate, trades or cloud records'}
+ };
+ console.log('AUDIT_0056_RESEARCH_CORRECTION',JSON.stringify(output));
+ assert.ok(copy.length===original.length);
+ assert.equal(original.at(-1).adjclose,copy.at(-1).adjclose);
+ assert.equal(active[20].old,active[20].corrected);
+ assert.equal(active[250].old,active[250].corrected);
+ for(const y of ['2023','2024','2025','2026'])assert.equal(perYear[y].old,perYear[y].corrected);
+});
