@@ -302,3 +302,12 @@ test('ONEOFF inspect 0050 dividend tables HTML for robust parsing',{timeout:5000
   }catch(e){console.log('0050_DIVIDEND_HTML_STRUCTURE',url,String(e))}
  }
 });
+
+test('ONEOFF parse structured dividend embedded records from Yahoo Taiwan',{timeout:20000},async()=>{
+ const resp=await fetch('https://tw.stock.yahoo.com/quote/0050.TW/dividend',{signal:AbortSignal.timeout(15000),headers:{'User-Agent':'Mozilla/5.0'}});
+ const html=await resp.text(),clean=html.replace(/\\+"/g,'"');
+ const re=/"exDate":"(\d{4}-\d{2}-\d{2})T[^"]*","year":"[^"]+","period":"[^"]+","symbol":"0050","totalDividend":"([0-9.]+)"/g;
+ const ev=[...clean.matchAll(re)].map(m=>({date:m[1],amount:Number(m[2])}));
+ const uniq=[...new Map(ev.map(e=>[e.date,e])).values()];
+ console.log('YAHOO_TAIWAN_FULL_DIVIDEND_PARSE',JSON.stringify({count:ev.length,unique:uniq.length,first:uniq.slice(-7),last:uniq.slice(0,7),has2009:uniq.some(x=>x.date==='2009-10-23'),has2026:uniq.some(x=>x.date==='2026-07-21'),extra20220802:uniq.some(x=>x.date==='2022-08-02')}));
+});
