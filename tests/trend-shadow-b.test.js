@@ -151,3 +151,28 @@ test('Risk comparison retains common signal days and discounts confirmed fills u
  assert.ok(confirmed.pairedDelta20.samples<=confirmed.stats.period[20].samples);
  assert.ok(confirmed.rejected.signals>=0);
 });
+
+test('Performance export flags unclear entry snapshots and groups same-breakout trend fills as one episode',()=>{
+ const fs=require('node:fs'),vm=require('node:vm');
+ const app=fs.readFileSync(require('node:path').join(__dirname,'../public/app.js'),'utf8');
+ const begin=app.indexOf('function modelTradeDataAudit('),end=app.indexOf('function performanceDiagnosticPayload(){',begin);
+ assert.ok(begin>0&&end>begin);
+ const audit=vm.runInNewContext(app.slice(begin,end)+';modelTradeDataAudit',{
+  modelFamilyOf:t=>t.tradeType==='manual'?'manual':t.modelFamily
+ });
+ const trade=(id,code,modelFamily,day,status)=>({id,code,modelFamily,entryDate:day,tradeType:'model',shares:10,
+  snapshot:{modelStatusText:status}});
+ const result=audit([
+  trade('t1','0050','trend','2026-10-06','強勢突破／可小額加碼'),
+  trade('t2','0050','trend','2026-10-06','強勢突破／可小額加碼'),
+  trade('t3','0050','trend','2026-10-07','突破後回踩／可小額加碼'),
+  trade('t4','0056','trend','2026-10-05','順勢買點成立／可小額'),
+  trade('t5','0050','reasonable','2026-10-13','Gate暫停')
+ ]);
+ assert.equal(result.trendTradeCount,4);
+ assert.equal(result.trendEpisodes,2);
+ assert.equal(result.episodes.find(x=>x.code==='0050').entries,3);
+ assert.equal(result.potentialSnapshotInconsistencies.length,1);
+ assert.equal(result.potentialSnapshotInconsistencies[0].flag,'REVIEW_CONFIRMATION_OR_GATE');
+ assert.match(app,/audit:modelTradeDataAudit\(MODEL_TRADES\)/);
+});
