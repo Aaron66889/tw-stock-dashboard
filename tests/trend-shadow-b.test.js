@@ -223,3 +223,55 @@ test('Regression: 0050 cash adjusted historical data preserves missing source OP
  assert.equal(result.status,'ACTIVE');
  assert.equal(result.hist.rows.find(x=>x.date==='2024-05-28').adjopen,null);
 });
+
+
+test('ONEOFF 0050 cash historical basis final LIVE validation after deployment is LIVE',{timeout:205000},async()=>{
+ const base='https://tw-stock-dashboard-5.onrender.com';
+ const paths=['/health','/api/0050-cash-switch-preview','/api/buy-model','/api/trend-entry'];
+ const results={};
+ for(const path of paths){
+  const started=Date.now();let result={};
+  try{const response=await fetch(base+path,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(50000)});
+   result={http:response.status,ms:Date.now()-started,body:await response.json()};
+  }catch(e){result={error:String(e),ms:Date.now()-started}};
+  results[path]=result;
+  if(path.includes('cash-switch-preview')){
+   console.log('LIVE_V2_0050_PREVIEW',JSON.stringify({http:result.http,error:result.error,ms:result.ms,summary:result.body?.summary}));
+  }else if(path.includes('buy-model')||path.includes('trend-entry')){
+   console.log('LIVE_V2_4ETF_MODEL',JSON.stringify({path,http:result.http,error:result.error,ms:result.ms,ok:result.body?.ok,
+    models:Object.fromEntries(['0050','0056','00878','00919'].map(c=>{
+      const m=result.body?.models?.[c]||{};
+      return[c,{code:c,score:m.score,gate:m.decisionGate?.status||null,hardVeto:m.hardVeto??null,
+       l1:m.raw?.first?.center||null,l2:m.raw?.second?.center||null,l3:m.raw?.third?.center||null,
+       historicalDays:m.history?.historyDays??m.historyDays,
+       source:m.historySource||null,cashHistory:m.cashHistory||null}];
+    }))}));
+  }else console.log('LIVE_V2_0050_HEALTH',JSON.stringify({http:result.http,error:result.error,ms:result.ms,ok:result.body?.ok}));
+ }
+ const preview=results['/api/0050-cash-switch-preview'];const buy=results['/api/buy-model'];const trend=results['/api/trend-entry'];
+ assert.equal(results['/health'].http,200,'health endpoint failed');
+ assert.equal(preview.http,200,'preview failed');
+ assert.equal(preview.body?.summary?.activeFlag,true,'0050 activation is not on');
+ assert.equal(preview.body?.summary?.status,'ACTIVE','0050 cash historical price-basis QA FAILED');
+ assert.equal(preview.body?.summary?.sourceVerified,true);
+ assert.equal(preview.body?.summary?.priceBarParity,true);
+ assert.equal(preview.body?.summary?.latestCashClose,preview.body?.summary?.latestAdjustedClose);
+ assert.equal(buy.http,200,'official buy-model endpoint failed');
+ assert.equal(trend.http,200,'trend endpoint failed');
+ assert.equal(buy.body?.ok,true);
+ assert.equal(trend.body?.ok,true);
+ for(const [route,model] of [['buy',buy.body],['trend',trend.body]]){
+  for(const code of ['0050','0056','00878','00919'])assert.ok(model.models?.[code],route+' missing '+code);
+  assert.equal(model.models['0050'].cashHistory?.status,'ACTIVE',route+' did not activate 0050 cash history');
+  for(const code of ['0056','00878','00919'])
+   assert.equal(model.models[code].cashHistory??null,null,route+' contaminated '+code);
+ }
+ const m=buy.body.models['0050'];
+ for(const [key,prior] of [['first',108.1771281],['second',106.73873516],['third',105.91119629]]){
+  const center=m.raw?.[key]?.center;
+  assert.ok(center>0&&Number.isFinite(center),key+' invalid new layer');
+  assert.ok(Math.abs(center/prior-1)<.015,key+' deviated more than 1.5% versus stable model');
+ }
+ assert.ok(m.raw.first.center>m.raw.second.center&&m.raw.second.center>m.raw.third.center,'L1/L2/L3 spacing broken');
+ assert.equal(m.decisionGate?.status,'PASS','0050 old PASS gate unexpectedly changed');
+});
