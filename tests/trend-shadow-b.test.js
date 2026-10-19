@@ -117,3 +117,37 @@ test('Last-good research data stays visible but is never considered a buy signal
  assert.match(app,/本輪不得視為買入訊號/);
  assert.match(app,/bt=hist\.snapshot\?\.backtest\|\|\{\}/);
 });
+
+test('Risk Shadow computes seven candidates but cannot change formal live permissions',()=>{
+ const data=rows(750,true).map((r,i)=>({...r,low:r.close-.25,high:r.close+.024}));
+ const baselineLive=b.live(official(),{open:101.1});
+ const research=b.riskResearch(data,[]);
+ assert.equal(research.mode,'SHADOW_ONLY');
+ assert.equal(research.recommendation,'NO_AUTO_PROMOTION');
+ assert.equal(research.variants.extension2.stats.signals<=research.variants.extension25.stats.signals,true);
+ assert.equal(research.variants.extension25.stats.signals<=research.variants.extension3.stats.signals,true);
+ assert.equal(research.variants.extension3.stats.signals<=research.variants.baseline.stats.signals,true);
+ assert.deepEqual(b.live(official(),{open:101.1}),baselineLive);
+ assert.equal(research.variants.marketGuard.stats.signals,0);
+ assert.equal(research.variants.combined.stats.signals,0);
+});
+test('Data QA flags suspicious historical price discontinuity without changing any bars',()=>{
+ const data=rows(750,true).map((r,i)=>({...r,low:r.close-.25,high:r.close+.024}));
+ data[370]={...data[370],open:data[370].open/4,high:data[370].high/4,low:data[370].low/4,close:data[370].close/4,adjclose:data[370].adjclose/4};
+ const before=JSON.stringify(data);
+ const study=b.riskResearch(data);
+ assert.equal(study.ready,false);
+ assert.equal(study.dataStatus,'PRICE_QA_WARNING');
+ assert.ok(study.qa.issues.some(x=>x.type==='DAILY_DISCONTINUITY'));
+ assert.equal(JSON.stringify(data),before);
+});
+test('Risk comparison retains common signal days and discounts confirmed fills until later open',()=>{
+ const data=rows(750,true).map(r=>({...r,low:r.close-.25,high:r.close+.024}));
+ const r=b.compare(data);
+ assert.equal(r.riskResearch.mode,'SHADOW_ONLY');
+ assert.match(r.riskResearch.assumptions,/次交易日開盤/);
+ const base=r.riskResearch.variants.baseline,confirmed=r.riskResearch.variants.nextClose;
+ assert.equal(base.stats.signals>=confirmed.stats.signals,true);
+ assert.ok(confirmed.pairedDelta20.samples<=confirmed.stats.period[20].samples);
+ assert.ok(confirmed.rejected.signals>=0);
+});
