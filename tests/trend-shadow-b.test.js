@@ -206,3 +206,28 @@ test('UI replaces saved valid Shadow stats when only hidden historical bars chan
  assert.equal(second.changedYears.join(','),'2012');
  assert.equal(second.snapshot.fingerprint.hash,'b');
 });
+
+test('ONE-OFF LIVE 0050 cash price-basis preflight and unaffected ETF model check',{timeout:90000},async()=>{
+ const base='https://tw-stock-dashboard-5.onrender.com';
+ const paths=['/api/0050-cash-switch-preview','/api/0050-cash-audit','/api/history-status','/api/trend-entry'];
+ const results=await Promise.all(paths.map(async p=>{
+  try{const t=Date.now(),r=await fetch(base+p,{signal:AbortSignal.timeout(80000)});return {path:p,status:r.status,body:await r.json(),ms:Date.now()-t}}
+  catch(e){return {path:p,error:String(e)}}
+ }));
+ for(const x of results){
+  if(x.path.includes('switch-preview'))
+   console.log('STAGED_0050_SWITCH_PREVIEW',JSON.stringify({http:x.status,ms:x.ms,summary:x.body?.summary,error:x.body?.error}));
+  else if(x.path.includes('cash-audit'))console.log('STAGED_0050_RESEARCH_AUDIT',JSON.stringify({http:x.status,state:x.body?.state,sourceQA:x.body?.dividendSourceQA?.complete,events:x.body?.qa?.normalizedDividendCount}));
+  else if(x.path.includes('trend-entry'))console.log('STAGED_TREND_MODEL_INTEGRITY',JSON.stringify({http:x.status,ok:x.body?.ok,codes:Object.fromEntries(['0050','0056','00878','00919'].map(c=>[c,{
+    status:x.body?.models?.[c]?.status,historyDays:x.body?.models?.[c]?.historyDays,historySource:x.body?.models?.[c]?.historySource,
+    cashHistory:x.body?.models?.[c]?.cashHistory||null}]))}));
+  else console.log('STAGED_HISTORY_INTEGRITY',JSON.stringify({http:x.status,codes:x.body?.history?.map(h=>({code:h.code,rows:h.rows,status:h.status}))}));
+ }
+ const preview=results.find(x=>x.path.includes('switch-preview'));
+ assert.equal(preview.status,200,JSON.stringify(preview.error));
+ assert.equal(preview.body?.summary?.status,'ACTIVE',JSON.stringify(preview.body?.summary));
+ assert.equal(preview.body?.summary?.activeFlag,false);
+ assert.equal(preview.body?.summary?.priceBarParity,true);
+ assert.ok(preview.body?.summary?.historicalQuantiles);
+ assert.equal(preview.body?.summary?.latestCashClose,preview.body?.summary?.latestAdjustedClose);
+});
