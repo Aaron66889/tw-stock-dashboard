@@ -90,3 +90,30 @@ test('Research output is read-only: prior official A and B signals are unchanged
  assert.equal(output.entryBandResearch?.mode,'SHADOW_ONLY');
  assert.deepEqual(b.signalCandidates(history).candidateA,baseline.candidateA);
 });
+
+test('Last-good research data stays visible but is never considered a buy signal',()=>{
+ const fs=require('node:fs'),vm=require('node:vm');
+ const app=fs.readFileSync(require('node:path').join(__dirname,'../public/app.js'),'utf8');
+ const start=app.indexOf('// Read-only historical research cache.'),end=app.indexOf('// Read-only research panel:',start);
+ assert.ok(start>=0&&end>start);
+ const choose=vm.runInNewContext(app.slice(start,end)+';trendResearchChoose',{});
+ const base={ok:true,historySource:'TWSE',historyOfficial:true,backtest:{signals:28},
+  abPriceCore:{ready:true,historyDays:900,lastDate:'2026-10-16',entryBandResearch:{bands:[{},{},{}]}}};
+ const a=choose(null,base,'2026-10-16T10:00:00Z');
+ assert.equal(a.snapshot.backtest.signals,28);
+ assert.ok(a.persist);
+ const empty=choose(a.snapshot,{ok:false,error:'history timeout'},'2026-10-16T10:01:00Z');
+ assert.equal(empty.snapshot.backtest.signals,28);
+ assert.equal(empty.stale,true);
+ assert.equal(empty.persist,null);
+ const fallback=choose(a.snapshot,{...base,historySource:'Yahoo fallback',historyOfficial:false,
+  backtest:{signals:4},abPriceCore:{...base.abPriceCore,historyDays:500,lastDate:'2026-10-16'}},'2026-10-16T10:02:00Z');
+ assert.equal(fallback.snapshot.backtest.signals,28);
+ assert.equal(fallback.stale,true);
+ const updated=choose(a.snapshot,{...base,backtest:{signals:29},abPriceCore:{...base.abPriceCore,historyDays:901,lastDate:'2026-10-19'}},'2026-10-19T10:00:00Z');
+ assert.equal(updated.snapshot.backtest.signals,29);
+ assert.equal(updated.stale,false);
+ assert.ok(updated.persist);
+ assert.match(app,/本輪不得視為買入訊號/);
+ assert.match(app,/bt=hist\.snapshot\?\.backtest\|\|\{\}/);
+});
