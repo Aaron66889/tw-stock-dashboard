@@ -40,3 +40,12 @@ test('other ETF history never adjusted by 0050 dividend mapping',()=>{
  const h={...hist(),code:'0056'},out=select0050CashHistory(h,feed(),{enabled:true});
  assert.strictEqual(out.hist,h);assert.equal(out.switched,false);
 });
+
+test('0050 old source has a missing 2009 open: preserve null without disabling otherwise valid cash adjustment',()=>{
+ const h=hist(),target=h.rows[148];target.open=null;target.adjopen=null;
+ const result=select0050CashHistory(h,feed(),{enabled:true});
+ assert.equal(result.status,'ACTIVE',JSON.stringify(result));
+ assert.equal(result.hist.rows[148].adjopen,null);
+ assert.equal(result.hist.rows[148].open,null);
+ assert.equal(result.hist.rows[148].close,target.close);
+});
