@@ -6,6 +6,7 @@ const crypto=require('crypto');
 const {URL}=require('url');
 const TREND_SHADOW_B=require('./trend-shadow-b');
 const HISTORY_IDENTITY=require('./history-identity');
+const CASH_0050_AUDIT=require('./0050-cash-audit');
 const TREND_LEDGER=require('./trend-forward-ledger');
 const CRASH_GATE_LAB=require('./crash-gate-lab');
 const GATE_LEDGER=require('./gate-blocked-ledger');
@@ -3517,6 +3518,31 @@ const server=http.createServer(async(req,res)=>{
   const con=await Promise.all(ETF.map(async code=>{try{const x=await deadline(constituents(code),15000,null);if(!x)throw Error('official constituent source timed out');const expected=x.expected||META[code].expected,actual=x.items?.length||0,weighted=x.items?.filter(z=>Number.isFinite(z.weight)).length||0,official=!!x.officialOnly&&isOfficialHostFor(code,x.sourceUrl||META[code].url);return{code,pass:!!(x.complete&&official&&actual>=expected&&weighted>=expected),official,expected,actual,weighted,source:x.source,sourceUrl:x.sourceUrl}}catch(e){return{code,pass:false,expected:META[code].expected,actual:0,weighted:0,error:e.message}}}));
   return{ok:true,build:BUILD,modelTrade,constituents:{allPass:con.every(x=>x.pass),items:con},history:{allPass:hist.every(x=>x.fullHistoryPass===true),items:hist},allPass:modelTrade.pass&&con.every(x=>x.pass)&&hist.every(x=>x.fullHistoryPass===true)}
  });
+ if(u.pathname==='/api/0050-cash-audit'&&req.method==='GET')return safeApi(res,'0050-cash-audit',()=>cachedSingleFlight('0050:cash-audit:research-v1',60000,async()=>{
+  const [hist,divs]=await Promise.all([etfHistory('0050').catch(e=>({code:'0050',rows:[],error:e.message})),
+   twseDividendEvents('0050').catch(e=>({events:[],complete:false,errors:[e.message]}))]);
+  const source=hist?.source||null,qa=CASH_0050_AUDIT.create0050CashResearch(hist?.rows||[],divs?.events||[],{asOfDate:ymdTaipei()});
+  const sample=r=>r?{date:r.date,cashClose:r.close,adjustedClose:r.adjclose}:null;
+  const output={ok:qa.state==='RESEARCH_READY',code:'0050',mode:'SHADOW_ONLY',priceBasis:'split-only vs split-plus-cash',
+   state:qa.state,source,historyOfficial:hist?.validation?.fullHistoryPass===true,
+   dividendsFrom:divs?.source||'TWSE ETF e添富',dividendFeedReportedComplete:divs?.complete===true,
+   dividendErrors:divs?.errors||[],qa:qa.qa,events:qa.events,
+   samples:{first:sample(qa.rows?.[0]),last:sample(qa.rows?.at(-1))},
+   comparison:null,verdict:'NO_LIVE_MODEL_CHANGE'};
+  if(qa.state==='RESEARCH_READY'){
+   const before=TREND_SHADOW_B.compare(hist.rows,[]),after=TREND_SHADOW_B.compare(qa.rows,[]);
+   const take=r=>({signalCount:r.all?.A?.signals??null,five:r.all?.A?.period?.[5]||null,
+    twenty:r.all?.A?.period?.[20]||null,sixty:r.all?.A?.period?.[60]||null,
+    priceCore20:r.riskResearch?.variants?.baseline?.stats?.period?.[20]||null,
+    priceCoreSignals:r.riskResearch?.variants?.baseline?.stats?.signals||0,
+    firstDate:r.firstDate,lastDate:r.lastDate});
+   output.comparison={splitOnly:take(before),cashAdjusted:take(after),
+    rawHistoryFingerprint:before.historyFingerprint?.hash,correctedHistoryFingerprint:after.historyFingerprint?.hash,
+    caution:'兩組是同樣價格核心規則不同權息口徑的研究對照；正式買點、Gate與雲端交易不參與'};
+  }
+  return output;
+ }));
+
  if(u.pathname==='/api/history-status')return send(res,200,{ok:true,build:BUILD,history:ETF.map(historyProgress)});
  if(u.pathname==='/api/history-proof')return send(res,200,{ok:true,build:BUILD,allPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),history:ETF.map(c=>{const p=historyProgress(c),r=diskRead(readyFile(c));return{...p,source:r?.source||null,corporateActions:r?.corporateActions||[],adjustmentAnomalies:r?.adjustmentAnomalies||[],dividendSource:r?.dividendSource||null}})});
  if(u.pathname==='/api/history-warm'){const code=u.searchParams.get('code'),all=u.searchParams.get('all')==='1';if(all)ETF.forEach(c=>enqueueHistory(c,false));else if(ETF.includes(code))enqueueHistory(code,true);return send(res,200,{ok:true,status:'WARMING',history:ETF.map(historyProgress)});}
