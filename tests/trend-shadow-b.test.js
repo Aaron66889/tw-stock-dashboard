@@ -254,3 +254,42 @@ test('ONE-OFF rollback deploy production health: trade routes and four ETFs inta
   assert.equal(trend.models[c].cashHistory??null,null);
  }
 });
+
+test('ONEOFF deployed rollback health check of public site and all 4 ETF models',{timeout:170000},async()=>{
+ const endpoints=['/health','/api/history-status','/api/0050-cash-switch-preview','/api/buy-model','/api/trend-entry'];
+ const base='https://tw-stock-dashboard-5.onrender.com';
+ const results=await Promise.all(endpoints.map(async path=>{
+  const start=Date.now();
+  try{
+   const response=await fetch(base+path,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(125000)});
+   const body=await response.json().catch(()=>({}));
+   return{path,http:response.status,ms:Date.now()-start,body};
+  }catch(err){return{path,error:String(err),ms:Date.now()-start}}
+ }));
+ for(const {path,http,ms,error,body} of results){
+  const o={path,http,ms,error:error||null,ok:body?.ok??null};
+  if(path.includes('0050-cash-switch-preview')){
+   o.flag=body.summary?.activeFlag??null;o.status=body.summary?.status??null;
+   o.sourceVerified=body.summary?.sourceVerified??null;
+  }else if(path.includes('buy-model')||path.includes('trend-entry')){
+   o.models=Object.fromEntries(['0050','0056','00878','00919'].map(c=>{
+    const m=body.models?.[c]||{};
+    return[c,{available:!!body.models?.[c],score:m.score,status:m.status,
+     cashHistory:m.cashHistory?.status||null,gate:m.decisionGate?.status||null,
+     l1:m.raw?.first?.center,l2:m.raw?.second?.center,l3:m.raw?.third?.center}];
+   }));
+  }else if(path.includes('history-status'))o.codes=body.history?.map(h=>({code:h.code,status:h.status,rows:h.rows}));
+  console.log('ROLLBACK_LIVE_CHECK',JSON.stringify(o));
+ }
+ const endpoint=x=>results.find(r=>r.path===x);
+ assert.equal(endpoint('/health').http,200,'health endpoint unavailable');
+ assert.equal(endpoint('/api/history-status').http,200,'history/status unavailable');
+ assert.equal(endpoint('/api/0050-cash-switch-preview').http,200,'0050 preview unavailable');
+ assert.equal(endpoint('/api/0050-cash-switch-preview').body.summary?.activeFlag,false,'0050 legacy model not restored');
+ for(const path of ['/api/buy-model','/api/trend-entry']){
+  const r=endpoint(path);assert.equal(r.http,200,path+' response unavailable');
+  assert.equal(r.body.ok,true,path+' not OK');
+  for(const code of ['0050','0056','00878','00919'])assert.ok(r.body.models?.[code],path+' missing '+code);
+  assert.equal(r.body.models['0050'].cashHistory??null,null,'0050 adjusted source unexpectedly active');
+ }
+});
