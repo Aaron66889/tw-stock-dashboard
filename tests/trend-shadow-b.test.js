@@ -245,3 +245,5 @@ test('ONE-OFF identify 0050 historic OHLC parity blocking row with no live write
  const row=hist.rows[ix],neighbors=hist.rows.slice(Math.max(0,ix-1),ix+2).map(x=>({date:x.date,close:x.close,open:x.open,high:x.high,low:x.low,adjclose:x.adjclose,priceBasis:x.priceBasis}));
  console.log('0050_BLOCKING_PRICE_BAR',JSON.stringify({reason:out.reason,at:out.at,index:ix,neighbors,sourceComplete:feed.complete,sourceCount:feed.events?.length,rows:hist.rows.length}));
 });
+
+// One-off external preflight recheck against Render after PR #32 deployed.
