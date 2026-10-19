@@ -258,3 +258,15 @@ test('ONE-OFF LIVE READONLY 0050 alternate dividends upstream probe',{timeout:12
   }catch(e){console.log('UPSTREAM_0050_DIVIDENDS',JSON.stringify({url:key,error:String(e),seconds:(Date.now()-newSince)/1000}))}
  }));
 });
+
+test('ONE-OFF 0050 Yahoo dividend calendar, price factor and split anchor probe',{timeout:35000},async()=>{
+ const url='https://query2.finance.yahoo.com/v8/finance/chart/0050.TW?period1=1220227200&period2=1792454400&interval=1d&events=div%2Csplits';
+ const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0'},signal:AbortSignal.timeout(25000)});
+ const d=(await r.json()).chart.result[0],div=Object.values(d.events?.dividends||{}).map(x=>({day:new Date(x.date*1000).toISOString().slice(0,10),amount:x.amount})).sort((a,b)=>a.day.localeCompare(b.day));
+ const q=d.indicators.quote[0],adj=d.indicators.adjclose?.[0]?.adjclose||[];
+ const sampled=['2009-01-02','2012-01-17','2024-01-16','2024-01-17','2025-01-16','2025-01-17','2025-06-17','2025-06-18','2025-07-18','2025-07-21','2026-01-21','2026-01-22','2026-07-20','2026-07-21','2026-10-19'];
+ const dates=d.timestamp.map(x=>new Date(x*1000).toISOString().slice(0,10));
+ const prices=sampled.map(date=>{const i=dates.indexOf(date);return {date,i,close:i>=0?q.close[i]:null,adjClose:i>=0?adj[i]:null}});
+ console.log('LIVE_YAHOO_ALL_DIVIDENDS',JSON.stringify(div));
+ console.log('LIVE_YAHOO_HISTORICAL_CLOSE_VS_ADJCLOSE',JSON.stringify(prices));
+});
