@@ -651,7 +651,7 @@ function downloadTrendRiskResearch(){
  const research=Object.fromEntries(ETF.map(code=>{
   const m=d.models?.[code]||{};
   return[code,{ok:!!m.ok,historySource:m.historySource||null,historyOfficial:!!m.historyOfficial,
-   historyDays:m.historyDays||0,research:m.abPriceCore?.riskResearch||null,
+   historyIdentity:m.historyIdentity||null,historyDays:m.historyDays||0,research:m.abPriceCore?.riskResearch||null,
    entryBandResearch:m.abPriceCore?.entryBandResearch||null}];
  }));
  const payload={exportVersion:'trend-risk-shadow-research-v1',generatedAt:new Date().toISOString(),

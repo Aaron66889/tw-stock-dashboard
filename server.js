@@ -5,6 +5,7 @@ const path=require('path');
 const crypto=require('crypto');
 const {URL}=require('url');
 const TREND_SHADOW_B=require('./trend-shadow-b');
+const HISTORY_IDENTITY=require('./history-identity');
 const TREND_LEDGER=require('./trend-forward-ledger');
 const CRASH_GATE_LAB=require('./crash-gate-lab');
 const GATE_LEDGER=require('./gate-blocked-ledger');
@@ -1534,8 +1535,8 @@ async function finalizeOfficialHistory(code){
  validation.corporateActionPass=!!(validation.dividendCoveragePass&&validation.adjustmentPass);
  validation.backtestReadyPass=!!(validation.priceHistoryPass&&validation.backtestPrecisionPass&&validation.corporateActionPass);
  validation.fullHistoryPass=!!(validation.priceFullHistoryPass&&validation.backtestPrecisionPass&&validation.corporateActionPass);
- const source=preAdjusted?(ded.some(x=>String(x.source||'').includes('Yahoo Finance'))?'Yahoo Finance 0050.TW 長期日K（2009起實際樣本；價格尺度QA＋1拆4校正）':'Goodinfo 0050 還原權息長期日K（完整性依實際起訖標示）'):'TWSE官方：2010前STOCK_DAY_AVG收盤價＋2010後STOCK_DAY OHLC＋ETF e添富配息';
- const result={ok:ded.length>100,ready:validation.backtestReadyPass,code,source,normalizationVersion:code==='0050'?'scale-v2':null,qaWarnings:adj.warnings||[],rows:adj.rows,validation,corporateActions:adj.events,adjustmentAnomalies:adj.anomalies,dividendSource:{complete:!!divs.complete,events:(divs.events||[]).length,errors:divs.errors||[]},fetchedAt:new Date().toISOString()};diskWrite(readyFile(code),result);return result;
+ const source=HISTORY_IDENTITY.label(code,{code,rows:ded});
+ const result={ok:ded.length>100,ready:validation.backtestReadyPass,code,source,normalizationVersion:code==='0050'?'scale-v2':preAdjusted?'yahoo-adjusted-v1':null,qaWarnings:adj.warnings||[],rows:adj.rows,validation,corporateActions:adj.events,adjustmentAnomalies:adj.anomalies,dividendSource:{complete:!!divs.complete,events:(divs.events||[]).length,errors:divs.errors||[]},fetchedAt:new Date().toISOString()};diskWrite(readyFile(code),result);return result;
 }
 function enqueueHistory(code,front=false){if(!ETF.includes(code))return historyProgress(code);const ready=diskRead(readyFile(code));if(ready?.validation?.backtestReadyPass&&!readyRefreshDue(ready)&&!(code==='0050'&&ready.normalizationVersion!=='scale-v2'))return historyProgress(code);const active=['RUNNING','RETRYING','FINALIZING','QUEUED'].includes(HISTORY_JOBS.get(code)?.status);if(!WARM_QUEUE.includes(code)&&!active){front?WARM_QUEUE.unshift(code):WARM_QUEUE.push(code);HISTORY_JOBS.set(code,{status:'QUEUED',startedAt:new Date().toISOString(),errors:[]});pumpWarmQueue()}return historyProgress(code)}
 async function pumpWarmQueue(){if(WARM_ACTIVE)return;WARM_ACTIVE=true;while(WARM_QUEUE.length){const code=WARM_QUEUE.shift();try{await warmHistoryWorker(code)}catch(e){const j=HISTORY_JOBS.get(code)||{};j.status='ERROR';j.error=e.message;HISTORY_JOBS.set(code,j)}}WARM_ACTIVE=false}
@@ -1594,7 +1595,7 @@ async function yahooHistoryFallback(code){
  return{ok:rows.length>=120,code,source:'Yahoo fallback（TWSE官方全歷史尚未暖機）',rows,validation:{fullHistoryPass:false,precision:'fallback'},fetchedAt:new Date().toISOString()};
 }
 async function etfHistory(code){
- const ready=diskRead(`twse_${code}_official_ready.json`);if(ready?.rows?.length>100&&ready?.validation?.backtestReadyPass)return ready;
+ const ready=diskRead(`twse_${code}_official_ready.json`);if(ready?.rows?.length>100&&ready?.validation?.backtestReadyPass)return {...ready,source:HISTORY_IDENTITY.label(code,ready)};
  // Never label or silently use a failed official build as complete history. Until PASS, keep a clearly marked fallback for live model continuity.
  return cached('fallback:'+code,30*60*1000,()=>yahooHistoryFallback(code));
 }
@@ -2465,7 +2466,7 @@ function trendEntryOne(code,q,hist,marketHist,marketQuote){
  const trendBase={status,score,price:px,levels:{breakout20:br20,entryLow,entryHigh,maxChase},trend:{atr}};
  const shadowB=TREND_SHADOW_B.live(trendBase,q);
  const abPriceCore=TREND_SHADOW_B.compare(hist?.rows||[],marketHist?.rows||[]);
- return{ok:true,code,name:META[code].name,price:px,prevClose:Number(q?.effectivePrevClose||q?.prevClose)||null,changePct:Number(q?.effectivePrevClose||q?.prevClose)>0?(px/Number(q?.effectivePrevClose||q?.prevClose)-1)*100:null,score,scoreLabel:'ETF趨勢強度',scoreGroups,status,statusText,action,levels:{breakout20:br20,breakout55:br55,entryLow,entryHigh,maxChase},trend:{sma20:s20,sma60:s60,sma120:s120,sma250:s250,weekly20:w20,weekly40:w40,momentum20:mom20,momentum60:mom60,marketMomentum20:marketMom20,marketMomentum60:marketMom60,relative20,relative60,atr,distBreakAtr,distSma20Atr,brokeToday},regime:{allTimeHigh,priorAllTimeHigh,athDistancePct,athBasis,athDataAvailable},parts,backtest:bt,shadowB,abPriceCore,historySource:hist?.source||null,historyOfficial:!!hist?.validation?.fullHistoryPass,historyDays:hist?.rows?.length||0,marketHistorySource:marketHist?.source||null};
+ return{ok:true,code,name:META[code].name,price:px,prevClose:Number(q?.effectivePrevClose||q?.prevClose)||null,changePct:Number(q?.effectivePrevClose||q?.prevClose)>0?(px/Number(q?.effectivePrevClose||q?.prevClose)-1)*100:null,score,scoreLabel:'ETF趨勢強度',scoreGroups,status,statusText,action,levels:{breakout20:br20,breakout55:br55,entryLow,entryHigh,maxChase},trend:{sma20:s20,sma60:s60,sma120:s120,sma250:s250,weekly20:w20,weekly40:w40,momentum20:mom20,momentum60:mom60,marketMomentum20:marketMom20,marketMomentum60:marketMom60,relative20,relative60,atr,distBreakAtr,distSma20Atr,brokeToday},regime:{allTimeHigh,priorAllTimeHigh,athDistancePct,athBasis,athDataAvailable},parts,backtest:bt,shadowB,abPriceCore,historySource:hist?.source||null,historyIdentity:HISTORY_IDENTITY.inspect(code,hist),historyOfficial:!!hist?.validation?.fullHistoryPass,historyDays:hist?.rows?.length||0,marketHistorySource:marketHist?.source||null};
 }
 async function trendEntryModel(){
  let quotes=null,quoteSource='';const bm=RUNTIME.bm,age=bm?.fetchedAt?Date.now()-Date.parse(bm.fetchedAt):Infinity;
