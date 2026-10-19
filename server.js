@@ -9,6 +9,7 @@ const HISTORY_IDENTITY=require('./history-identity');
 const CASH_0050_AUDIT=require('./0050-cash-audit');
 const CASH_0050_DIVIDEND_SOURCE=require('./0050-dividend-source');
 const CASH_0050_CANONICAL=require('./0050-cash-canonical');
+const CASH_0056_CORRECTION=require('./0056-dividend-correction');
 const TREND_LEDGER=require('./trend-forward-ledger');
 const CRASH_GATE_LAB=require('./crash-gate-lab');
 const GATE_LEDGER=require('./gate-blocked-ledger');
@@ -1615,7 +1616,16 @@ async function legacyEtfHistory(code){
 }
 async function etfHistory(code){
  const hist=await legacyEtfHistory(code);
- // Explicit activation, 0050 only; no data fetch for the other three ETFs.
+ // Strictly isolated historical price-basis adjustments. No current quote,
+ // entitlement, actual trade record, daily reference or Gate rule is altered.
+ if(code==='0056'){
+  if(process.env.ETF0056_CASH_CORRECTED!=='1')return hist;
+  const result=CASH_0056_CORRECTION.select0056History(hist,{enabled:true,asOfDate:ymdTaipei()});
+  if(result.switched)return result.hist;
+  return {...hist,cashAdjusted:{status:'FALLBACK',reason:result.reason||'UNVERIFIED'},
+   source:hist.source+'｜0056早年現金股利核對未通過，沿用Yahoo原歷史'};
+ }
+ // Existing 0050 historical-cash correction stays independent.
  if(code!=='0050'||String(process.env.ETF0050_CASH_ADJUSTED??'1')==='0')return hist;
  let divs=null;
  try{divs=await deadline(fetch0050DividendHistory().catch(()=>null),2500,null)}catch(_){}
@@ -3544,6 +3554,30 @@ const server=http.createServer(async(req,res)=>{
   const con=await Promise.all(ETF.map(async code=>{try{const x=await deadline(constituents(code),15000,null);if(!x)throw Error('official constituent source timed out');const expected=x.expected||META[code].expected,actual=x.items?.length||0,weighted=x.items?.filter(z=>Number.isFinite(z.weight)).length||0,official=!!x.officialOnly&&isOfficialHostFor(code,x.sourceUrl||META[code].url);return{code,pass:!!(x.complete&&official&&actual>=expected&&weighted>=expected),official,expected,actual,weighted,source:x.source,sourceUrl:x.sourceUrl}}catch(e){return{code,pass:false,expected:META[code].expected,actual:0,weighted:0,error:e.message}}}));
   return{ok:true,build:BUILD,modelTrade,constituents:{allPass:con.every(x=>x.pass),items:con},history:{allPass:hist.every(x=>x.fullHistoryPass===true),items:hist},allPass:modelTrade.pass&&con.every(x=>x.pass)&&hist.every(x=>x.fullHistoryPass===true)}
  });
+ if(u.pathname==='/api/0056-dividend-audit'&&req.method==='GET')return safeApi(res,'0056-dividend-audit',()=>cachedSingleFlight('0056:cash-audit:stage1',60000,async()=>{
+  const old=await legacyEtfHistory('0056');
+  const candidate=CASH_0056_CORRECTION.select0056History(old,{enabled:true,asOfDate:ymdTaipei()});
+  const oldRows=old.rows||[],newRows=candidate.hist.rows||[];
+  const av=(rows,n)=>rows.slice(-n).reduce((z,x)=>z+x.close,0)/n;
+  const mas=candidate.switched?Object.fromEntries([20,60,120,250].map(n=>[n,{
+    old:av(oldRows,n),corrected:av(newRows,n),delta:av(newRows,n)-av(oldRows,n)
+  }])):null;
+  const first=candidate.switched?{date:oldRows[0].date,old:oldRows[0].close,
+    corrected:newRows[0].close}:null;
+  const last=candidate.switched?{date:oldRows.at(-1).date,old:oldRows.at(-1).close,
+    corrected:newRows.at(-1).close}:null;
+  return{ok:true,code:'0056',mode:'READ_ONLY_DIAGNOSTIC',
+   formalHistoryActive:process.env.ETF0056_CASH_CORRECTED==='1',
+   qaStatus:candidate.status,qaReason:candidate.reason||null,
+   verifiedEvents:candidate.events?.map(({index,...ev})=>ev)||[],
+   recentDividendChecks:candidate.recentChecks||[],
+   priceBars:oldRows.length,priceSource:old.source,sourceBasis:old.normalizationVersion,
+   rawBarsUnchanged:true,priceHistoryChanged:candidate.switched,
+   first,last,movingAverages:mas,
+   nextExDateNote:'2026-10-22: future ex-date is NOT included in historical price corrections; use separate live TWSE reference.',
+   caution:'Not historical-performance improvement proof. No model rules, holdings, dividend entitlements or cloud trades changed.'};
+ }));
+
  if(u.pathname==='/api/0050-cash-switch-preview'&&req.method==='GET')return safeApi(res,'0050-cash-switch-preview',()=>cachedSingleFlight('0050:switch-preview:v1',60000,async()=>{
  const [raw,divs]=await Promise.all([legacyEtfHistory('0050'),fetch0050DividendHistory().catch(e=>({complete:false,errors:[e.message],events:[]}))]);
  const out=CASH_0050_CANONICAL.select0050CashHistory(raw,divs,{enabled:true,asOfDate:ymdTaipei()});
