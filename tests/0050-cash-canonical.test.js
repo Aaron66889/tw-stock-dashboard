@@ -49,3 +49,19 @@ test('0050 old source has a missing 2009 open: preserve null without disabling o
  assert.equal(result.hist.rows[148].open,null);
  assert.equal(result.hist.rows[148].close,target.close);
 });
+
+test('v2 default 0050 rollout does not touch other ETF models, and retains emergency opt-out',()=>{
+ const fs=require('node:fs'),path=require('node:path');
+ const s=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
+ assert.match(s,/code!=='0050'\|\|String\(process\.env\.ETF0050_CASH_ADJUSTED\?\?'1'\)==='0'/);
+ assert.match(s,/activeFlag:String\(process\.env\.ETF0050_CASH_ADJUSTED\?\?'1'\)!=='0'/);
+ assert.match(s,/CASH_0050_CANONICAL\.select0050CashHistory/);
+});
+test('verified cash history refuses excessive drift and preserves the original data',()=>{
+ const h=hist(),f=feed();
+ f.events=f.events.map(x=>x.date==='2026-07-21'?{...x,amount:28}:x);
+ const out=select0050CashHistory(h,f,{enabled:true});
+ assert.equal(out.switched,false);
+ assert.strictEqual(out.hist,h);
+ assert.ok(['CASH_QA_FAILED','ROLLING_SMA_DRIFT_GUARD'].includes(out.reason));
+});
