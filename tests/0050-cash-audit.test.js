@@ -2,7 +2,7 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const {create0050CashResearch,amountForScale,ANCHORS}=require('../0050-cash-audit');
 function bars(){
- const a=[];for(let i=0;i<900;i++){let date=new Date(Date.UTC(2024,0,1)+86400000*i).toISOString().slice(0,10);
+ const a=[];for(let i=0;i<1040;i++){let date=new Date(Date.UTC(2024,0,1)+86400000*i).toISOString().slice(0,10);
   if(date>'2025-06-10'&&date<'2025-06-18')continue;
   a.push({date,open:100,high:101,low:99,close:100,adjclose:100,
    priceBasis:'normalized-split-scale-v2',source:'Yahoo Finance 0050.TW daily OHLC'});}
