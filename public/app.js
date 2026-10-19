@@ -616,19 +616,30 @@ function trendResearchChoose(previous,model,now){
  const current=complete?{
   version:1,source:String(model.historySource||'未知'),official:model.historyOfficial===true,
   historyDays:Number(lab.historyDays),lastDate:String(lab.lastDate||''),
-  savedAt:now,backtest:bt,abPriceCore:lab
+  fingerprint:lab.historyFingerprint||null,savedAt:now,backtest:bt,abPriceCore:lab
  }:null;
  const valid=x=>x?.version===1&&x?.backtest&&x?.abPriceCore?.ready===true&&
    x?.abPriceCore?.entryBandResearch?.bands?.length===3&&Number(x.historyDays)>=340;
  const old=valid(previous)?previous:null;
+ const priorHash=old?.fingerprint?.hash,nextHash=current?.fingerprint?.hash;
+ const sameContext=!!(old&&current&&old.official===current.official&&old.source===current.source&&
+   old.lastDate===current.lastDate&&old.historyDays===current.historyDays);
+ const historyRevised=!!(sameContext&&priorHash&&nextHash&&priorHash!==nextHash);
+ const changedYears=historyRevised?[...new Set([...Object.keys(old.fingerprint?.byYear||{}),...Object.keys(current.fingerprint?.byYear||{})])]
+   .filter(y=>old.fingerprint?.byYear?.[y]!==current.fingerprint?.byYear?.[y]).sort():[];
+ const revision=historyRevised?{at:now,changedYears,previousHash:priorHash,newHash:nextHash}:old?.revision||null;
  const newer=!!(current&&(!old||(current.official&&!old.official)||
    (current.official===old.official&&current.lastDate>=old.lastDate&&current.historyDays>=old.historyDays&&
-    (current.lastDate!==old.lastDate||current.historyDays!==old.historyDays||current.source!==old.source))));
+    (current.lastDate!==old.lastDate||current.historyDays!==old.historyDays||current.source!==old.source||
+     historyRevised||(!priorHash&&!!nextHash)))));
+ if(newer)current.revision=revision;
  const chosen=newer?current:(old||current);
  const matching=!!(chosen&&current&&chosen.official===current.official&&chosen.source===current.source&&
-   chosen.lastDate===current.lastDate&&chosen.historyDays===current.historyDays);
+   chosen.lastDate===current.lastDate&&chosen.historyDays===current.historyDays&&
+   (!chosen.fingerprint?.hash||!current.fingerprint?.hash||chosen.fingerprint.hash===current.fingerprint.hash));
  return{snapshot:chosen||null,persist:newer?current:null,stale:!!chosen&&!matching,
-  reason:!complete?'本輪歷史資料未通過完整度檢查':current&&!matching?'本輪來源或歷史範圍與保留版本不同':'',
+  historyRevised,changedYears,
+  reason:!complete?'本輪歷史資料未通過完整度檢查':current&&!matching?'本輪來源、歷史範圍或內容與保留版本不同':'',
   usable:!!chosen};
 }
 function trendResearchDisplay(code,model){
@@ -637,7 +648,8 @@ function trendResearchDisplay(code,model){
  if(d.persist){stored[code]=d.persist;try{localStorage.setItem(TREND_RESEARCH_LASTGOOD_KEY,JSON.stringify(stored))}catch(_){}}
  const s=d.snapshot;
  const state=s?(d.stale?'沿用上次有效回測':'歷史回測已確認'):'回測資料不足';
- const note=s?'<div class="note" style="margin-top:7px">歷史統計：'+state+'｜來源 '+escapeHTML(s.source)+'｜樣本截至 '+escapeHTML(s.lastDate||'未標記')+'｜日K '+s.historyDays+' 筆｜保存 '+escapeHTML(s.savedAt||'—')+(d.stale?'｜本輪資料未採用；僅供研究、不作買入訊號':'')+'</div>':
+ const changeNote=s?.revision?.changedYears?.length?'｜歷史內容異動年度 '+escapeHTML(s.revision.changedYears.join('、'))+'（非交易訊號）':'';
+ const note=s?'<div class="note" style="margin-top:7px">歷史統計：'+state+'｜來源 '+escapeHTML(s.source)+'｜樣本截至 '+escapeHTML(s.lastDate||'未標記')+'｜日K '+s.historyDays+' 筆｜保存 '+escapeHTML(s.savedAt||'—')+(d.stale?'｜本輪資料未採用；僅供研究、不作買入訊號':'')+changeNote+'</div>':
   '<div class="note" style="margin-top:7px">歷史統計目前無可信樣本，顯示「資料不足」，不視為0筆。</div>';
  return{...d,note};
 }
@@ -651,7 +663,8 @@ function downloadTrendRiskResearch(){
  const research=Object.fromEntries(ETF.map(code=>{
   const m=d.models?.[code]||{};
   return[code,{ok:!!m.ok,historySource:m.historySource||null,historyOfficial:!!m.historyOfficial,
-   historyIdentity:m.historyIdentity||null,historyDays:m.historyDays||0,research:m.abPriceCore?.riskResearch||null,
+   historyIdentity:m.historyIdentity||null,historyFingerprint:m.abPriceCore?.historyFingerprint||null,
+   marketFingerprint:m.abPriceCore?.marketFingerprint||null,historyDays:m.historyDays||0,research:m.abPriceCore?.riskResearch||null,
    entryBandResearch:m.abPriceCore?.entryBandResearch||null}];
  }));
  const payload={exportVersion:'trend-risk-shadow-research-v1',generatedAt:new Date().toISOString(),
