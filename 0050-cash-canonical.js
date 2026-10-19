@@ -17,9 +17,16 @@ function select0050CashHistory(hist,dividendResponse,{enabled=false,asOfDate='20
  if(corrected.length!==src.length)return{hist:legacy,switched:false,status:'FALLBACK',reason:'ROW_COUNT_CHANGED'};
  for(let i=0;i<src.length;i++){
   const a=src[i],b=corrected[i];
-  if(a.date!==b.date||Math.abs(a.close-b.close)>0.000001||
-     !(b.adjclose>0&&b.adjopen>0&&b.adjhigh>0&&b.adjlow>0)||
-     b.adjlow>b.adjhigh||b.adjclose>b.adjhigh*1.002||b.adjclose<b.adjlow*.998)
+  const p=v=>v!=null&&Number.isFinite(Number(v))&&Number(v)>0;
+  const shapeOk=[['open','adjopen'],['high','adjhigh'],['low','adjlow']]
+    .every(([rawKey,adjustedKey])=>p(a[rawKey])===p(b[adjustedKey]));
+  // The original vendor price record can have a missing OPEN (e.g. 2009-08-13).
+  // Missing fields must remain missing, not become invented positive values.
+  const envelopeOk=!p(a.high)||!p(a.low)||(p(b.adjhigh)&&p(b.adjlow)&&
+    b.adjlow<=b.adjhigh &&
+    (!p(a.close)||a.close<=a.high*1.002||b.adjclose<=b.adjhigh*1.002) &&
+    (!p(a.close)||a.close>=a.low*.998||b.adjclose>=b.adjlow*.998));
+  if(a.date!==b.date||Math.abs(a.close-b.close)>0.000001||!p(b.adjclose)||!shapeOk||!envelopeOk)
    return{hist:legacy,switched:false,status:'FALLBACK',reason:'PRICE_BAR_PARITY_FAILED',at:a.date};
  }
  const last=src.at(-1),latest=corrected.at(-1);
