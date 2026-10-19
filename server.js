@@ -1616,7 +1616,7 @@ async function legacyEtfHistory(code){
 async function etfHistory(code){
  const hist=await legacyEtfHistory(code);
  // Explicit activation, 0050 only; no data fetch for the other three ETFs.
- if(code!=='0050'||process.env.ETF0050_CASH_ADJUSTED!=='1')return hist;
+ if(code!=='0050'||String(process.env.ETF0050_CASH_ADJUSTED??'1')==='0')return hist;
  let divs=null;
  try{divs=await deadline(fetch0050DividendHistory().catch(()=>null),2500,null)}catch(_){}
  const selection=CASH_0050_CANONICAL.select0050CashHistory(hist,divs,{enabled:true,asOfDate:ymdTaipei()});
@@ -3553,7 +3553,7 @@ const server=http.createServer(async(req,res)=>{
  const pCfg=META['0050'].cfg.q;
  const oldStats=histStats(raw.rows,pCfg),newStats=histStats(out.hist.rows,pCfg);
  const summary={status:out.status,reason:out.reason||null,issues:out.issues||[],
-  activeFlag:process.env.ETF0050_CASH_ADJUSTED==='1',
+  activeFlag:String(process.env.ETF0050_CASH_ADJUSTED??'1')!=='0',
   legacyRows:raw.rows.length,correctedRows:out.hist.rows.length,
   priceBarParity:out.switched,latestCashClose:raw.rows.at(-1)?.close??null,
   latestAdjustedClose:out.hist.rows.at(-1)?.adjclose??null,
@@ -3566,7 +3566,7 @@ const server=http.createServer(async(req,res)=>{
   historicalQuantiles:out.switched?Object.fromEntries(['q45','q25','q10','atr14','r20'].map(k=>[k,{
     old:oldStats[k],corrected:newStats[k],deltaPct:diff(oldStats[k],newStats[k])
   }])):null,
-  assertion:'Previews actual inputs to 0050 L1/L2/L3 and trend. It does not promise buy-price parity; official uses legacy until rollout flag enabled.'};
+  assertion:'Previews 0050 inputs; official L1/L2/L3 and trend use cash-adjusted data only after all validation checks pass; environment kill switch 0 restores legacy.'};
  return{ok:true,mode:'READ_ONLY',summary};
  }));
 
