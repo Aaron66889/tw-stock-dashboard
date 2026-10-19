@@ -1619,7 +1619,7 @@ async function etfHistory(code){
  // Strictly isolated historical price-basis adjustments. No current quote,
  // entitlement, actual trade record, daily reference or Gate rule is altered.
  if(code==='0056'){
-  if(process.env.ETF0056_CASH_CORRECTED!=='1')return hist;
+  if(String(process.env.ETF0056_CASH_CORRECTED??'1')==='0')return hist;
   const result=CASH_0056_CORRECTION.select0056History(hist,{enabled:true,asOfDate:ymdTaipei()});
   if(result.switched)return result.hist;
   return {...hist,cashAdjusted:{status:'FALLBACK',reason:result.reason||'UNVERIFIED'},
@@ -3567,7 +3567,7 @@ const server=http.createServer(async(req,res)=>{
   const last=candidate.switched?{date:oldRows.at(-1).date,old:oldRows.at(-1).close,
     corrected:newRows.at(-1).close}:null;
   return{ok:true,code:'0056',mode:'READ_ONLY_DIAGNOSTIC',
-   formalHistoryActive:process.env.ETF0056_CASH_CORRECTED==='1',
+   formalHistoryActive:String(process.env.ETF0056_CASH_CORRECTED??'1')!=='0',
    qaStatus:candidate.status,qaReason:candidate.reason||null,
    verifiedEvents:candidate.events?.map(({index,...ev})=>ev)||[],
    recentDividendChecks:candidate.recentChecks||[],
