@@ -223,3 +223,34 @@ test('Regression: 0050 cash adjusted historical data preserves missing source OP
  assert.equal(result.status,'ACTIVE');
  assert.equal(result.hist.rows.find(x=>x.date==='2024-05-28').adjopen,null);
 });
+
+test('ONE-OFF rollback deploy production health: trade routes and four ETFs intact',{timeout:120000},async()=>{
+ const base='https://tw-stock-dashboard-5.onrender.com';
+ const paths=['/health','/api/0050-cash-switch-preview','/api/buy-model','/api/trend-entry'];
+ const readings=await Promise.all(paths.map(async path=>{
+  try{const start=Date.now(),res=await fetch(base+path,{signal:AbortSignal.timeout(100000)}),
+    obj=await res.json();return{path,http:res.status,obj,ms:Date.now()-start}}
+  catch(e){return{path,error:String(e)}}}));
+ for(const r of readings){
+  console.log('0050_ROLLBACK_LIVE_CHECK',JSON.stringify({path:r.path,http:r.http,error:r.error,ms:r.ms,
+   ok:r.obj?.ok,build:r.obj?.build,activeFlag:r.obj?.summary?.activeFlag,
+   previewStatus:r.obj?.summary?.status,
+   models:r.obj?.models?Object.fromEntries(['0050','0056','00878','00919'].map(c=>[c,{
+    error:r.obj.models?.[c]?.error||null,score:r.obj.models?.[c]?.score,
+    cashHistory:r.obj.models?.[c]?.cashHistory||null,
+    source:r.obj.models?.[c]?.historySource||null,
+    gate:r.obj.models?.[c]?.decisionGate?.status||null,
+    l1:r.obj.models?.[c]?.raw?.first?.center||null
+   }])):null}));
+ }
+ const byPath=Object.fromEntries(readings.map(r=>[r.path,r]));
+ for(const p of paths)assert.equal(byPath[p]?.http,200,p+' inaccessible');
+ assert.equal(byPath['/api/0050-cash-switch-preview']?.obj?.summary?.activeFlag,false);
+ const buy=byPath['/api/buy-model'].obj,trend=byPath['/api/trend-entry'].obj;
+ assert.equal(buy?.ok,true);assert.equal(trend?.ok,true);
+ for(const c of ['0050','0056','00878','00919']){
+  assert.ok(buy.models?.[c],c+' buy missing');assert.ok(trend.models?.[c],c+' trend missing');
+  assert.equal(buy.models[c].cashHistory??null,null);
+  assert.equal(trend.models[c].cashHistory??null,null);
+ }
+});
