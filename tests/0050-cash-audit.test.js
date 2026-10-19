@@ -52,3 +52,11 @@ test('does not apply each cash factor twice or adjust the split event as a cash 
  assert.equal(out.events.some(e=>e.date==='2025-06-18'),false);
  assert.equal(out.rows.find(x=>x.date==='2025-06-18').close,100);
 });
+
+test('0050 audit display persists when the strong-buy page refreshes every 30 seconds',()=>{
+ const fs=require('node:fs'),path=require('node:path'),app=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
+ assert.match(app,/let last0050CashAudit=null,cash0050AuditHtml='';/);
+ assert.match(app,/cash0050AuditHtml=host\.innerHTML/);
+ assert.match(app,/if\(current\)current\.innerHTML=cash0050AuditHtml/);
+ assert.match(app,/\+cash0050AuditHtml\+'<\/div><\/div>'/);
+});

@@ -658,11 +658,12 @@ function trendResearchDisplay(code,model){
 // Read-only breakout risk study; the official model action is NEVER derived from it.
 // Download exact four-ETF Shadow research payload; contains no holdings, trade IDs or sync credentials.
 
-let last0050CashAudit=null;
+let last0050CashAudit=null,cash0050AuditHtml='';
 async function inspect0050CashAdjustments(){
  const host=document.getElementById('cash-audit-0050-result');
  if(!host)return;
  host.innerHTML='<div class="note">正在核對0050歷史配息日期、拆分尺度與含息回測，外部官方資料讀取可能需要一些時間…</div>';
+ cash0050AuditHtml=host.innerHTML;
  try{
   const response=await fetch('/api/0050-cash-audit',{cache:'no-store'});
   if(!response.ok)throw Error('HTTP '+response.status);
@@ -684,8 +685,12 @@ async function inspect0050CashAdjustments(){
    (failures?'<div class="note">待釐清：'+failures+'</div>':'')+
    summary+'<div class="note">此結果不影響0050的正式買入訊號、三層買點或持股。'+
    '要完整核對來源，可按「匯出0050權息核對JSON」。</div></div>';
+  cash0050AuditHtml=host.innerHTML;
+  const current=document.getElementById('cash-audit-0050-result');if(current)current.innerHTML=cash0050AuditHtml;
  }catch(e){
   host.innerHTML='<div class="note">0050權息核對暫時無法完成：'+escapeHTML(e.message||String(e))+'；不影響正式交易模型。</div>';
+  cash0050AuditHtml=host.innerHTML;
+  const current=document.getElementById('cash-audit-0050-result');if(current)current.innerHTML=cash0050AuditHtml;
  }
 }
 function download0050CashAudit(){
@@ -755,7 +760,7 @@ function renderTrendBuy(){
  const valid=ETF.map(c=>d.models[c]).filter(x=>x?.ok),ready=valid.filter(x=>x.status==='TREND_BUY'),noChase=valid.filter(x=>x.status==='NO_CHASE');
  sum.innerHTML=`目前 ${ready.length} 檔出現強勢小額加碼條件；${noChase.length} 檔屬漲太遠不追。<br><span class="note">趨勢強度不是上漲機率。此頁與回檔三層模型完全分離；「可小額加碼」預設只代表一般第一層的 0.25～0.5 倍部位。</span>`;
  sum.innerHTML+='<div style="margin-top:8px"><button class="btn" onclick="downloadTrendRiskResearch()">匯出四檔強勢風控 Shadow 統計 JSON</button></div>';
- sum.innerHTML+='<div style="margin-top:8px"><button class="btn" onclick="inspect0050CashAdjustments()">檢查0050權息還原</button> <button class="btn" onclick="download0050CashAudit()">匯出0050權息核對JSON</button><div id="cash-audit-0050-result" style="margin-top:8px"></div></div>';
+ sum.innerHTML+='<div style="margin-top:8px"><button class="btn" onclick="inspect0050CashAdjustments()">檢查0050權息還原</button> <button class="btn" onclick="download0050CashAudit()">匯出0050權息核對JSON</button><div id="cash-audit-0050-result" style="margin-top:8px">'+cash0050AuditHtml+'</div></div>';
  host.innerHTML=ETF.map(c=>{const m=d.models[c],hist=trendResearchDisplay(c,m);if(!m?.ok)return`<section class="card"><div class="ticker">${c} ${NAME[c]}</div><div class="notice">強勢加碼模型暫不可用：${m?.error||'資料不足'}；本輪不得視為買入訊號。</div>${hist.note}${hist.snapshot?'<div class="reading"><b>上次有效的全部突破樣本：</b>'+hist.snapshot.backtest.signals+'筆（非即時）</div>'+trendBandLab({abPriceCore:hist.snapshot.abPriceCore})+trendRiskResearchPanel({abPriceCore:hist.snapshot.abPriceCore}):''}</section>`;const livePx=Number(lastLive?.quotes?.[c]?.last)||m.price;const lv=m.levels||{},t=m.trend||{},bt=hist.snapshot?.backtest||{},rg=m.regime||{},sg=m.scoreGroups||{},ath=bt.ath||{},parts=Object.values(sg).map(x=>`${x.label} ${x.score}/${x.max}`).join('｜')||((m.parts||[]).map(x=>`${x.label} ${x.value}/${x.max||''}`).join('｜')),canRecord=m.status==='TREND_BUY',athNote=rg.allTimeHigh?`<div class="notice"><b>歷史新高區：</b>已進入價格發現階段${Number.isFinite(Number(rg.priorAllTimeHigh))?`｜前高 ${fmt(rg.priorAllTimeHigh)}`:''}。可依模型小額加碼，但不因創高而放寬最高追價線。</div>`:'';return`<section class="card buycard ${trendStatusClass(m.status)}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate ${trendStatusTone(m.status)}">${m.statusText}</span></div><div><small class="k">ETF趨勢強度</small><div class="score">${m.score}/100</div></div></div>${trendShadowAdvisory(m)}${athNote}<div class="buygrid"><div class="buybox"><span class="k">現價</span><b><span id="trendLivePrice-${c}" class="${etfPriceClass(c,livePx)}">${fmt(livePx)} ${etfDailyChangeText(c,livePx)}</span></b><small id="trendLiveStamp-${c}">${etfFetchStamp()}${etfExchangeStamp(c)}</small><small>${m.action}</small></div><div class="buybox first"><span class="k">20日突破位</span><b>${trendLevelText(lv.breakout20)}</b><small>${t.brokeToday?'今日曾突破':'尚未突破'}</small></div><div class="buybox"><span class="k">強勢加碼執行帶</span><b>${trendLevelText(lv.entryLow)}–${trendLevelText(lv.entryHigh)}</b><small>突破／回踩後的小額區</small></div><div class="buybox"><span class="k">最高追價線</span><b>${trendLevelText(lv.maxChase)}</b><small>高於此價不追</small></div></div><div class="grid4"><div class="box"><span class="k">趨勢結構</span><b>${sg.trendStructure?.score??'—'}/${sg.trendStructure?.max??35}</b><small>日線＋週線，不重複逐項疊分</small></div><div class="box"><span class="k">突破品質</span><b>${sg.breakoutQuality?.score??'—'}/${sg.breakoutQuality?.max??30}</b><small>20/55日突破＋距突破位</small></div><div class="box"><span class="k">相對大盤</span><b>${sg.relativeStrength?.score??'—'}/${sg.relativeStrength?.max??20}</b><small>20日 ${pct(t.relative20)}｜60日 ${pct(t.relative60)}</small></div><div class="box"><span class="k">追價安全</span><b>${sg.chaseSafety?.score??'—'}/${sg.chaseSafety?.max??15}</b><small>距突破 ${Number.isFinite(t.distBreakAtr)?fmt(t.distBreakAtr)+' ATR':'—'}</small></div></div>${hist.note}<div class="reading"><b>判斷：</b>${m.statusText}。${m.action}。<br><b>強度拆解：</b>${parts||'—'}<br><b>全部突破樣本：</b>${Number.isFinite(bt.signals)?bt.signals+'筆':'資料不足'}${bt.startDate&&bt.endDate?`｜${bt.startDate.slice(0,4)}～${bt.endDate.slice(0,4)}`:''}｜5日 ${pct(bt.avg5)}（勝率 ${pct(bt.win5)}）｜20日 ${pct(bt.avg20)}（勝率 ${pct(bt.win20)}）｜60日 ${pct(bt.avg60)}（勝率 ${pct(bt.win60)}）<br><b>風險路徑：</b>20日 MAE/MFE ${fmt(bt.avgMAE20)}% / ${fmt(bt.avgMFE20)}%｜60日 MAE/MFE ${fmt(bt.avgMAE60)}% / ${fmt(bt.avgMFE60)}%｜5日假突破 ${pct(bt.fakeBreak5Rate)}<br><b>相對大盤：</b>20日 Alpha ${pct(bt.avgAlpha20)}（${bt.alpha20Samples||0}筆）｜60日 Alpha ${pct(bt.avgAlpha60)}（${bt.alpha60Samples||0}筆）${ath.signals?`<br><b>歷史新高子樣本：</b>${ath.signals}筆｜20日 ${pct(ath.avg20)}（勝率 ${pct(ath.win20)}）｜60日 ${pct(ath.avg60)}（勝率 ${pct(ath.win60)}）｜假突破 ${pct(ath.fakeBreak5Rate)}`:''}<br><span class="note">${bt.note||''}；量價／籌碼仍不進正式強勢加碼分數，也完全不影響 ETF合理買點。</span></div>${trendBandLab(hist.snapshot?{abPriceCore:hist.snapshot.abPriceCore,trend:m.trend}:m)}${trendRiskResearchPanel(hist.snapshot?{abPriceCore:hist.snapshot.abPriceCore}:m)}<div class="row" style="margin-top:8px"><span class="note">${canRecord?'目前已符合強勢加碼模型，可將實際成交獨立記錄並驗證。':'尚未成立強勢加碼訊號；若仍買進請記為自主買入。'}</span>${canRecord?`<button class="btn primary" onclick="openTrendTrade('${c}')">記錄強勢加碼買入</button>`:''}<button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('');
 }
 async function loadTrendBuy(force=false){
