@@ -223,3 +223,91 @@ test('Regression: 0050 cash adjusted historical data preserves missing source OP
  assert.equal(result.status,'ACTIVE');
  assert.equal(result.hist.rows.find(x=>x.date==='2024-05-28').adjopen,null);
 });
+
+
+test('ONEOFF 0056 2007-2026 historical dividends and Yahoo-adjusted live archive source audit',{timeout:170000},async()=>{
+ const head={'User-Agent':'Mozilla/5.0','Accept':'text/html,application/json,*/*'};
+ const query='https://query2.finance.yahoo.com/v8/finance/chart/0056.TW?period1=1195257600&period2=1792540800&interval=1d&includeAdjustedClose=true&events=div%2Csplits';
+ const urls={
+   liveHistory:'https://tw-stock-dashboard-5.onrender.com/api/etf-history?code=0056',
+   liveBuy:'https://tw-stock-dashboard-5.onrender.com/api/buy-model',
+   yahooTaiwan:'https://tw.stock.yahoo.com/quote/0056.TW/dividend',
+   yahooChart:query,
+   twse:'https://www.twse.com.tw/zh/ETFortune/dividendList?startDate=2007&endDate=2026&stkNo=0056',
+ };
+ const fetched=await Promise.all(Object.entries(urls).map(async([key,url])=>{
+   const t=Date.now();try{
+    const response=await fetch(url,{headers:head,signal:AbortSignal.timeout(key==='twse'?18000:70000)});
+    const raw=await response.text();
+    return [key,{status:response.status,elapsed:Date.now()-t,raw}];
+   }catch(e){return[key,{error:String(e),elapsed:Date.now()-t}]}
+ }));
+ const data=Object.fromEntries(fetched);
+ const meta=Object.fromEntries(Object.entries(data).map(([k,v])=>[k,{status:v.status,error:v.error,elapsed:v.elapsed,bytes:v.raw?.length||0}]));
+ console.log('AUDIT_0056_SOURCE_RESPONSES',JSON.stringify(meta));
+ const live=JSON.parse(data.liveHistory?.raw||'{}'),model=JSON.parse(data.liveBuy?.raw||'{}');
+ const hist=live.rows||[],lm=model.models?.['0056']||{};
+ console.log('AUDIT_0056_MODEL_SOURCE',JSON.stringify({ok:live.ok,code:live.code,source:live.source,
+   normalizationVersion:live.normalizationVersion,validation:live.validation,rows:hist.length,
+   first:hist[0],last:hist.at(-1),model:{score:lm.score,gate:lm.decisionGate?.status,
+     source:lm.historySource,historyDays:lm.history?.historyDays},
+ }));
+ const html=String(data.yahooTaiwan?.raw||'').replace(/\\"/g,'"');
+ const regex=/"exDate":"(\d{4}-\d{2}-\d{2})T[^"]*","year":"[^"]+","period":"[^"]+","symbol":"0056","totalDividend":"([0-9.]+)"/g;
+ const rawEvents=[...html.matchAll(regex)].map(m=>({date:m[1],amount:Number(m[2])}));
+ const byDate=new Map();const conflicts=[];
+ for(const d of rawEvents){
+  if(byDate.has(d.date)&&Math.abs(byDate.get(d.date)-d.amount)>.00001)conflicts.push(d.date);
+  byDate.set(d.date,d.amount);
+ }
+ const policy=[...byDate].sort(([a],[b])=>a.localeCompare(b)).map(([date,amount])=>({date,amount}));
+ console.log('AUDIT_0056_POLICY',JSON.stringify({count:policy.length,first:policy.slice(0,9),last:policy.slice(-16),
+  years:Object.fromEntries([...new Set(policy.map(x=>x.date.slice(0,4)))].map(y=>[y,policy.filter(x=>x.date.startsWith(y)).length])),
+  conflicts,mentions0056:html.includes('"symbol":"0056"')}));
+ const obj=JSON.parse(data.yahooChart?.raw||'{}'),c=obj.chart?.result?.[0]||{},ts=c.timestamp||[],
+  q=c.indicators?.quote?.[0]||{},adj=c.indicators?.adjclose?.[0]?.adjclose||[];
+ const quoteRows=ts.map((t,i)=>({date:new Date(t*1000).toISOString().slice(0,10),raw:Number(q.close?.[i]),
+    adjusted:Number(adj[i]),high:Number(q.high?.[i]),low:Number(q.low?.[i])}))
+   .filter(x=>x.raw>0&&x.adjusted>0);
+ const qByDate=new Map(quoteRows.map(x=>[x.date,x]));
+ const priceMismatch=[];
+ let matched=0,missing=0;
+ for(const x of hist){
+  const y=qByDate.get(x.date);
+  if(!y){missing++;continue}
+  matched++;
+  if(Math.abs(Number(x.close)-y.adjusted)>Math.max(.005,.0005*y.adjusted))priceMismatch.push({date:x.date,
+     liveClose:x.close,yahooAdjClose:y.adjusted});
+ }
+ const sourceDividend=c.events?.dividends?Object.values(c.events.dividends).map(x=>({date:x.date?new Date(x.date*1000).toISOString().slice(0,10):'',
+   amount:x.amount})).sort((a,b)=>a.date.localeCompare(b.date)):[];
+ const prevIndexByDate=new Map(quoteRows.map((x,i)=>[x.date,i]));
+ const parity=policy.filter(x=>x.date<='2026-10-19').map(e=>{
+   const i=prevIndexByDate.get(e.date),p=i>=1?quoteRows[i-1]:null,d=i>=1?quoteRows[i]:null;
+   if(!p||!d)return{date:e.date,expected:e.amount,issue:'EXDATE_NOT_ON_CHART'};
+   const factorBefore=p.adjusted/p.raw,factorAfter=d.adjusted/d.raw,observedCash=p.raw*(1-factorBefore/factorAfter);
+   return{date:e.date,expected:e.amount,estimated:Number(observedCash.toFixed(4)),
+    diff:Number((observedCash-e.amount).toFixed(4)),dayRawChangePct:Number(((d.raw/p.raw-1)*100).toFixed(3)),
+    dayAdjChangePct:Number(((d.adjusted/p.adjusted-1)*100).toFixed(3)),beforeFactor:factorBefore,afterFactor:factorAfter};
+ });
+ const mismatches=parity.filter(x=>x.issue||Math.abs(x.diff)>.12);
+ const jumps=quoteRows.map((x,i)=>i>0?{date:x.date,ret:(x.adjusted/quoteRows[i-1].adjusted-1)*100}:null)
+  .filter(x=>x&&Math.abs(x.ret)>18);
+ const dataParity={liveRows:hist.length,yahooRows:quoteRows.length,matched,missing,
+  priceMismatchCount:priceMismatch.length,priceMismatchSample:priceMismatch.slice(0,15),
+  firstYahoo:quoteRows[0],lastYahoo:quoteRows.at(-1),
+  chartDividendCount:sourceDividend.length,chartDividendSample:sourceDividend.slice(-14),
+  policyEventCount:policy.length,exDateTests:parity.length,mismatchCount:mismatches.length,mismatchSample:mismatches.slice(0,20),
+  latestEventTests:parity.slice(-15),largeAdjustedJumps:jumps.slice(-20)};
+ console.log('AUDIT_0056_PRICE_DIVIDEND_PARITY',JSON.stringify(dataParity));
+ const official=String(data.twse?.raw||'');console.log('AUDIT_0056_TWSE',JSON.stringify({
+  http:data.twse?.status,bytes:official.length,contains0056:official.includes('0056'),
+  contains20261022:official.includes('115年10月22日')||official.includes('2026/10/22'),
+  around0056:official.slice(Math.max(0,official.indexOf('0056')-120),official.indexOf('0056')+1000).replace(/<[^>]+>/g,' ').slice(0,800)}));
+ assert.equal(data.liveHistory.status,200,'0056 live history endpoint not healthy');
+ assert.equal(live.code,'0056');
+ assert.equal(hist.length>=3500,true,'0056 long-history source unavailable');
+ assert.equal(lm.historySource?.includes('0056.TW'),true,'live 0056 model not reading its own Yahoo adjusted archive');
+ assert.equal(data.yahooChart.status,200,'no independent adjusted-price chart returned');
+ assert.equal(priceMismatch.length,0,'published 0056 historical adjusted closes diverge from Yahoo chart');
+});
