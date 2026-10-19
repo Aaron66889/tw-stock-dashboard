@@ -326,3 +326,43 @@ test('ONEOFF 00878 full 2020-2026 dividend action and adjusted-price source audi
  assert.equal(res.yahooChart.status,200);
  assert.equal(mismatches.length,0,'00878 live historical close differs from Yahoo adjusted');
 });
+
+
+test('ONEOFF 00878 independent 24-event ex-dividend complete adjustment-factor audit',{timeout:95000},async()=>{
+ const published=[
+ ['2020-11-17',.05],['2021-02-25',.15],['2021-05-18',.25],['2021-08-17',.30],['2021-11-16',.28],
+ ['2022-02-22',.30],['2022-05-18',.32],['2022-08-16',.28],['2022-11-16',.28],
+ ['2023-02-16',.27],['2023-05-17',.27],['2023-08-16',.35],['2023-11-16',.35],
+ ['2024-02-27',.40],['2024-05-17',.51],['2024-08-16',.55],['2024-11-18',.55],
+ ['2025-02-20',.50],['2025-05-19',.47],['2025-08-18',.40],['2025-11-18',.40],
+ ['2026-02-26',.42],['2026-05-19',.66],['2026-08-18',1.01]];
+ // Independent event inventory: ETF quarterly distribution disclosures compiled by FinLab.
+ const url='https://query1.finance.yahoo.com/v8/finance/chart/00878.TW?period1=1595203200&period2=1798761600&interval=1d&includeAdjustedClose=true&events=div%2Csplits';
+ const r=await fetch(url,{signal:AbortSignal.timeout(40000),headers:{'User-Agent':'Mozilla/5.0'}});
+ const data=await r.json(),c=data.chart?.result?.[0]||{},q=c.indicators?.quote?.[0]||{},
+  a=c.indicators?.adjclose?.[0]?.adjclose||[],rows=(c.timestamp||[]).map((t,i)=>({
+   date:new Date(t*1000).toISOString().slice(0,10),close:Number(q.close?.[i]),adjusted:Number(a[i])
+  })).filter(x=>x.close>0&&x.adjusted>0);
+ const byDate=new Map(rows.map((x,i)=>[x.date,i]));
+ const events=Object.values(c.events?.dividends||{}).map(x=>({
+   date:new Date(x.date*1000).toISOString().slice(0,10),amount:x.amount
+ }));
+ const checks=published.map(([date,amount])=>{
+  const i=byDate.get(date),p=i>0?rows[i-1]:null,d=i>0?rows[i]:null;
+  if(!p||!d)return{date,amount,problem:'MISSING_DATE'};
+  const implied=p.close*(1-(p.adjusted/p.close)/(d.adjusted/d.close));
+  const vendor=events.find(x=>x.date===date);
+  return{date,amount,implied:Number(implied.toFixed(7)),delta:Number((implied-amount).toFixed(7)),
+   chartEvent:vendor?.amount??null,missing:Math.abs(implied-amount)>.018};
+ });
+ const missing=checks.filter(x=>x.problem||x.missing);
+ const extras=events.filter(x=>x.date<='2026-10-20'&&!published.some(z=>z[0]===x.date));
+ console.log('AUDIT_00878_INDEPENDENT_24',JSON.stringify({
+  source:'FinLab public 00878 24 corporate-action record cross-check vs Yahoo 00878.TW adjusted close',
+  http:r.status,rows:rows.length,range:[rows[0]?.date,rows.at(-1)?.date],publishedCount:published.length,
+  chartEventCount:events.length,fullParity:checks,missing,extraChartEvents:extras
+ }));
+ assert.equal(r.status,200);
+ assert.ok(rows.length>=1300);
+ assert.equal(published.length,24);
+});
