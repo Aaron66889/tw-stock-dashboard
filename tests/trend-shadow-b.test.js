@@ -233,3 +233,28 @@ test('ONE-OFF PRODUCTION READONLY 0050 source QA (never merge)',{timeout:165000}
   }catch(e){console.log('PRODUCTION_DIAGNOSTIC_ERROR',path,String(e))}
  }
 });
+
+test('ONE-OFF LIVE READONLY 0050 alternate dividends upstream probe',{timeout:120000},async()=>{
+ const urls=[
+  'https://query1.finance.yahoo.com/v8/finance/chart/0050.TW?period1=1220227200&period2=1792454400&interval=1d&events=div%2Csplits',
+  'https://query2.finance.yahoo.com/v8/finance/chart/0050.TW?period1=1220227200&period2=1792454400&interval=1d&events=div%2Csplits',
+  'https://www.cmoney.tw/etf/tw/0050/cashdividend',
+  'https://tw.stock.yahoo.com/quote/0050/dividend',
+  'https://www.twse.com.tw/zh/ETFortune/dividendList?startDate=2025&endDate=2026&stkNo=0050'
+ ];
+ await Promise.all(urls.map(async(url)=>{
+  const key=new URL(url).hostname,newSince=Date.now();
+  try{
+   const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html,application/json,*/*'},signal:AbortSignal.timeout(25000)});
+   const ct=r.headers.get('content-type');const text=await r.text();
+   const outcome={url:key,status:r.status,contentType:ct,bytes:text.length,seconds:(Date.now()-newSince)/1000,
+     start:text.slice(0,120).replace(/\s/g,' ')};
+   if(key.includes('finance.yahoo.com')&&r.ok){
+    const o=JSON.parse(text),root=o.chart?.result?.[0]||{},div=root.events?.dividends||{},splits=root.events?.splits||{};
+    const samples=Object.values(div).filter(e=>['2025','2024','2026'].includes(new Date(e.date*1000).toISOString().slice(0,4))).map(e=>({date:new Date(e.date*1000).toISOString().slice(0,10),amount:e.amount})).sort((a,b)=>a.date.localeCompare(b.date));
+    outcome.dividends=Object.keys(div).length;outcome.splits=Object.keys(splits).length;outcome.samples=samples.slice(-12);
+   }
+   console.log('UPSTREAM_0050_DIVIDENDS',JSON.stringify(outcome));
+  }catch(e){console.log('UPSTREAM_0050_DIVIDENDS',JSON.stringify({url:key,error:String(e),seconds:(Date.now()-newSince)/1000}))}
+ }));
+});
