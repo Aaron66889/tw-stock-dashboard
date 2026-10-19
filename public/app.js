@@ -679,7 +679,7 @@ async function inspect0050CashAdjustments(){
   const anchor=(d.qa?.anchorChecks||[]).map(x=>clean(x.date)+' '+(x.plausible?'符合':'待確認')).join('、');
   const failures=(d.qa?.issues||[]).slice(0,8).map(clean).join('；');
   host.innerHTML='<div class="reading"><b>0050權息資料核對：</b>'+clean(d.state)+(d.ok?'（僅研究已備妥）':'（資料尚不足，不可套用）')+
-   '<div class="note">官方配息事件 '+clean(d.qa?.dividendCount)+' 筆｜單位尺度 '+clean(d.qa?.dividendBasis)+
+   '<div class="note">核對配息事件 '+clean(d.qa?.dividendCount)+' 筆｜資料來源 '+clean(d.dividendsFrom)+'｜單位尺度 '+clean(d.qa?.dividendBasis)+
    '｜起迄 '+clean(d.qa?.firstDate)+'～'+clean(d.qa?.lastDate)+'</div>'+
    '<div class="note">關鍵除息日：'+anchor+'</div>'+
    (failures?'<div class="note">待釐清：'+failures+'</div>':'')+
