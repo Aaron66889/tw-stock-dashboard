@@ -176,3 +176,33 @@ test('Performance export flags unclear entry snapshots and groups same-breakout 
  assert.equal(result.potentialSnapshotInconsistencies[0].flag,'REVIEW_CONFIRMATION_OR_GATE');
  assert.match(app,/audit:modelTradeDataAudit\(MODEL_TRADES\)/);
 });
+
+test('Shadow fingerprints find historical data revisions when same first/last price and count are unchanged',()=>{
+ const original=rows(750,true),revised=original.map((r,i)=>i===380?{...r,close:r.close+.031,adjclose:r.adjclose+.031}:r);
+ assert.equal(original.length,revised.length);
+ assert.deepEqual(original[0],revised[0]);
+ assert.deepEqual(original.at(-1),revised.at(-1));
+ const first=b.compare(original),second=b.compare(revised);
+ assert.notStrictEqual(first,second,'cache must not reuse results for changed middle OHLC');
+ assert.notEqual(first.historyFingerprint.hash,second.historyFingerprint.hash);
+ const y=original[380].date.slice(0,4);
+ assert.notEqual(first.historyFingerprint.byYear[y],second.historyFingerprint.byYear[y]);
+ for(const other of Object.keys(first.historyFingerprint.byYear))if(other!==y)
+  assert.equal(first.historyFingerprint.byYear[other],second.historyFingerprint.byYear[other]);
+ assert.equal(b.historyFingerprint(original).hash,first.historyFingerprint.hash);
+});
+test('UI replaces saved valid Shadow stats when only hidden historical bars change',()=>{
+ const fs=require('node:fs'),vm=require('node:vm'),app=fs.readFileSync(require('node:path').join(__dirname,'../public/app.js'),'utf8');
+ const start=app.indexOf('function trendResearchChoose('),end=app.indexOf('function trendResearchDisplay(',start);
+ assert.ok(start>=0&&end>start);
+ const choose=vm.runInNewContext(app.slice(start,end)+';trendResearchChoose',{});
+ const model=(hash)=>({ok:true,historySource:'Yahoo Finance 0056.TW',historyOfficial:true,
+  backtest:{signals:83},abPriceCore:{ready:true,historyDays:4608,lastDate:'2026-10-19',
+   entryBandResearch:{bands:[{},{},{}]},historyFingerprint:{hash,byYear:{'2012':hash}}}});
+ const first=choose(null,model('a'),'2026-10-19T07:00:00Z');
+ const second=choose(first.snapshot,model('b'),'2026-10-19T07:22:00Z');
+ assert.equal(second.historyRevised,true);
+ assert.ok(second.persist);
+ assert.equal(second.changedYears.join(','),'2012');
+ assert.equal(second.snapshot.fingerprint.hash,'b');
+});
