@@ -1,6 +1,7 @@
 'use strict';
 // Experimental strong-add B: price-core historical replay plus independent live shadow gate.
 // No mutation of official signals, stored trades, quotes, or sync state.
+const crypto=require('node:crypto');
 const VERSION='trend-shadow-b-v1';
 const B={minScore:78,minBreakAtr:0.12,maxBreakAtr:0.30,requireBullishCandle:true};
 const COST_PCT=0.385; // approximate round-trip ETF brokerage 0.285% + sell tax 0.1%; no min fees/slippage.
@@ -24,6 +25,22 @@ function live(official,quote){
  if(px<op){result.status='WAIT_CANDLE';result.reason='現價低於開盤，等待強勢確認';return result}
  return{...result,status:'B_CANDIDATE',eligible:true,reason:'B版Shadow條件符合（仍非正式買入訊號）'};
 }
+// Content fingerprints detect revisions to historical bars hidden by unchanged dates/counts.
+function historyFingerprint(rows){
+ const all=crypto.createHash('sha256'),yearHashes=new Map();
+ for(const r of rows||[]){
+  if(!r||!r.date)continue;
+  const yy=String(r.date).slice(0,4);
+  if(!yearHashes.has(yy))yearHashes.set(yy,crypto.createHash('sha256'));
+  const values=[r.date,r.open??null,r.high??null,r.low??null,r.close??null,
+   r.adjclose??null,r.adjopen??null,r.adjhigh??null,r.adjlow??null,r.rawClose??null];
+  const record=JSON.stringify(values)+'\n';
+  all.update(record);yearHashes.get(yy).update(record);
+ }
+ return{algorithm:'sha256-historical-bars-v1',hash:all.digest('hex').slice(0,24),
+  byYear:Object.fromEntries([...yearHashes].sort(([a],[b])=>a.localeCompare(b)).map(([y,h])=>[y,h.digest('hex').slice(0,24)]))};
+}
+
 function barsFrom(rows){
  const src=(rows||[]).filter(x=>x&&x.date&&Number(x.close)>0).slice().sort((a,b)=>String(a.date).localeCompare(String(b.date)));
  const l=src.at(-1),lastAdj=Number(l?.adjclose)||Number(l?.close),scale=lastAdj>0?Number(l.close)/lastAdj:1;
@@ -195,7 +212,8 @@ function riskResearch(rows,marketRows=[]){
 }
 
 function compare(rows,marketRows=[]){
- const key=[rows?.length||0,rows?.[0]?.date,rows?.at(-1)?.date,rows?.at(-1)?.close,rows?.at(-1)?.adjclose,marketRows?.length||0,marketRows?.at(-1)?.date,marketRows?.at(-1)?.close].join('|');
+ const fingerprint=historyFingerprint(rows),marketFingerprint=historyFingerprint(marketRows);
+ const key=fingerprint.hash+'|'+marketFingerprint.hash;
  const cached=CACHE.get(key);if(cached&&Date.now()-cached.at<15*60*1000)return cached.value;
  const {bars,candidateA,candidateB}=signalCandidates(rows);
  const coverage=bars.length?bars.filter(b=>b.o>0&&b.h>0&&b.l>0).length/bars.length*100:0;
@@ -207,6 +225,7 @@ function compare(rows,marketRows=[]){
    fees:'單趟券商費率0.1425%、ETF賣出稅0.1%，來回約0.385%；未含最低手續費及滑價。',
    limitations:'並非完整重播正式盤中A版的分數、當日突破狀態、量價、雲端成交或強制Gate；B版78分條件亦無法由價格核心單獨重播。',
    ready:bars.length>=340&&coverage>=90,
+   historyFingerprint:fingerprint,marketFingerprint:marketFingerprint.hash,
    historyDays:bars.length,ohlcCoveragePct:pct(coverage,1),firstDate:bars[0]?.date||null,lastDate:bars.at(-1)?.date||null,
    all:{A:stats(eventsA),B:stats(eventsB)},entryBandResearch:entryBandResearch(eventsA),riskResearch:riskResearch(rows,marketRows),
    check2026:{A:stats(subset(eventsA,'2026')),B:stats(subset(eventsB,'2026'))},
@@ -216,4 +235,4 @@ function compare(rows,marketRows=[]){
  if(CACHE.size>8)CACHE.clear();CACHE.set(key,{at:Date.now(),value:result});
  return result;
 }
-module.exports={VERSION,B,COST_PCT,live,barsFrom,signalCandidates,scoreEvent,stats,entryBandResearch,riskResearch,compare};
+module.exports={VERSION,B,COST_PCT,live,barsFrom,signalCandidates,scoreEvent,stats,entryBandResearch,riskResearch,historyFingerprint,compare};
