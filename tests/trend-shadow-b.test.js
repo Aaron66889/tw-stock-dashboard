@@ -206,3 +206,20 @@ test('UI replaces saved valid Shadow stats when only hidden historical bars chan
  assert.equal(second.changedYears.join(','),'2012');
  assert.equal(second.snapshot.fingerprint.hash,'b');
 });
+
+test('Regression: 0050 cash adjusted historical data preserves missing source OPEN values',()=>{
+ const {select0050CashHistory}=require('../0050-cash-canonical');
+ const rows=[];for(let i=0;i<1040;i++){
+  const date=new Date(Date.UTC(2024,0,1)+i*86400000).toISOString().slice(0,10);
+  if(date>'2025-06-10'&&date<'2025-06-18')continue;
+  rows.push({date,close:100,open:100,high:101,low:99,adjclose:100,adjopen:100,adjhigh:101,adjlow:99,
+    priceBasis:'normalized-split-scale-v2'});
+ }
+ const incomplete=rows.find(x=>x.date==='2024-05-28');incomplete.open=null;incomplete.adjopen=null;
+ const hist={code:'0050',source:'Yahoo Finance 0050.TW',validation:{backtestReadyPass:true},rows};
+ const events=[['2024-01-17',3],['2024-07-16',1],['2025-01-17',2.7],
+  ['2025-07-21',.36],['2026-01-22',1],['2026-07-21',.6]].map(([date,amount])=>({date,amount}));
+ const result=select0050CashHistory(hist,{complete:true,errors:[],events},{enabled:true});
+ assert.equal(result.status,'ACTIVE');
+ assert.equal(result.hist.rows.find(x=>x.date==='2024-05-28').adjopen,null);
+});
