@@ -7,6 +7,7 @@ const {URL}=require('url');
 const TREND_SHADOW_B=require('./trend-shadow-b');
 const HISTORY_IDENTITY=require('./history-identity');
 const CASH_0050_AUDIT=require('./0050-cash-audit');
+const CASH_0050_DIVIDEND_SOURCE=require('./0050-dividend-source');
 const TREND_LEDGER=require('./trend-forward-ledger');
 const CRASH_GATE_LAB=require('./crash-gate-lab');
 const GATE_LEDGER=require('./gate-blocked-ledger');
@@ -1492,6 +1493,17 @@ function validateOfficialHistory(code,rows){
  const actualYears=first&&last?Math.max(0,(Date.parse(last)-Date.parse(first))/31557600000):0,longSamplePass=code==='0050'&&rows.length>=3000&&actualYears>=10&&latestPass&&backtestPrecisionPass&&!duplicate&&!outOfOrder&&!badPrices;
  return{listed,first,last,rows:rows.length,minimumRows,yearsCovered:Number(years.toFixed(2)),actualYearsCovered:Number(actualYears.toFixed(2)),rowCountPass,startPass,firstGapDays:firstGap,latestPass,lastAgeDays:lastAge,duplicate,outOfOrder,bigGaps:bigGaps.slice(0,12),badPrices,ohlcDays,ohlcCoveragePct:rows.length?ohlcDays/rows.length*100:0,post2010Days:post2010.length,post2010OhlcDays:post2010Ohlc,post2010OhlcCoveragePct,backtestPrecisionPass,rowSequencePass,longSamplePass,priceFullHistoryPass:startPass&&rowSequencePass&&latestPass,fullHistoryPass:false,precision:ohlcDays===rows.length?'OHLC全覆蓋':ohlcDays?'長期OHLC＋部分收盤價':'收盤價'};
 }
+// Isolated from official historical dividend processing. Research-only source:
+// TWSE historical dividendList can time out across 20+ yearly calls; use the
+// structured 0050 dividend policy table (all 2009-2026 records) as a verified
+// alternative for the manually invoked 0050 read-only cash-adjustment audit.
+async function fetch0050DividendHistory(){
+ return cachedSingleFlight('0050:read-only-dividend-history:yahoo-tw:v1',6*60*60*1000,async()=>{
+  const html=await getText(CASH_0050_DIVIDEND_SOURCE.SOURCE_URL);
+  return CASH_0050_DIVIDEND_SOURCE.parse0050Dividends(html,{asOfDate:ymdTaipei()});
+ });
+}
+
 function applyCorporateActions(code,rows,divs){
  if(rows.length&&rows.every(x=>x.preAdjusted)){const out=rows.map(x=>({...x,adjclose:x.adjclose??x.close,adjopen:x.adjopen??x.open,adjhigh:x.adjhigh??x.high,adjlow:x.adjlow??x.low})),warnings=[],anomalies=[];for(let i=1;i<out.length;i++){const r=out[i].adjclose/out[i-1].adjclose-1,rec={date:out[i].date,prev:out[i-1].date,returnPct:r*100};if(Math.abs(r)>.15)warnings.push(rec);if(Math.abs(r)>.30)anomalies.push(rec)}return{rows:out,events:[{type:'preAdjusted',source:'Yahoo/Goodinfo 已統一價格尺度'}],warnings,anomalies,preAdjusted:true}}
  const out=rows.map(x=>({...x,adjFactor:1})),events=[];
@@ -3518,14 +3530,15 @@ const server=http.createServer(async(req,res)=>{
   const con=await Promise.all(ETF.map(async code=>{try{const x=await deadline(constituents(code),15000,null);if(!x)throw Error('official constituent source timed out');const expected=x.expected||META[code].expected,actual=x.items?.length||0,weighted=x.items?.filter(z=>Number.isFinite(z.weight)).length||0,official=!!x.officialOnly&&isOfficialHostFor(code,x.sourceUrl||META[code].url);return{code,pass:!!(x.complete&&official&&actual>=expected&&weighted>=expected),official,expected,actual,weighted,source:x.source,sourceUrl:x.sourceUrl}}catch(e){return{code,pass:false,expected:META[code].expected,actual:0,weighted:0,error:e.message}}}));
   return{ok:true,build:BUILD,modelTrade,constituents:{allPass:con.every(x=>x.pass),items:con},history:{allPass:hist.every(x=>x.fullHistoryPass===true),items:hist},allPass:modelTrade.pass&&con.every(x=>x.pass)&&hist.every(x=>x.fullHistoryPass===true)}
  });
- if(u.pathname==='/api/0050-cash-audit'&&req.method==='GET')return safeApi(res,'0050-cash-audit',()=>cachedSingleFlight('0050:cash-audit:research-v1',60000,async()=>{
+ if(u.pathname==='/api/0050-cash-audit'&&req.method==='GET')return safeApi(res,'0050-cash-audit',()=>cachedSingleFlight('0050:cash-audit:research-v2',60000,async()=>{
   const [hist,divs]=await Promise.all([etfHistory('0050').catch(e=>({code:'0050',rows:[],error:e.message})),
-   twseDividendEvents('0050').catch(e=>({events:[],complete:false,errors:[e.message]}))]);
+   fetch0050DividendHistory().catch(e=>({events:[],complete:false,errors:[e.message],source:'Yahoo Taiwan 0050 股利政策（讀取失敗）'}))]);
   const source=hist?.source||null,qa=CASH_0050_AUDIT.create0050CashResearch(hist?.rows||[],divs?.events||[],{asOfDate:ymdTaipei()});
   const sample=r=>r?{date:r.date,cashClose:r.close,adjustedClose:r.adjclose}:null;
   const output={ok:qa.state==='RESEARCH_READY',code:'0050',mode:'SHADOW_ONLY',priceBasis:'split-only vs split-plus-cash',
    state:qa.state,source,historyOfficial:hist?.validation?.fullHistoryPass===true,
-   dividendsFrom:divs?.source||'TWSE ETF e添富',dividendFeedReportedComplete:divs?.complete===true,
+   dividendsFrom:divs?.source||'Yahoo Taiwan 0050 股利政策',sourceUrl:divs?.sourceUrl||null,
+   dividendFeedReportedComplete:divs?.complete===true,dividendSourceQA:{events:divs?.eventCount||0,perYear:divs?.perYear||{},anchorChecks:divs?.anchorChecks||[],complete:divs?.complete===true},
    dividendErrors:divs?.errors||[],qa:qa.qa,events:qa.events,
    samples:{first:sample(qa.rows?.[0]),last:sample(qa.rows?.at(-1))},
    comparison:null,verdict:'NO_LIVE_MODEL_CHANGE'};
