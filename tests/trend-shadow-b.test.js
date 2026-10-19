@@ -270,3 +270,20 @@ test('ONE-OFF 0050 Yahoo dividend calendar, price factor and split anchor probe'
  console.log('LIVE_YAHOO_ALL_DIVIDENDS',JSON.stringify(div));
  console.log('LIVE_YAHOO_HISTORICAL_CLOSE_VS_ADJCLOSE',JSON.stringify(prices));
 });
+
+test('ONE-OFF 0050 prod vs vendor OHLC 2009-2026 detect wrong split factor',{timeout:65000},async()=>{
+ const urls=['https://tw-stock-dashboard-5.onrender.com/api/etf-history?code=0050','https://query2.finance.yahoo.com/v8/finance/chart/0050.TW?period1=1220227200&period2=1792454400&interval=1d&events=div%2Csplits'];
+ try{
+  const responses=await Promise.all(urls.map(u=>fetch(u,{headers:{'User-Agent':'Mozilla/5.0'},signal:AbortSignal.timeout(45000)})));
+  const [production,vendor]=await Promise.all(responses.map(x=>x.json()));
+  const h=production.rows||[],r=vendor.chart?.result?.[0],prices=r.indicators.quote[0].close,adjusted=r.indicators.adjclose?.[0]?.adjclose||[];
+  const vm=new Map(r.timestamp.map((t,i)=>[new Date(t*1000).toISOString().slice(0,10),{close:prices[i],adjusted:adjusted[i]}]));
+  const xx=h.map(x=>{const v=vm.get(x.date);return v&&v.close>0?{date:x.date,c:x.close,adj:x.adjclose,v:v.close,vadj:v.adjusted,ratio:x.close/v.close,basis:x.priceBasis}:null}).filter(Boolean);
+  let groups=[],run=null;
+  for(const x of xx){const rat=Number(x.ratio.toFixed(3));if(!run||Math.abs(run.ratio-rat)>.01){run={start:x.date,end:x.date,ratio:rat,count:1};groups.push(run)}else{run.end=x.date;run.count++}}
+  console.log('PROD_0050_HISTORY_IDENTITY',JSON.stringify({count:h.length,vendor:r.timestamp.length,matching:xx.length,source:production.source,ready:production.validation?.backtestReadyPass,groups:groups.slice(0,25)}));
+  console.log('PROD_0050_DATE_SAMPLES',JSON.stringify(['2009-01-02','2010-01-04','2011-01-03','2012-01-17','2013-01-02','2013-10-24','2014-01-02','2014-10-24','2015-01-02','2024-01-17','2025-06-17','2025-06-18','2026-10-19'].map(d=>xx.find(x=>x.date===d)||null)));
+  const bad=[];for(let i=1;i<h.length;i++){const move=h[i].close/h[i-1].close-1;if(Math.abs(move)>.20)bad.push({date:h[i].date,movePct:Number((move*100).toFixed(2)),prev:h[i-1].close,next:h[i].close})}
+  console.log('PROD_0050_INTERNAL_JUMPS',JSON.stringify(bad.slice(0,30)));
+ }catch(e){console.log('PROD_0050_COMPARE_ERROR',String(e))}
+});
