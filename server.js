@@ -2822,7 +2822,9 @@ async function tradePerformance(code,entryDate,entryPrice,layer2Low=null,layer3L
  // RUNTIME.live 是大盤/台積電環境，不是 ETF quote owner，不能拿它算 0050/0056/00878/00919 損益。
  let livePx=null,liveSource=null;
  try{
-  const d=await deadline(liveEtf4(),6500,null);
+  // All historical trades share a brief live-quote snapshot instead of issuing
+  // dozens of parallel Anue/TWSE requests that starve the primary ETF ticker.
+  const d=await deadline(cachedSingleFlight('tradeperf:etf4-live-v1',5000,liveEtf4),6500,null);
   const q=d?.quotes?.[code];
   if(Number(q?.last)>0){livePx=Number(q.last);liveSource=q.source||d?.source||'ETF live'}
  }catch(_){}
@@ -3639,7 +3641,9 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/api/diagnostics')return send(res,200,{ok:true,version:VERSION,build:BUILD,marketSource:RUNTIME.live?.source||null,marketRealtime:RUNTIME.live?.realtime??null,lastRefresh:RUNTIME.lastRefresh,errors:RUNTIME.errors||[],preopenTxfLead:RUNTIME.nf?.preopenLead||null,preopenTxfSamples:preopenTxfSamples.length,preopenSnapshot:getPreopenSnapshot(),constituentVersions:constituentVersionSummary(),historyQueue:ETF.map(historyProgress),historyAllPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),yahoo0050:{enabled:true,mode:'v8 chart period1/period2 adjusted OHLC'},goodinfo0050:{enabled:true,mode:'POST long-history',cachedRows:GOODINFO_0050_CACHE.rows.length,period:GOODINFO_0050_CACHE.period,error:GOODINFO_0050_CACHE.error,sourceUrl:GOODINFO_0050_CACHE.url||'https://goodinfo.tw/tw/ShowK_Chart.asp?STOCK_ID=0050&CHT_CAT2=DATE&STEP=DATA&PERIOD=6000&PRICE_ADJ=T'},now:new Date().toISOString()});
  if(u.pathname==='/api/etf-live'){
   try{
-   const d=await deadline(liveEtf4(),7000,null),body=JSON.stringify(d||{ok:false,status:'TIMEOUT',source:'etf-live',quotes:{},error:'四檔ETF即時行情逾時',fetchedAt:new Date().toISOString()});
+   // The primary, MIS fallback and Yahoo open fill can take longer than 7s
+   // on a cold Render instance; keep the endpoint deadline ABOVE source chain.
+   const d=await deadline(liveEtf4(),12500,null),body=JSON.stringify(d||{ok:false,status:'TIMEOUT',source:'etf-live',quotes:{},error:'四檔ETF即時行情逾時',fetchedAt:new Date().toISOString()});
    res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store, no-cache, must-revalidate, proxy-revalidate','Pragma':'no-cache','Expires':'0'});
    return res.end(body);
   }catch(e){
