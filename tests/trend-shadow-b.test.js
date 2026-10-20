@@ -233,3 +233,55 @@ test('0056 isolated source correction dry-run is disabled by default and preserv
  assert.strictEqual(v.hist,h);
  assert.equal(select0056History({...h,code:'0050'},{enabled:true}).switched,false);
 });
+
+
+test('ONEOFF production ETF live and historical model trade marks after 2026-10-20 repair',{timeout:150000},async()=>{
+ const base='https://tw-stock-dashboard-5.onrender.com',targets=[
+  ['/health','health'],
+  ['/api/etf-live?proof=20261020','etf-live'],
+  ['/api/trade-performance?code=0050&entryDate=2026-10-13&entryPrice=112.50','0050-old-trade'],
+  ['/api/trade-performance?code=0056&entryDate=2026-10-15&entryPrice=58.00','0056-old-trade'],
+  ['/api/trade-performance?code=0050&entryDate=2026-10-19&entryPrice=107.45','0050-new-trade'],
+  ['/api/buy-model','buy-model'],
+ ];
+ const results=await Promise.all(targets.map(async([path,key])=>{
+  const start=Date.now();try{
+   const r=await fetch(base+path,{signal:AbortSignal.timeout(26000)});
+   const data=await r.json();return{key,http:r.status,ms:Date.now()-start,data};
+  }catch(e){return{key,ms:Date.now()-start,error:String(e)}}
+ }));
+ for(const result of results){
+  const {key,http,ms,error,data}=result;
+  const q=data?.quotes;
+  const model=data?.models;
+  console.log('OCT20_LIVE_PERF_PROOF',JSON.stringify({key,http,ms,error,ok:data?.ok,
+   status:data?.status,message:data?.error,source:data?.source,
+   quoteSummary:q?Object.fromEntries(['0050','0056','00878','00919'].map(c=>{
+    const x=q[c]||{};return[c,{last:x.last||null,date:x.date||null,realtime:x.realtime,prevClose:x.prevClose,
+      open:x.open,referenceReliable:x.referenceReliable,source:x.source,serverFetchedAt:x.serverFetchedAt}];
+   })):null,
+   metrics:key.includes('trade')?{code:data?.code,price:data?.currentPrice,priceSource:data?.currentPriceSource,
+    updatedAt:data?.updatedAt,currentTotalReturnPct:data?.currentTotalReturnPct,
+    maePct:data?.maePct,mfePct:data?.mfePct,pathSamples:data?.pathSamples,reason:data?.reason}:undefined,
+   models:model?Object.fromEntries(['0050','0056','00878','00919'].map(c=>[c,{
+    score:model[c]?.score,gate:model[c]?.decisionGate?.status,
+    cashStatus:model[c]?.cashHistory?.status??null,l1:model[c]?.raw?.first?.center,l2:model[c]?.raw?.second?.center,
+    l3:model[c]?.raw?.third?.center}])):undefined}));
+ }
+ const at=k=>results.find(r=>r.key===k);
+ assert.equal(at('health').http,200,'Render health');
+ assert.equal(at('etf-live').http,200,'ETF live endpoint HTTP');
+ assert.ok(['0050','0056','00878','00919'].every(c=>Number(at('etf-live').data?.quotes?.[c]?.last)>0),'4 ETF live quotes not available');
+ assert.ok(at('etf-live').ms<21000,'ETF endpoint still too slow');
+ for(const k of ['0050-old-trade','0056-old-trade','0050-new-trade']){
+  const r=at(k);assert.equal(r.http,200,k+' HTTP');assert.equal(r.data?.ok,true,k+' error');
+  assert.ok(r.data?.currentPrice>0,k+' missing price');
+ }
+ for(const k of ['0050-old-trade','0056-old-trade']){
+  const r=at(k);assert.equal(r.data?.status,'READY',k+' not ready');
+  assert.ok(Number.isFinite(r.data?.maePct)&&Number.isFinite(r.data?.mfePct),k+' historical path missing');
+ }
+ assert.equal(at('buy-model').http,200);
+ assert.equal(at('buy-model').data?.ok,true);
+ for(const c of ['0050','0056','00878','00919'])assert.equal(at('buy-model').data?.models?.[c]?.decisionGate?.status,'PASS');
+});
