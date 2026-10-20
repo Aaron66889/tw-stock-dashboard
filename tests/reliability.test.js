@@ -533,3 +533,34 @@ test('ETF client never times out before server ETF live endpoint, which has a 12
  assert.match(serverCode,/deadline\(liveEtf4\(\),12500,null\)/);
  assert.match(serverCode,/cachedSingleFlight\('tradeperf:etf4-live-v1',5000,liveEtf4\)/);
 });
+
+
+test('0050 confirmed L1: 107.10 remains actionable within frozen 0.08 ATR tolerance; a deeper break still blocks',()=>{
+ const c=client();
+ c.run("L={confirmed:true,gateBlocked:false,confirmedAt:'2026-10-20T05:08:00.000Z',confirmedZone:{low:107.21,high:107.55,center:107.38},zone:{low:107.21,high:107.55,center:107.38},executionLow:107.21,executionHigh:107.72}");
+ c.run("ensureExecutionEnvelope(L,1.68,0)");
+ const low=c.run('L.executionLow');
+ assert.ok(Math.abs(low-(107.21-1.68*.08))<1e-9);
+ assert.equal(c.run("layerView(L,107.10)"),'CONFIRMED_IN');
+ assert.equal(c.run("layerView(L,107.075)"),'CONFIRMED_BELOW');
+ assert.equal(c.run("layerView(L,107.73)"),'CONFIRMED_ABOVE');
+ assert.equal(c.run("L.confirmed"),true);
+ assert.equal(c.run("L.confirmedAt"),'2026-10-20T05:08:00.000Z');
+ assert.equal(c.run("L.executionHigh"),107.72);
+ c.run("ensureExecutionEnvelope(L,5,0)");
+ assert.equal(c.run("L.executionLow"),low);
+ c.run("L.gateBlocked=true");
+ assert.equal(c.run("layerView(L,107.10)"),'CONFIRMED_BLOCKED');
+});
+test('new L1 confirmation applies downside allowance; L2/L3 remain unchanged',()=>{
+ const c=client();
+ c.run("addEvent=()=>{};STATE.noSignalDays={};L={confirmed:false,zone:{low:107.21,high:107.55,center:107.38},confirmedZone:null,executionLow:null,executionHigh:null};");
+ c.run("markOfficialConfirmed('0050',L,L.zone,107.40,'2026-10-20T05:08:00Z','LIVE|13:08',1.68,0,'first-level confirmed')");
+ assert.equal(c.run('L.confirmed'),true);
+ assert.ok(Math.abs(c.run('L.executionLow')-107.0756)<1e-9);
+ assert.ok(Math.abs(c.run('L.executionHigh')-(107.55+1.68*.10))<1e-9);
+ assert.match(c.run("confirmSnapshotText(L)"),/執行下限 107\.08/);
+ c.run("D={confirmed:true,confirmedZone:{low:106.39,high:106.73,center:106.56},executionLow:106.39,executionHigh:106.85}");
+ c.run("ensureExecutionEnvelope(D,1.68,1)");
+ assert.equal(c.run('D.executionLow'),106.39);
+});
