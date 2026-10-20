@@ -1609,6 +1609,33 @@ async function yahooHistoryFallback(code){
  for(let i=0;i<ts.length;i++){const close=n(q.close?.[i]);if(close>0)rows.push({date:new Date(ts[i]*1000).toISOString().slice(0,10),open:n(q.open?.[i]),high:n(q.high?.[i]),low:n(q.low?.[i]),close,adjclose:n(adj[i]),volume:n(q.volume?.[i]),ohlc:true,source:'Yahoo fallback'})}
  return{ok:rows.length>=120,code,source:'Yahoo fallback（TWSE官方全歷史尚未暖機）',rows,validation:{fullHistoryPass:false,precision:'fallback'},fetchedAt:new Date().toISOString()};
 }
+
+// 00919 isolated, read-only ex-dividend price-basis audit.
+// Does not feed model scoring, history transforms, gates, holdings, or trade ledger.
+function audit00919DividendBasis(){
+ const hist=diskRead(readyFile('00919'));
+ const rows=Array.isArray(hist?.rows)?hist.rows:[];
+ const events=(hist?.corporateActions||[]).filter(e=>e.type==='cash'&&/^20\d\d-\d\d-\d\d$/.test(e.date)&&Number(e.amount)>0);
+ const source=hist?.source||null,ready=hist?.validation?.backtestReadyPass===true;
+ const checks=events.map(e=>{
+  const i=rows.findIndex(x=>x.date>=e.date),p=rows[i-1],c=rows[i];
+  if(i<1||!(p?.close>0&&c?.close>0))return{date:e.date,amount:e.amount,status:'INSUFFICIENT_DATA'};
+  const f0=Number(p.adjclose)/Number(p.close),f1=Number(c.adjclose)/Number(c.close);
+  const ratio=f0/f1,expected=(Number(p.close)-Number(e.amount))/Number(p.close);
+  const implied=Number(p.close)*(1-ratio);
+  const diff=Math.abs(ratio-expected);
+  return{date:e.date,amount:e.amount,previousClose:p.close,observedDividend:implied,
+   factorRatio:ratio,expectedRatio:expected,status:Number.isFinite(diff)&&diff<=.012?'PASS':'MISMATCH'};
+ });
+ const preAdjusted=rows.length>0&&rows.every(x=>x.preAdjusted===true);
+ const status=!ready||!rows.length?'NO_VALIDATED_HISTORY':preAdjusted?'PRE_ADJUSTED_SOURCE':!events.length?'DIVIDEND_EVENTS_UNAVAILABLE':
+  checks.every(x=>x.status==='PASS')?'PASS':'NEEDS_REVIEW';
+ return{ok:true,code:'00919',mode:'READ_ONLY',status,ready,source,
+   historicalRows:rows.length,preAdjusted,eventsChecked:checks.length,checks,
+   caveat:preAdjusted?'來源已預先調整，不能重複套息；需另比對供應商原始價格因子':null,
+   modelChanged:false,holdingsChanged:false};
+}
+
 async function legacyEtfHistory(code){
  const ready=diskRead(`twse_${code}_official_ready.json`);if(ready?.rows?.length>100&&ready?.validation?.backtestReadyPass)return {...ready,source:HISTORY_IDENTITY.label(code,ready)};
  // Never label or silently use a failed official build as complete history. Until PASS, keep a clearly marked fallback for live model continuity.
@@ -3632,6 +3659,7 @@ const server=http.createServer(async(req,res)=>{
   return output;
  }));
 
+ if(u.pathname==='/api/00919-dividend-audit')return send(res,200,audit00919DividendBasis());
  if(u.pathname==='/api/history-status')return send(res,200,{ok:true,build:BUILD,history:ETF.map(historyProgress)});
  if(u.pathname==='/api/history-proof')return send(res,200,{ok:true,build:BUILD,allPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),history:ETF.map(c=>{const p=historyProgress(c),r=diskRead(readyFile(c));return{...p,source:r?.source||null,corporateActions:r?.corporateActions||[],adjustmentAnomalies:r?.adjustmentAnomalies||[],dividendSource:r?.dividendSource||null}})});
  if(u.pathname==='/api/history-warm'){const code=u.searchParams.get('code'),all=u.searchParams.get('all')==='1';if(all)ETF.forEach(c=>enqueueHistory(c,false));else if(ETF.includes(code))enqueueHistory(code,true);return send(res,200,{ok:true,status:'WARMING',history:ETF.map(historyProgress)});}
