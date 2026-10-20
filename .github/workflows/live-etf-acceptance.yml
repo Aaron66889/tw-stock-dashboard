@@ -1,0 +1,43 @@
+name: Live ETF acceptance
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/live-etf-acceptance.yml'
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Read live endpoints without modifying holdings
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,urllib.request,time,sys
+          base='https://tw-stock-dashboard-5.onrender.com'
+          endpoints=['/api/history-status','/api/validation']
+          endpoints += ['/api/backtest?code='+c for c in ('0050','0056','00878','00919')]
+          for ep in endpoints:
+            print('\nCHECK',ep,flush=True)
+            result=None
+            for attempt in range(3):
+              try:
+                req=urllib.request.Request(base+ep,headers={'User-Agent':'ETF-acceptance-check/1.0','Accept':'application/json'})
+                with urllib.request.urlopen(req,timeout=75) as r:
+                  raw=r.read(2000000);result=json.loads(raw)
+                  print('HTTP',r.status,'bytes',len(raw),'ok',result.get('ok'),'error',result.get('error'),flush=True)
+                  if ep=='/api/history-status':
+                    for item in result.get('history',[]):print('HISTORY',item.get('code'),'ready',item.get('backtestReadyPass'),'full',item.get('fullHistoryPass'),'rows',item.get('rows'),'state',item.get('status'),flush=True)
+                  elif ep=='/api/validation':
+                    print('VALIDATION_KEYS',list(result.keys()),flush=True)
+                    print('VALIDATION_SUMMARY',str(result)[:1500],flush=True)
+                  else:
+                    print('BACKTEST_KEYS',list(result.keys()),flush=True)
+                    print('BACKTEST_SUMMARY',str(result)[:800],flush=True)
+                  break
+              except Exception as e:
+                print('attempt',attempt+1,'failed:',repr(e),flush=True)
+                time.sleep(5)
+            if result is None or result.get('ok') is False:
+              print('ACCEPTANCE_NOT_VERIFIED',ep,flush=True);sys.exit(1)
+          PY
