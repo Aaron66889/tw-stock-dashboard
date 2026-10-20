@@ -3200,7 +3200,7 @@ async function cloudUpsertTrade(input){
   }
   merged._syncUpdatedAt=merged._syncUpdatedAt||new Date().toISOString();delete merged._syncDirty;delete merged._cloudUpdatedAt;
   const row={id,code:String(merged.code||''),entry_at:merged.entryAt||new Date().toISOString(),payload:merged};
-  if(await conditionalCloudTradeWrite(row0,row)){await ensureModelSyncMeta();return{ok:true,id}}
+  if(await conditionalCloudTradeWrite(row0,row)){await ensureModelSyncMeta();const reversal=await reverseAppliedHoldingsTrade(id);return{ok:true,id,reversal}}
  }
  throw Error('交易同時被其他裝置更新，請稍後重試');
 }
@@ -3214,7 +3214,7 @@ async function cloudDeleteTrade(id){
  if(!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(String(id||'')))throw Error('invalid trade id');
  for(let attempt=0;attempt<10;attempt++){
   const rows=await cloudRowsById(id),row0=rows[0],old=row0?.payload&&typeof row0.payload==='object'?row0.payload:{id,code:'DELETED',entryAt:new Date().toISOString()};
-  if(old._deleted)return{ok:true,id};
+  if(old._deleted){const reversal=await reverseAppliedHoldingsTrade(id);return{ok:true,id,reversal}};
   const tomb={...old,id,_deleted:true,_syncUpdatedAt:new Date().toISOString()};delete tomb._syncDirty;delete tomb._cloudUpdatedAt;
   const row={id,code:String(old.code||'DELETED'),entry_at:old.entryAt||new Date().toISOString(),payload:tomb};
   if(await conditionalCloudTradeWrite(row0,row)){await ensureModelSyncMeta();return{ok:true,id}}
@@ -3361,7 +3361,7 @@ function cleanHoldingsInput(holdings){
 }
 async function conditionalCloudHoldingsWrite(existingRow,holdings,appliedTradeIds){
  const now=new Date(Math.max(Date.now(),(Date.parse(existingRow?.updated_at)||0)+1)).toISOString(),ids=[...new Set(appliedTradeIds||[])];
- const payload={holdings,appliedTradeIds:ids,updatedAt:now};
+ const payload={...(existingRow?.payload||{}),holdings,appliedTradeIds:ids,updatedAt:now};
  if(existingRow){
   const route='model_trades?id=eq.'+encodeURIComponent(HOLDINGS_SYNC_ID)+'&updated_at=eq.'+encodeURIComponent(existingRow.updated_at)+'&select=id,updated_at,payload';
   const r=await supabaseRest(route,{method:'PATCH',headers:{'Prefer':'return=representation'},body:{updated_at:now,payload}});
@@ -3391,6 +3391,39 @@ async function cloudUpsertHoldings(holdings,expectedUpdatedAt,includedTradeIds=[
  }
  throw Error('持股同時被其他裝置更新，請稍後重試');
 }
+// Idempotently reverse only trades previously applied by this holdings ledger.
+async function reverseAppliedHoldingsTrade(id){
+ for(let attempt=0;attempt<10;attempt++){
+  const tradeRow=(await cloudRowsById(id))[0],trade=tradeRow?.payload||{};
+  if(!trade._deleted)throw Error('交易尚未標記刪除，不能回沖');
+  const holdingRow=(await cloudRowsById(HOLDINGS_SYNC_ID))[0],p=holdingRow?.payload;
+  if(!p)return{reversed:false,reason:'NO_HOLDINGS'};
+  const applied=Array.isArray(p.appliedTradeIds)?p.appliedTradeIds:[];
+  const reversed=Array.isArray(p.reversedTradeIds)?p.reversedTradeIds:[];
+  if(reversed.includes(id))return{reversed:false,alreadyReversed:true};
+  if(!applied.includes(id))return{reversed:false,reason:'NOT_APPLIED'};
+  const shares=Number(trade.shares),price=Number(trade.entryPrice),code=String(trade.code||'');
+  if(!ETF.includes(code)||!Number.isSafeInteger(shares)||shares<=0||!(price>0))
+   throw Error('交易原始股數或成本不完整，停止自動回沖');
+  const holdings=cleanHoldingsInput(p.holdings||[]),h=holdings.find(x=>x.t===code);
+  if(!h||h.s<shares)throw Error('雲端持股少於待回沖股數，停止修正以免負數');
+  const remaining=h.s-shares;
+  h.c=remaining>0?Math.max(0,(h.s*h.c-shares*price)/remaining):0;
+  h.s=remaining;
+  // A compare-and-swap makes the adjustment and reversal marker one operation.
+  const now=new Date(Math.max(Date.now(),(Date.parse(holdingRow.updated_at)||0)+1)).toISOString();
+  const payload={...p,holdings,reversedTradeIds:[...reversed,id],updatedAt:now};
+  const route='model_trades?id=eq.'+encodeURIComponent(HOLDINGS_SYNC_ID)+
+   '&updated_at=eq.'+encodeURIComponent(holdingRow.updated_at)+'&select=id';
+  const saved=await supabaseRest(route,{method:'PATCH',headers:{'Prefer':'return=representation'},
+   body:{payload,updated_at:now}});
+  if(Array.isArray(saved)&&saved.length===1){
+   try{await recordDividendHoldingsSnapshot(holdings,ymdTaipei())}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),'holdings-reverse-snapshot:'+e.message].slice(-20)}
+   return{reversed:true,code,shares,holdings};
+  }
+ }
+ throw Error('回沖時遇到其他裝置同步更新，請稍後重試');
+}
 async function cloudApplyHoldingsTrade(trade){
  const id=String(trade?.id||''),code=String(trade?.code||'').trim(),shares=Number(trade?.shares),price=Number(trade?.entryPrice);
  if(!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(id)||!ETF.includes(code)||!Number.isFinite(shares)||shares<=0||!Number.isSafeInteger(shares)||!Number.isFinite(price)||price<=0||price>1e7)throw Error('invalid holdings trade');
@@ -3399,6 +3432,8 @@ async function cloudApplyHoldingsTrade(trade){
   if(!p)throw Error('雲端持股尚未初始化；請先在正確裝置上傳持股後再同步交易');
   const applied=Array.isArray(p.appliedTradeIds)?p.appliedTradeIds:[];
   if(applied.includes(id))return{ok:true,applied:true,alreadyApplied:true,tradeId:id,holdings:p.holdings||[]};
+  const tradeRow=(await cloudRowsById(id))[0];
+  if(tradeRow?.payload?._deleted)throw Error('交易已刪除，禁止重複增加持股');
   const clean=cleanHoldingsInput(p.holdings||[]);
   const h=clean.find(x=>x.t===code);
   if(h){const prev=Number(h.s)||0,newShares=prev+shares;h.c=(prev*Number(h.c||0)+shares*price)/newShares;h.s=newShares}
