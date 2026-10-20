@@ -31,6 +31,11 @@ jobs:
                   elif ep=='/api/validation':
                     print('VALIDATION_KEYS',list(result.keys()),flush=True)
                     print('VALIDATION_SUMMARY',str(result)[:1500],flush=True)
+                    core=('34','40','9','10','14','13','21')
+                    statuses={key:result.get('checks',{}).get(key,{}).get('status') for key in core}
+                    print('CORE_STATUS',statuses,flush=True)
+                    if any(status!='PASS' for status in statuses.values()):
+                      print('CORE_NOT_PASS',statuses,flush=True);sys.exit(1)
                   else:
                     print('BACKTEST_KEYS',list(result.keys()),flush=True)
                     print('BACKTEST_SUMMARY',str(result)[:800],flush=True)
