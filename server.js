@@ -1636,6 +1636,39 @@ function audit00919DividendBasis(){
    modelChanged:false,holdingsChanged:false};
 }
 
+// Independent 00919 price-factor audit; strictly read only.
+async function yahoo00919DividendAudit(){
+ const base=audit00919DividendBasis();
+ try{
+  const url='https://query1.finance.yahoo.com/v8/finance/chart/00919.TW?period1=1663545600&period2='+
+   Math.floor(Date.now()/1000)+'&interval=1d&events=div%2Csplits';
+  const response=await deadline(getJSON(url,{},1),9000,null);
+  const result=response?.chart?.result?.[0];
+  if(!result)return{...base,yahoo:{status:'SOURCE_UNAVAILABLE',reason:'Yahoo history did not return a chart'}};
+  const times=result.timestamp||[],raw=result.indicators?.quote?.[0]?.close||[],
+   adj=result.indicators?.adjclose?.[0]?.adjclose||[];
+  const rows=times.map((t,i)=>({day:new Date(t*1000).toISOString().slice(0,10),close:Number(raw[i]),adj:Number(adj[i])}))
+   .filter(x=>x.close>0&&x.adj>0);
+  const events=Object.values(result.events?.dividends||{})
+   .map(e=>({day:new Date(Number(e.date)*1000).toISOString().slice(0,10),amount:Number(e.amount)}))
+   .filter(e=>e.amount>0).sort((a,b)=>a.day.localeCompare(b.day));
+  const checks=events.map(e=>{
+   const idx=rows.findIndex(x=>x.day>=e.day),prev=rows[idx-1],now=rows[idx];
+   if(idx<1||!prev||!now)return{...e,status:'NO_PRICE_PAIR'};
+   const fPrev=prev.adj/prev.close,fNow=now.adj/now.close;
+   const implied=prev.close*(1-fPrev/fNow);
+   const diff=implied-e.amount;
+   return{...e,previousClose:prev.close,impliedDividend:Number(implied.toFixed(4)),
+    difference:Number(diff.toFixed(4)),status:Math.abs(diff)<=Math.max(0.035,e.amount*.08)?'PASS':'MISMATCH'};
+  });
+  const passed=checks.filter(c=>c.status==='PASS').length,failures=checks.filter(c=>c.status==='MISMATCH');
+  return{...base,yahoo:{status:!events.length?'NO_DIVIDEND_EVENTS':failures.length?'MISMATCH':
+   passed===events.length?'PASS':'INCOMPLETE',source:'Yahoo 00919.TW chart (independent read only)',
+   bars:rows.length,dividendEvents:events.length,pass:passed,failed:failures.length,checks,
+   note:'This checks Yahoo dividend events against Yahoo adjustment factors; both share a provider and cannot independently prove official completeness.'}};
+ }catch(e){return{...base,yahoo:{status:'SOURCE_UNAVAILABLE',reason:String(e?.message||e)}}}
+}
+
 async function legacyEtfHistory(code){
  const ready=diskRead(`twse_${code}_official_ready.json`);if(ready?.rows?.length>100&&ready?.validation?.backtestReadyPass)return {...ready,source:HISTORY_IDENTITY.label(code,ready)};
  // Never label or silently use a failed official build as complete history. Until PASS, keep a clearly marked fallback for live model continuity.
@@ -3694,7 +3727,7 @@ const server=http.createServer(async(req,res)=>{
   return output;
  }));
 
- if(u.pathname==='/api/00919-dividend-audit')return send(res,200,audit00919DividendBasis());
+ if(u.pathname==='/api/00919-dividend-audit')return safeApi(res,'00919-dividend-audit',yahoo00919DividendAudit);
  if(u.pathname==='/api/history-status')return send(res,200,{ok:true,build:BUILD,history:ETF.map(historyProgress)});
  if(u.pathname==='/api/history-proof')return send(res,200,{ok:true,build:BUILD,allPass:ETF.every(c=>historyProgress(c).fullHistoryPass===true),history:ETF.map(c=>{const p=historyProgress(c),r=diskRead(readyFile(c));return{...p,source:r?.source||null,corporateActions:r?.corporateActions||[],adjustmentAnomalies:r?.adjustmentAnomalies||[],dividendSource:r?.dividendSource||null}})});
  if(u.pathname==='/api/history-warm'){const code=u.searchParams.get('code'),all=u.searchParams.get('all')==='1';if(all)ETF.forEach(c=>enqueueHistory(c,false));else if(ETF.includes(code))enqueueHistory(code,true);return send(res,200,{ok:true,status:'WARMING',history:ETF.map(historyProgress)});}
