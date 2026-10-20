@@ -3427,14 +3427,16 @@ async function cloudUpsertHoldings(holdings,expectedUpdatedAt,includedTradeIds=[
 // Idempotently reverse only trades previously applied by this holdings ledger.
 async function reverseAppliedHoldingsTrade(id){
  for(let attempt=0;attempt<10;attempt++){
-  const tradeRow=(await cloudRowsById(id))[0],trade=tradeRow?.payload||{};
-  if(!trade._deleted)throw Error('交易尚未標記刪除，不能回沖');
+  // Most model records are observations, not holdings purchases. Check the
+  // holdings ledger first; unrelated deletions must not need a reversal.
   const holdingRow=(await cloudRowsById(HOLDINGS_SYNC_ID))[0],p=holdingRow?.payload;
   if(!p)return{reversed:false,reason:'NO_HOLDINGS'};
   const applied=Array.isArray(p.appliedTradeIds)?p.appliedTradeIds:[];
   const reversed=Array.isArray(p.reversedTradeIds)?p.reversedTradeIds:[];
   if(reversed.includes(id))return{reversed:false,alreadyReversed:true};
   if(!applied.includes(id))return{reversed:false,reason:'NOT_APPLIED'};
+  const tradeRow=(await cloudRowsById(id))[0],trade=tradeRow?.payload||{};
+  if(!trade._deleted)throw Error('交易尚未標記刪除，不能回沖');
   const shares=Number(trade.shares),price=Number(trade.entryPrice),code=String(trade.code||'');
   if(!ETF.includes(code)||!Number.isSafeInteger(shares)||shares<=0||!(price>0))
    throw Error('交易原始股數或成本不完整，停止自動回沖');
