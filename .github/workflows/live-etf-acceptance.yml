@@ -53,3 +53,5 @@ jobs:
             if result is None or result.get('ok') is False:
               print('ACCEPTANCE_NOT_VERIFIED',ep,flush=True);sys.exit(1)
           PY
+
+# Reverify Yuanta PCF constituent proof after production deployment.
