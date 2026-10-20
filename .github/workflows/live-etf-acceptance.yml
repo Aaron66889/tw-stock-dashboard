@@ -41,6 +41,8 @@ jobs:
                       print('CORE_NOT_PASS',statuses,flush=True)
                   elif ep.startswith('/api/constituent-health'):
                     print('HEALTH',ep,{k:result.get(k) for k in ('usable','sourceCoverage','quoteCoverage','reason','note','source','expected','actual','score')},flush=True)
+                    if ep.endswith(('0050','0056')):
+                      print('HEALTH_SOURCE_DETAIL',ep,'errors',result.get('errors'),'attempts',result.get('attempts'),'asOf',result.get('asOf'),'complete',result.get('complete'),flush=True)
                   else:
                     print('BACKTEST_KEYS',list(result.keys()),flush=True)
                     print('BACKTEST_SUMMARY',str(result)[:800],flush=True)
