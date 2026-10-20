@@ -34,6 +34,8 @@ jobs:
                     core=('34','40','9','10','14','13','21')
                     statuses={key:result.get('checks',{}).get(key,{}).get('status') for key in core}
                     print('CORE_STATUS',statuses,flush=True)
+                    for key in ('34','21','40'):
+                      print('CORE_EVIDENCE',key,result.get('checks',{}).get(key),flush=True)
                     if any(status!='PASS' for status in statuses.values()):
                       print('CORE_NOT_PASS',statuses,flush=True);sys.exit(1)
                   else:
