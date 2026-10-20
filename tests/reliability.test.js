@@ -152,6 +152,26 @@ test('concurrent deletion and batch upload cannot resurrect a trade; closing ret
  const closed=b.rows.get('mt_closed_001').payload;assert.equal(closed.exitAt,b.ctx.closed.exitAt);assert.equal(closed.realizedDividendPnL,20);
 });
 
+test('deleting an applied model purchase reverses holdings exactly once, preserving weighted cost',async()=>{
+ const b=backend(),t=trade('mt_reverse_once_001');
+ b.ctx.t=t;
+ await b.run("cloudUpsertHoldings([{t:'0050',s:1000,c:80}],null)");
+ await b.run('cloudUpsertTrade(t)');
+ await b.run('cloudApplyHoldingsTrade(t)');
+ assert.equal(b.rows.get('__HOLDINGS_STATE__').payload.holdings[0].s,1010);
+ const first=await b.run('cloudDeleteTrade(t.id)');
+ assert.equal(first.reversal.reversed,true);
+ let state=b.rows.get('__HOLDINGS_STATE__').payload;
+ assert.equal(state.holdings[0].s,1000);
+ assert.ok(Math.abs(state.holdings[0].c-80)<1e-8);
+ assert.deepEqual([...state.reversedTradeIds],[t.id]);
+ const second=await b.run('cloudDeleteTrade(t.id)');
+ assert.equal(second.reversal.alreadyReversed,true);
+ state=b.rows.get('__HOLDINGS_STATE__').payload;
+ assert.equal(state.holdings[0].s,1000);
+ await b.run('cloudUpsertTrade(t)');
+ assert.equal(b.rows.get(t.id).payload._deleted,true);
+});
 test('invalid fractional holdings and trades are rejected; official host validation is exact',async()=>{
  const b=backend();assert.throws(()=>b.run(`cleanHoldingsInput([{t:'0050',s:10.5,c:100}])`),/整數股數/);
  b.ctx.t={...trade(),shares:0.5};await assert.rejects(b.run('cloudApplyHoldingsTrade(t)'),/invalid holdings trade/);
