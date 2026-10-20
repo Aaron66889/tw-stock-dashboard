@@ -372,7 +372,7 @@ test('pending future 5/20/60 day dividends do not leak into current cash return'
 });
 
 test('dated dividend entitlement is post-entry and paid only once across overlapping source events',()=>{
- const c=client();
+ const c=client();c.run("dayKey=()=> '2026-10-19'");
  c.ctx.fake={...trade('mt_919_div'),code:'00919',entryPrice:30,entryDate:'2026-09-15',shares:650,
   perf:{status:'READY',eligibleDividends:[{exDate:'2026-09-16',amount:1.10}]}};
  c.run("DIVIDEND_AUTO={byCode:{'00919':{locks:[{exDate:'2026-09-16',amount:1.10},{exDate:'2026-10-20',amount:2.0}]}}};");
@@ -421,7 +421,7 @@ test('incomplete portfolio mark does not display partial sum as total market pro
 });
 
 test('horizon not matured or only speculative day is not presented as 5/20/60 performance',()=>{
- const c=client();c.ctx.t={...trade('mt_soon'),entryDate:'2026-10-13',perf:{status:'READY',
+ const c=client();c.run("dayKey=()=> '2026-10-19'");c.ctx.t={...trade('mt_soon'),entryDate:'2026-10-13',perf:{status:'READY',
   horizon:{5:{date:'2026-10-20',totalReturnPct:20},20:{date:'2026-11-11',totalReturnPct:10}}}};
  assert.equal(c.run('tradeMaturedHorizon(t,5)'),null);
  assert.equal(c.run('tradeMaturedHorizon(t,20)'),null);
@@ -485,4 +485,31 @@ test('mixed frontend/backend builds block writes before applying any holdings op
  const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
  c.route(async(url,opts)=>{if(opts.method==='POST')writes++;return{ok:true,build:'older-deployed-server'}});
  await c.run('flushPendingHoldingsTrades()');assert.equal(writes,0);assert.equal(c.run('HOLDINGS_PENDING_TRADES.length'),1);assert.match(c.run('HOLDINGS_SYNC.message'),/前後端版本不同/);
+});
+
+
+test('TWSE quote dates use actual trading dates, including Gregorian and ROC compact formats',()=>{
+ const c=client();
+ assert.equal(c.run("normalizeEtfQuoteDate('20261020')"),'2026-10-20');
+ assert.equal(c.run("normalizeEtfQuoteDate('1151020')"),'2026-10-20');
+ assert.equal(c.run("normalizeEtfQuoteDate('2026/10/20')"),'2026-10-20');
+ assert.equal(c.run("normalizeEtfQuoteDate('2026-10-20')"),'2026-10-20');
+ assert.equal(c.run("normalizeEtfQuoteDate('')"),null);
+ assert.equal(c.run("normalizeEtfQuoteDate('garbage')"),null);
+});
+test('today TWSE quote is valid for every open trade, but stale yesterday date cannot masquerade as live mark',()=>{
+ const c=client();
+ c.run("lastLive={quotes:{'0050':{last:108.15,date:dayKey().replaceAll('-',''),serverFetchedAt:new Date().toISOString(),realtime:true}}};");
+ const fresh=c.json("tradeMarkPrice({code:'0050',entryPrice:112,shares:20})");
+ assert.equal(fresh.price,108.15);assert.equal(fresh.source,'ETF即時行情');
+ c.run("lastLive.quotes['0050'].date='2026-01-02'");
+ const stale=c.json("tradeMarkPrice({code:'0050',entryPrice:112,shares:20})");
+ assert.notEqual(stale.source,'ETF即時行情');
+});
+test('ETF client never times out before server ETF live endpoint, which has a 12.5s upstream cutoff',()=>{
+ const clientCode=fs.readFileSync(path.join(root,'public/app.js'),'utf8'),
+  serverCode=fs.readFileSync(path.join(root,'server.js'),'utf8');
+ assert.match(clientCode,/get\('\/api\/etf-live\?_\='\+Date\.now\(\),14500\)/);
+ assert.match(serverCode,/deadline\(liveEtf4\(\),12500,null\)/);
+ assert.match(serverCode,/cachedSingleFlight\('tradeperf:etf4-live-v1',5000,liveEtf4\)/);
 });
