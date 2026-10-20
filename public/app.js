@@ -272,11 +272,12 @@ function twMarketOpenClient(){
  return wd>=1&&wd<=5&&m>=540&&m<=810;
 }
 const ETF_PRICE_FLASH={};
-let ETF_FETCH_AT=null,ETF_FETCH_COUNT=0;
+let ETF_FETCH_AT=null,ETF_FETCH_COUNT=0,ETF_LIVE_LAST_ERROR=null;
 function etfFetchStamp(){
- if(!ETF_FETCH_AT)return'尚未抓取';
+ if(!ETF_FETCH_AT)return ETF_LIVE_LAST_ERROR?'行情抓取失敗（自動重試）':'尚未抓取';
  const d=new Date(ETF_FETCH_AT);
- return '抓取 '+d.toLocaleTimeString('zh-TW',{hour12:false,timeZone:'Asia/Taipei'})+'｜#'+ETF_FETCH_COUNT;
+ return '抓取 '+d.toLocaleTimeString('zh-TW',{hour12:false,timeZone:'Asia/Taipei'})+'｜#'+ETF_FETCH_COUNT+
+  (ETF_LIVE_LAST_ERROR?'｜更新失敗（保留最後成功報價）':'');
 }
 function etfExchangeStamp(code){
  const q=lastLive?.quotes?.[code];
@@ -289,6 +290,20 @@ function etfExchangeStamp(code){
 }
 
 function nLive(v){const x=Number(v);return Number.isFinite(x)?x:null}
+// TWSE MIS may use YYYYMMDD or ROC YYYMMDD, while Anue uses YYYY-MM-DD.
+// Never infer a quote's trading date from local wall time: a prior-day quote
+// must NOT satisfy the live mark-to-market or buy confirmation freshness gate.
+function normalizeEtfQuoteDate(value){
+ const v=String(value||'').trim();
+ if(/^20\d{2}-\d{2}-\d{2}$/.test(v))return v;
+ if(/^20\d{6}$/.test(v))return v.slice(0,4)+'-'+v.slice(4,6)+'-'+v.slice(6,8);
+ if(/^1\d{6}$/.test(v)){
+  const y=Number(v.slice(0,3))+1911;
+  return y+'-'+v.slice(3,5)+'-'+v.slice(5,7);
+ }
+ if(/^20\d{2}\/\d{2}\/\d{2}$/.test(v))return v.replaceAll('/','-');
+ return null;
+}
 function parseBrowserMisRow(x,prev){
  const z=nLive(x?.z);
  const ask=String(x?.a||'').split('_').map(nLive).find(v=>v>0);
@@ -301,7 +316,7 @@ function parseBrowserMisRow(x,prev){
  return{
   ticker:String(x?.c||'').trim(),name:x?.n||'',channel:x?.ch||'',
   last,prevClose:nLive(x?.y),open:nLive(x?.o),high:nLive(x?.h),low:nLive(x?.l),
-  volume:nLive(x?.v),time:x?.t||x?.['%']||null,date:x?.d||null,
+  volume:nLive(x?.v),time:x?.t||x?.['%']||null,date:normalizeEtfQuoteDate(x?.d),
   bid,ask,hasTrade:z>0,source:'TWSE MIS browser direct',realtime:true
  };
 }
@@ -341,8 +356,12 @@ async function postJSON(url,body,timeoutMs=12000){
 async function loadEtfLive(){if(document.visibilityState==='hidden'&&!(window.SignalAlerts?.monitoring()&&twMarketOpenClient()))return;
  clearTimeout(etfLiveTimer);
  try{
-  const d=await get('/api/etf-live?_='+Date.now(),6500);
-  ETF_FETCH_AT=Date.now();ETF_FETCH_COUNT++;
+  // The API itself waits up to 12.5s on a cold/slow upstream chain.
+  // Cutting the browser off at 6.5s discarded valid later replies.
+  const d=await get('/api/etf-live?_='+Date.now(),14500);
+  if(!d?.quotes||!ETF.some(c=>Number(d.quotes[c]?.last)>0))
+   throw Error(d?.error||'四檔ETF來源暫未回傳有效報價');
+  ETF_FETCH_AT=Date.now();ETF_FETCH_COUNT++;ETF_LIVE_LAST_ERROR=null;
   if(d?.quotes){
    lastLive=lastLive||{ok:true,quotes:{}};
    lastLive.quotes=lastLive.quotes||{};
@@ -350,10 +369,12 @@ async function loadEtfLive(){if(document.visibilityState==='hidden'&&!(window.Si
     const q=d.quotes[c];
     if(q?.last>0){
      const old=Number(lastLive.quotes[c]?.last),next=Number(q.last);
-     lastLive.quotes[c]={...q,fetchTime:new Date().toISOString()};
+     lastLive.quotes[c]={...q,date:normalizeEtfQuoteDate(q.date)||q.date||null,fetchTime:new Date().toISOString()};
      if(old>0&&next!==old)ETF_PRICE_FLASH[c]=next>old?'up':'down';
      const r=lastBuy?.models?.[c];
-     if(r){r.price=next;updateOne(c,r)}
+     if(r&&lastLive.quotes[c].date===dayKey()&&q.realtime!==false&&q.lastGoodFallback!==true){
+      r.price=next;updateOne(c,r);
+     }
      window.DipWatch?.observe(c,lastLive.quotes[c],r,lastBuy,STATE.models?.[c]);
     }
    }
@@ -366,7 +387,12 @@ async function loadEtfLive(){if(document.visibilityState==='hidden'&&!(window.Si
    renderBuyCards();
    if(selectedETF)renderDetailBuy();if(VALIDATION)renderSpecs();
   }
- }catch(e){console.warn('[ETF-LIVE]',e?.message||e)}
+ }catch(e){
+  ETF_LIVE_LAST_ERROR=e?.message||String(e);
+  console.warn('[ETF-LIVE]',ETF_LIVE_LAST_ERROR);
+  // Keep old quote visibly marked stale, not falsely refreshed.
+  if(lastBuy?.models)renderBuyCards();
+ }
  etfLiveTimer=setTimeout(loadEtfLive,twMarketOpenClient()?5000:10000);
 }
 async function loadMarket(){if(document.visibilityState==='hidden')return;clearTimeout(marketTimer);try{const extra=H.map(x=>x.t).join(','),d=await get('/api/market?symbols='+encodeURIComponent(extra));if(!d.ok)throw Error((d.source||'market')+': '+d.error);
@@ -1489,7 +1515,7 @@ function modelBenchmarkDelta(t,metrics=modelNetMetrics(t)){
 function tradeMarkPrice(t){
  const q=lastLive?.quotes?.[t?.code],quotePrice=Number(q?.last),stamp=Date.parse(q?.fetchTime||q?.serverFetchedAt||'');
  const now=Date.now(),today=dayKey(),isTrading=twMarketOpenClient();
- const quoteCurrent=quotePrice>0&&q?.lastGoodFallback!==true&&q?.realtime!==false&&q?.date===today
+ const quoteCurrent=quotePrice>0&&q?.lastGoodFallback!==true&&q?.realtime!==false&&normalizeEtfQuoteDate(q?.date)===today
   &&Number.isFinite(stamp)&&stamp<=now+15000&&now-stamp>=0&&now-stamp<=120000;
  if(quoteCurrent)return{price:quotePrice,source:'ETF即時行情',asOf:q.fetchTime||q.serverFetchedAt};
  const p=t?.perf||{},perfPrice=Number(p.currentPrice),perfTime=Date.parse(p.updatedAt||'');
