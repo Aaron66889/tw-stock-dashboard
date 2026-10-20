@@ -1949,10 +1949,12 @@ async function yuantaOfficialConstituents(code){
    const urls=[META[code].url,code==='0050'?'https://yuantaetfs.com/product/detail/0050/ratio':null].filter(Boolean);
    let v={date:ymdTaipei(),items:[]},usedUrl=urls[0];
    for(const url of urls){
-    const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),6500,null);
-    const parsed=html?parseOfficialHoldingText(html):{date:ymdTaipei(),items:[]};
-    if(parsed.items.length>v.items.length){v=parsed;usedUrl=url}
-    if(v.items.length>=5)break;
+    try{
+     const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),6500,null);
+     const parsed=html?parseOfficialHoldingText(html):{date:ymdTaipei(),items:[]};
+     if(parsed.items.length>v.items.length){v=parsed;usedUrl=url}
+     if(v.items.length>=5)break;
+    }catch(e){errs.push('Yuanta ratio '+url+': '+e.message)}
    }
    attempts.push({source:'Yuanta ratio',ok:v.items.length>0,count:v.items.length,url:usedUrl});return v;
   }catch(e){errs.push('Yuanta ratio '+e.message);attempts.push({source:'Yuanta ratio',ok:false,count:0,url:META[code].url,error:e.message});return{date:ymdTaipei(),items:[]}}
