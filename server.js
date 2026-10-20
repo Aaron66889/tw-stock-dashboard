@@ -1932,6 +1932,16 @@ function sameConstituentMembers(a,b){
  if(!a?.complete||!b?.complete)return false;
  return constituentSignature(a.items)===constituentSignature(b.items);
 }
+// Official Yuanta PCF lists constituent membership, not portfolio weights.
+function parseYuantaPcfMembers(html){
+ const plain=stripTags(html).replace(/\\u00a0/g,' ').replace(/\s+/g,' ');
+ const section=plain.split('股票實物申贖')[1]?.split('備註')[0]||'';
+ const date=parseISODate(section.match(/交易日期\s*[:：]?\s*(20\d{2}[\/.\-]\d{1,2}[\/.\-]\d{1,2})/)?.[1]);
+ const items=[...section.matchAll(/股票代碼\s*(\d{4,6})\s*股票名稱\s*([^\s]{1,28})/g)]
+  .map(m=>({code:m[1],name:m[2]}));
+ return{date,items:[...new Map(items.map(x=>[x.code,x])).values()]};
+}
+
 async function yuantaOfficialConstituents(code){
  const expected=META[code].expected,fundid=META[code].fundId,attempts=[],errs=[];
  const headers={'Accept':'application/json, text/plain, */*','Referer':META[code].url,'Origin':'https://www.yuantaetfs.com','X-Requested-With':'XMLHttpRequest'};
@@ -1959,6 +1969,17 @@ async function yuantaOfficialConstituents(code){
    attempts.push({source:'Yuanta ratio',ok:v.items.length>0,count:v.items.length,url:usedUrl});return v;
   }catch(e){errs.push('Yuanta ratio '+e.message);attempts.push({source:'Yuanta ratio',ok:false,count:0,url:META[code].url,error:e.message});return{date:ymdTaipei(),items:[]}}
  })();
+ const pcfP=(async()=>{
+  if(code!=='0050')return null;
+  const url='https://www.yuantaetfs.com/tradeInfo/pcf/0050';
+  try{
+   const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml'},1),6200,null);
+   const result=html?parseYuantaPcfMembers(html):{date:null,items:[]};
+   const recent=result.date&&constituentDateAgeDays({asOf:result.date})<=3;
+   attempts.push({source:'Yuanta official PCF',url,date:result.date,count:result.items.length,ok:!!recent&&result.items.length>=5});
+   return recent&&result.items.length>=5?{...result,source:'Yuanta official PCF',items:result.items}:null;
+  }catch(e){errs.push('Yuanta PCF '+e.message);return null}
+ })();
  const moneyP=moneyDJConstituents(code).catch(e=>({complete:false,items:[],errors:[e.message]}));
  const pocketP=pocketConstituents(code).catch(e=>({complete:false,items:[],errors:[e.message]}));
 
@@ -1968,7 +1989,7 @@ async function yuantaOfficialConstituents(code){
   const asOf=parseISODate(early.date)||ymdTaipei();
   return saveConstituentLastGood({code,asOf,effectiveDate:asOf,items:early.items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'元大投信官方 StkWeights 即時完整清單',sourceUrl:early.url,historicalAvailable:false,note:`元大官方 StkWeights 即時完整解析 ${early.items.length}/${expected} 檔。`,attempts});
  }
- const [official,visible,money,pocket]=await Promise.all([officialP,visibleP,moneyP,pocketP]);
+ const [official,visible,money,pocket,pcf]=await Promise.all([officialP,visibleP,moneyP,pocketP,pcfP]);
  if(official?.items?.length>=expected){
   const asOf=parseISODate(official.date)||ymdTaipei();
   return saveConstituentLastGood({code,asOf,effectiveDate:asOf,items:official.items.slice(0,expected),complete:true,expected,officialOnly:true,thirdParty:false,source:'元大投信官方 StkWeights 即時完整清單',sourceUrl:official.url,historicalAvailable:false,note:`元大官方 StkWeights 即時完整解析 ${official.items.length}/${expected} 檔。`,attempts});
@@ -1981,11 +2002,11 @@ async function yuantaOfficialConstituents(code){
   full=live.sort((a,b)=>String(b.asOf||'').localeCompare(String(a.asOf||'')))[0];
   source='MoneyDJ＋口袋證券即時完整持股（雙來源一致）';
  }else{
-  for(const cand of live){const proof=overlapProof(visible,cand,.75);if(proof.pass){full=cand;source=`${cand.source}＋元大官方即時前段交叉驗證`;break}}
+  for(const cand of live){const proof=overlapProof(visible,cand,.75),pcfProof=pcf?overlapProof(pcf,cand,.95):null;const dateOk=pcf&&parseISODate(cand.asOf||cand.effectiveDate)===pcf.date;if(proof.pass||(pcfProof?.pass&&dateOk&&pcfProof.visible>=5)){full=cand;source=proof.pass?`${cand.source}＋元大官方即時前段交叉驗證`:`${cand.source}＋元大官方PCF同日成分交叉驗證`;break}}
  }
  if(full){
-  const proof=overlapProof(visible,full,.75);
-  return saveConstituentLastGood({...full,code,complete:true,expected,officialOnly:false,thirdParty:true,source,sourceUrl:full.sourceUrl||META[code].url,note:`本輪未取得元大完整 API；改用目前即時完整持股來源，資料日 ${full.asOf||full.effectiveDate||'未知'}，${live.length>=2&&sameConstituentMembers(live[0],live[1])?'MoneyDJ 與口袋證券完整成分一致':`並與元大官方可見持股交叉驗證 ${proof.hit}/${proof.visible}`}。不使用舊雲端成分快照。`,officialProof:{source:'Yuanta ratio',visible:proof.visible,matched:proof.hit,pass:proof.pass},errors:errs,attempts:[...attempts,...(money?.attempts||[]),...(pocket?.attempts||[])]});
+  const proof=overlapProof(visible,full,.75),pcfProof=pcf?overlapProof(pcf,full,.95):null;
+  return saveConstituentLastGood({...full,code,complete:true,expected,officialOnly:false,thirdParty:true,source,sourceUrl:full.sourceUrl||META[code].url,note:`本輪未取得元大完整 API；改用目前即時完整持股來源，資料日 ${full.asOf||full.effectiveDate||'未知'}，${live.length>=2&&sameConstituentMembers(live[0],live[1])?'MoneyDJ 與口袋證券完整成分一致':`並與元大官方可見持股交叉驗證 ${proof.hit}/${proof.visible}`}。不使用舊雲端成分快照。`,officialProof:proof.pass?{source:'Yuanta ratio',visible:proof.visible,matched:proof.hit,pass:true}:{source:'Yuanta official PCF',visible:pcfProof?.visible||0,matched:pcfProof?.hit||0,pass:!!pcfProof?.pass,date:pcf?.date},errors:errs,attempts:[...attempts,...(money?.attempts||[]),...(pocket?.attempts||[])]});
  }
  const best=[money,pocket,{asOf:visible.date,effectiveDate:visible.date,items:visible.items,source:'元大官方可見持股'}].sort((a,b)=>(b?.items?.length||0)-(a?.items?.length||0))[0];
  return{code,asOf:best?.asOf||best?.effectiveDate||ymdTaipei(),effectiveDate:best?.effectiveDate||best?.asOf||ymdTaipei(),items:best?.items||[],complete:false,expected,officialOnly:false,thirdParty:true,source:'即時成分來源未完整',sourceUrl:best?.sourceUrl||META[code].url,historicalAvailable:false,note:`本輪即時來源僅取得 ${(best?.items||[]).length}/${expected} 檔；不沿用過期完整快照，因此暫不納入正式成分健康分數。`,errors:errs,attempts:[...attempts,...(money?.attempts||[]),...(pocket?.attempts||[])]};
