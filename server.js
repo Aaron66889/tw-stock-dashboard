@@ -3250,7 +3250,7 @@ async function cloudDeleteTrade(id){
   if(old._deleted){const reversal=await reverseAppliedHoldingsTrade(id);return{ok:true,id,reversal}};
   const tomb={...old,id,_deleted:true,_syncUpdatedAt:new Date().toISOString()};delete tomb._syncDirty;delete tomb._cloudUpdatedAt;
   const row={id,code:String(old.code||'DELETED'),entry_at:old.entryAt||new Date().toISOString(),payload:tomb};
-  if(await conditionalCloudTradeWrite(row0,row)){await ensureModelSyncMeta();return{ok:true,id}}
+  if(await conditionalCloudTradeWrite(row0,row)){await ensureModelSyncMeta();const reversal=await reverseAppliedHoldingsTrade(id);return{ok:true,id,reversal}}
  }
  throw Error('交易同時被其他裝置更新，刪除尚未完成，請稍後重試');
 }
