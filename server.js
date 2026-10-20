@@ -1946,8 +1946,15 @@ async function yuantaOfficialConstituents(code){
  })).then(rows=>rows.sort((a,b)=>b.items.length-a.items.length)[0]||null);
  const visibleP=(async()=>{
   try{
-   const html=await deadline(getText(META[code].url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),4200,null),v=html?parseOfficialHoldingText(html):{date:ymdTaipei(),items:[]};
-   attempts.push({source:'Yuanta ratio',ok:v.items.length>0,count:v.items.length,url:META[code].url});return v;
+   const urls=[META[code].url,code==='0050'?'https://yuantaetfs.com/product/detail/0050/ratio':null].filter(Boolean);
+   let v={date:ymdTaipei(),items:[]},usedUrl=urls[0];
+   for(const url of urls){
+    const html=await deadline(getText(url,{'Accept':'text/html,application/xhtml+xml','Referer':'https://www.yuantaetfs.com/'},1),6500,null);
+    const parsed=html?parseOfficialHoldingText(html):{date:ymdTaipei(),items:[]};
+    if(parsed.items.length>v.items.length){v=parsed;usedUrl=url}
+    if(v.items.length>=5)break;
+   }
+   attempts.push({source:'Yuanta ratio',ok:v.items.length>0,count:v.items.length,url:usedUrl});return v;
   }catch(e){errs.push('Yuanta ratio '+e.message);attempts.push({source:'Yuanta ratio',ok:false,count:0,url:META[code].url,error:e.message});return{date:ymdTaipei(),items:[]}}
  })();
  const moneyP=moneyDJConstituents(code).catch(e=>({complete:false,items:[],errors:[e.message]}));
