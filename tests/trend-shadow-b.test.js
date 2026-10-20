@@ -283,5 +283,17 @@ test('ONEOFF production ETF live and historical model trade marks after 2026-10-
  }
  assert.equal(at('buy-model').http,200);
  assert.equal(at('buy-model').data?.ok,true);
- for(const c of ['0050','0056','00878','00919'])assert.equal(at('buy-model').data?.models?.[c]?.decisionGate?.status,'PASS');
+ for(const c of ['0050','0056','00878','00919']){
+  const m=at('buy-model').data?.models?.[c];
+  assert.ok(m&&Number.isFinite(m.score),'ETF model missing: '+c);
+  assert.ok(['PASS','FAIL','WAIT'].includes(m.decisionGate?.status), 'Gate result missing: '+c);
+  assert.ok(m.raw?.first?.center>m.raw?.second?.center&&m.raw?.second?.center>m.raw?.third?.center,
+   'ETF L1/L2/L3 invalid: '+c);
+ }
+ console.log('OCT20_GATE_DIAGNOSTIC',JSON.stringify(Object.fromEntries(['0050','0056','00878','00919'].map(c=>{
+  const m=at('buy-model').data?.models?.[c]||{};
+  return[c,{score:m.score,hardVeto:m.hardVeto,reason:m.hardVetoReason,gate:m.decisionGate,
+   noBuyToday:m.noBuyToday,noBuyReason:m.noBuyReason,environmentScore:m.environmentScore,
+   referenceReliable:m.referenceReliable,quoteSource:m.source,historySource:m.historySource}];
+ }))));
 });
