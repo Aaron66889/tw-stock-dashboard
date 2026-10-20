@@ -208,7 +208,7 @@ function displayModelState(x){
  if(x.activeStatus==='CONFIRMED_IN')return stageText(x.activeStatus,x.activeLayer+1);
  if(confirmed>=0)return stageText(x.statuses[confirmed],confirmed+1);
  const touched=deepestTouchedLayer(x);
- if(touched>=0)return`🟠 第${touched+1}層已觸價／未確認`;
+ if(touched>=0)return`🟠 第${touched+1}層已觸價／止跌未確認${cashSessionIsOpenForNewConfirmation()?'':'（非交易時段）'}`;
  if(x.r?.noBuyToday)return'今日暫無合理買點';
  return stageText(x.activeStatus,x.activeLayer+1);
 }
@@ -222,7 +222,7 @@ function officialExecutionExplanation(x){
  if(s==='CONFIRMED_BELOW')return '暫不可依模型買入：現價 '+fmt(x.px)+' 低於首次確認執行下限 '+fmt(L?.executionLow)+'，須重新評估；原確認紀錄保留';
  if(s==='CONFIRMED_ABOVE')return '暫不可依模型買入：現價 '+fmt(x.px)+' 高於首次確認執行上限 '+fmt(L?.executionHigh)+'，不追價';
  const touched=deepestTouchedLayer(x),T=touched>=0?x.m.layers[touched]:null;
- return touched>=0?'第'+(touched+1)+'層已觸價，但尚未正式確認'+(T?.confirmationReason?'｜'+T.confirmationReason:''):'價格尚未完成正式買點確認';
+ return touched>=0?'第'+(touched+1)+'層已觸價，但仍未符合止跌反彈與正式確認條件'+(cashSessionIsOpenForNewConfirmation()?'':'｜非交易時段，不新增盤後確認')+(T?.confirmationReason?'｜'+T.confirmationReason:''):'價格尚未完成正式買點確認';
 }
 function noBuyWithoutTouch(x){return!!x?.r?.noBuyToday&&deepestTouchedLayer(x)<0}
 function chaseLockText(cal){const st=cal?.lockStatus;return{LOCKED:'已鎖定',CARRY_FORWARD:'沿用前次鎖定',WAIT_HISTORY:'歷史建立中',PRELOCK_CARRY:'08:30前沿用',PRELOCK_PREVIEW:'08:30前預覽',PRELOCK_FALLBACK:'08:30前等待',FALLBACK_LOCKED:'保守值鎖定'}[st]||st||'—'}
@@ -493,6 +493,7 @@ function liveObservationKey(code,r,px){
  }
  return String(r?.quoteObservationKey||[px,r?.reachability?.todayHigh??'',r?.reachability?.todayLow??''].join('|'));
 }
+function cashSessionIsOpenForNewConfirmation(){const d=taipeiNow(),minute=d.getHours()*60+d.getMinutes();return d.getDay()>=1&&d.getDay()<=5&&minute>=540&&minute<810}
 function markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,reason){
  L.confirmed=true;L.invalid=false;L.forming=false;L.gateBlocked=false;L.gateBlockedReason=null;L.triggeredAt=L.triggeredAt||nowIso;
  if(!L.confirmedZone)L.confirmedZone=JSON.parse(JSON.stringify(z));
@@ -554,7 +555,7 @@ function updateOne(code,r){
     L.forming=zoneStable&&inConfirmEnvelope;
     L.confirmationReason=`${rule.name}｜低點後 ${stableSec}/${needSec}秒｜反彈 ${rebound.toFixed(2)}/${reboundNeed.toFixed(2)}｜有效破低容忍 ${breakTol.toFixed(2)}｜確認容許至 ${(z.high+upAllow).toFixed(2)}｜${gatePass?'Gate PASS':`需分數≥${rule.minScore}/Gate PASS`}`;
    }else L.forming=false;
-   if(confirmable)markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
+   if(confirmable&&cashSessionIsOpenForNewConfirmation())markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
    return;
   }
   // L2/L3 no longer depend on two consecutive browser samples or a razor-thin envelope.
@@ -565,7 +566,7 @@ function updateOne(code,r){
    L.forming=zoneStable&&inConfirmEnvelope;
    L.confirmationReason=`${rule.name}｜低點後 ${stableSec}/${needSec}秒｜反彈 ${rebound.toFixed(2)}/${reboundNeed.toFixed(2)}｜有效破低容忍 ${breakTol.toFixed(2)}｜下穿容忍 ${confirmDownAllow.toFixed(2)}｜${gatePass?'Gate PASS':`需分數≥${rule.minScore}/Gate PASS`}`;
   }else L.forming=false;
-  if(confirmable)markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
+  if(confirmable&&cashSessionIsOpenForNewConfirmation())markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
  });
  m.prevEnv=r.environmentScore;m.prevHealth=healthNow;m.lastPrice=px;if(observationKey)m.lastObservationKey=observationKey;m.lastAt=nowIso;STATE.models[code]=m;appendHistory(code,r,m,px)
 }
