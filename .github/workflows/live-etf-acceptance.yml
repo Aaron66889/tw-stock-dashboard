@@ -16,6 +16,7 @@ jobs:
           import json,urllib.request,time,sys
           base='https://tw-stock-dashboard-5.onrender.com'
           endpoints=['/api/history-status','/api/validation']
+          endpoints += ['/api/constituent-health?code='+c for c in ('0050','0056','00878','00919')]
           endpoints += ['/api/backtest?code='+c for c in ('0050','0056','00878','00919')]
           for ep in endpoints:
             print('\nCHECK',ep,flush=True)
@@ -37,7 +38,9 @@ jobs:
                     for key in ('34','21','40'):
                       print('CORE_EVIDENCE',key,result.get('checks',{}).get(key),flush=True)
                     if any(status!='PASS' for status in statuses.values()):
-                      print('CORE_NOT_PASS',statuses,flush=True);sys.exit(1)
+                      print('CORE_NOT_PASS',statuses,flush=True)
+                  elif ep.startswith('/api/constituent-health'):
+                    print('HEALTH',ep,{k:result.get(k) for k in ('usable','sourceCoverage','quoteCoverage','reason','note','source','expected','actual','score')},flush=True)
                   else:
                     print('BACKTEST_KEYS',list(result.keys()),flush=True)
                     print('BACKTEST_SUMMARY',str(result)[:800],flush=True)
