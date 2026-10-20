@@ -1554,7 +1554,33 @@ async function finalizeOfficialHistory(code){
  const result={ok:ded.length>100,ready:validation.backtestReadyPass,code,source,normalizationVersion:code==='0050'?'scale-v2':preAdjusted?'yahoo-adjusted-v1':null,qaWarnings:adj.warnings||[],rows:adj.rows,validation,corporateActions:adj.events,adjustmentAnomalies:adj.anomalies,dividendSource:{complete:!!divs.complete,events:(divs.events||[]).length,errors:divs.errors||[]},fetchedAt:new Date().toISOString()};diskWrite(readyFile(code),result);return result;
 }
 function enqueueHistory(code,front=false){if(!ETF.includes(code))return historyProgress(code);const ready=diskRead(readyFile(code));if(ready?.validation?.backtestReadyPass&&!readyRefreshDue(ready)&&!(code==='0050'&&ready.normalizationVersion!=='scale-v2'))return historyProgress(code);const active=['RUNNING','RETRYING','FINALIZING','QUEUED'].includes(HISTORY_JOBS.get(code)?.status);if(!WARM_QUEUE.includes(code)&&!active){front?WARM_QUEUE.unshift(code):WARM_QUEUE.push(code);HISTORY_JOBS.set(code,{status:'QUEUED',startedAt:new Date().toISOString(),errors:[]});pumpWarmQueue()}return historyProgress(code)}
-async function pumpWarmQueue(){if(WARM_ACTIVE)return;WARM_ACTIVE=true;while(WARM_QUEUE.length){const code=WARM_QUEUE.shift();try{await warmHistoryWorker(code)}catch(e){const j=HISTORY_JOBS.get(code)||{};j.status='ERROR';j.error=e.message;HISTORY_JOBS.set(code,j)}}WARM_ACTIVE=false}
+async function pumpWarmQueue(){
+ if(WARM_ACTIVE)return;
+ WARM_ACTIVE=true;
+ let anyReady=false;
+ try{
+  while(WARM_QUEUE.length){
+   const code=WARM_QUEUE.shift(),before=diskRead(readyFile(code));
+   try{
+    const result=await warmHistoryWorker(code);
+    if(result?.validation?.backtestReadyPass&&!before?.validation?.backtestReadyPass)anyReady=true;
+   }catch(e){
+    const j=HISTORY_JOBS.get(code)||{};j.status='ERROR';j.error=e.message;HISTORY_JOBS.set(code,j);
+   }
+  }
+ }finally{
+  WARM_ACTIVE=false;
+ }
+ // One refresh after the completed warm-up batch; do not recalculate on each ETF.
+ // The validation summary must reflect the model actually recomputed from ready data.
+ if(anyReady){
+  setTimeout(()=>{
+   if(RUNTIME.refreshing){setTimeout(()=>{cache.delete('buymodel');refreshRuntime().catch(()=>{})},15000);return}
+   cache.delete('buymodel');
+   refreshRuntime().catch(()=>{});
+  },2500);
+ }
+}
 
 async function warmHistoryWorker(code){
  const months=monthKeys(META[code].listed),saved=diskRead(historyFile(code))||{months:{}},byMonth=validSavedMonths(code,saved.months||{});let priorReady=diskRead(readyFile(code));if(code==='0050'&&priorReady?.normalizationVersion!=='scale-v2')priorReady=null;if(code==='0056'&&priorReady?.normalizationVersion!=='yahoo-adjusted-v1')priorReady=null;if(['00878','00919'].includes(code)&&priorReady?.normalizationVersion!=='yahoo-adjusted-v1')priorReady=null;if(priorReady?.validation?.backtestReadyPass&&readyRefreshDue(priorReady))delete byMonth[ymdTaipei().slice(0,7)];
