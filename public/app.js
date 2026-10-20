@@ -1306,6 +1306,17 @@ async function syncModelTrades(force=false){
   let d=await modelSyncFetch('/api/model-trades');
   if(!Array.isArray(d.trades)||!Array.isArray(d.deletedIds))throw Error('雲端交易格式不完整，本機紀錄已保留');
   MODEL_SYNC.ready=true;MODEL_SYNC.knownUnlocked=true;MODEL_SYNC.status='checking';MODEL_SYNC.message='正在合併交易紀錄';saveJSON('v124_model_sync_known_unlocked',true);
+  // Show verified cloud trades immediately. Pending local edits keep precedence;
+  // tombstones must remain authoritative, and this never touches holdings.
+  {
+   const pendingDeletes=new Set(MODEL_PENDING_DELETES),cloudDeleted=new Set(d.deletedIds||[]);
+   const merged=new Map((d.trades||[]).filter(t=>t?.id&&!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id)).map(t=>[t.id,{...t,_syncDirty:false}]));
+   for(const t of MODEL_TRADES)if(t?.id&&!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id)&&(!merged.has(t.id)||t._syncDirty))merged.set(t.id,t);
+   MODEL_TRADES=[...merged.values()];
+   modelSyncSaveLocal();
+   MODEL_SYNC.message='已讀取雲端交易；正在補傳本機差異';
+   renderModelTrades();
+  }
   if(!d.initialized&&MODEL_TRADES.length){
    MODEL_TRADES.forEach(markModelTradeDirty);modelSyncSaveLocal();
    await syncDirtyModelTrades();
