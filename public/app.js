@@ -1152,7 +1152,7 @@ function modelSyncBar(){
 function escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
 async function flushPendingHoldingsTrades(){
- if(HOLDINGS_OP_BUSY||HOLDINGS_PUSH_BUSY||!MODEL_SYNC.ready||!HOLDINGS_PENDING_TRADES.length)return;
+ if(HOLDINGS_OP_BUSY||HOLDINGS_PUSH_BUSY||!MODEL_SYNC.ready||MODEL_SYNC.status!=='ready'||!HOLDINGS_PENDING_TRADES.length)return;
  HOLDINGS_OP_BUSY=true;
  try{
   while(HOLDINGS_PENDING_TRADES.length&&MODEL_SYNC.ready){
@@ -1179,7 +1179,8 @@ async function syncHoldingsCloud(force=false){
   await flushPendingHoldingsTrades();
   if(HOLDINGS_PENDING_TRADES.length){
    HOLDINGS_SYNC.ready=false;
-   // Preserve the actual apply-trade error so failed operations are diagnosable.
+   // Trade imports must be acknowledged before attempting holdings increments.
+   if(MODEL_SYNC.status!=='ready')HOLDINGS_SYNC.message='交易明細尚未完成雲端校對，持股加股已暫停；待交易同步成功再重試';
    return;
   }
   if(HOLDINGS_MANUAL_DIRTY){
