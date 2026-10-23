@@ -3522,9 +3522,17 @@ async function cloudApplyHoldingsTrade(trade){
   const rows=await cloudRowsById(HOLDINGS_SYNC_ID),r=rows[0],p=r?.payload&&typeof r.payload==='object'?r.payload:null;
   if(!p)throw Error('雲端持股尚未初始化；請先在正確裝置上傳持股後再同步交易');
   const applied=Array.isArray(p.appliedTradeIds)?p.appliedTradeIds:[];
+  // Fail closed: an operation ID must point to a persisted, non-deleted trade.
+  // Previously orphan operations could increment shares without any trade ledger row.
+  const tradeRow=(await cloudRowsById(id))[0],savedTrade=tradeRow?.payload;
+  if(!savedTrade||savedTrade._deleted||savedTrade.id!==id||
+     String(savedTrade.code||'')!==code||
+     Number(savedTrade.shares)!==shares||
+     !Number.isFinite(Number(savedTrade.entryPrice))||
+     Math.abs(Number(savedTrade.entryPrice)-price)>0.000001){
+   throw Error('成交持股同步已暫停：缺少相符且有效的雲端交易明細，未增加股數；請先完成交易紀錄同步');
+  }
   if(applied.includes(id))return{ok:true,applied:true,alreadyApplied:true,tradeId:id,holdings:p.holdings||[]};
-  const tradeRow=(await cloudRowsById(id))[0];
-  if(tradeRow?.payload?._deleted)throw Error('交易已刪除，禁止重複增加持股');
   const clean=cleanHoldingsInput(p.holdings||[]);
   const h=clean.find(x=>x.t===code);
   if(h){const prev=Number(h.s)||0,newShares=prev+shares;h.c=(prev*Number(h.c||0)+shares*price)/newShares;h.s=newShares}
