@@ -56,10 +56,19 @@ function normalizeHoldingRecord(x){
   dividendReceived:has?raw:(Number.isFinite(seed)?seed:0),
   dividendAsOf:String(x?.dividendAsOf||(Number.isFinite(seed)?DIVIDEND_SEED_ASOF:''))};
 }
+// Reprice only FUTURE dividend estimates from the shares currently shown in this
+// browser. Never reprice locked ex-date entitlements or dividends already received.
+function localDividendForecast(source,shares){
+ if(!source||!Number.isSafeInteger(Number(shares))||Number(shares)<0)return source||null;
+ const perShare=Number(source.amount),exDate=String(source.exDate||'');
+ if(!(perShare>0)||!Number.isFinite(perShare)||!/^\\d{4}-\\d{2}-\\d{2}$/.test(exDate)||exDate<=dayKey())return null;
+ return{...source,sharesEstimate:Number(shares),cashEstimate:Math.round(Number(shares)*perShare),sharesBasis:'displayed-holdings'};
+}
 function dividendStats(code,holding){
  const auto=DIVIDEND_AUTO?.byCode?.[code];
  if(auto&&Number.isFinite(Number(auto.received))){
-  return{received:Number(auto.received)||0,pending:Number(auto.pending)||0,items:auto.locks||[],lastPaid:auto.lastPaid||null,nextPending:auto.nextPending||null,upcoming:auto.upcoming||null,estimatedUpcoming:auto.estimatedUpcoming||null,nextForecast:auto.nextForecast||null,forecastSharesAsOf:auto.forecastSharesAsOf||null,version:auto.version||'div-auto-v2',asOf:auto.lastPaid?.payDate||auto.baseAsOf||DIVIDEND_SEED_ASOF,automatic:true,snapshotDay:auto.snapshotDay||DIVIDEND_AUTO.snapshotDay||null};
+  const shares=Number(holding?.s),currentShares=Number.isSafeInteger(shares)&&shares>=0?shares:null;
+  return{received:Number(auto.received)||0,pending:Number(auto.pending)||0,items:auto.locks||[],lastPaid:auto.lastPaid||null,nextPending:auto.nextPending||null,upcoming:localDividendForecast(auto.upcoming,currentShares),estimatedUpcoming:localDividendForecast(auto.estimatedUpcoming,currentShares),nextForecast:localDividendForecast(auto.nextForecast,currentShares),forecastSharesAsOf:auto.forecastSharesAsOf||null,version:auto.version||'div-auto-v2',asOf:auto.lastPaid?.payDate||auto.baseAsOf||DIVIDEND_SEED_ASOF,automatic:true,snapshotDay:auto.snapshotDay||DIVIDEND_AUTO.snapshotDay||null};
  }
  // Safe fallback while cloud/TWSE is loading: reconstructed seed + the one pre-auto 00919 entitlement.
  const today=dayKey(),seed=Number(DIVIDEND_SEED[code])||0,h=holding||H?.find?.(x=>x.t===code),raw=Number(h?.dividendReceived);
@@ -855,7 +864,7 @@ function dividendTimelineMarkup(code,ds){
  const locked=ds.nextPending;
  const date=x=>escapeHTML(String(x||'—').replaceAll('-','/'));
  const fStatus=fc?.estimated?'預估公告（尚未確認）':'正式公告（仍未除息）';
- const estimate=valid?'<b>'+money0(fc.cashEstimate)+'元</b><small>'+escapeHTML(fStatus)+'｜'+fmt(fc.amount)+'元／股 × '+money0(fc.sharesEstimate)+'股｜'+date(fc.exDate)+' 除息'+(fc.confirmDate?'｜'+date(fc.confirmDate)+'正式確認':'')+(fc.payDate?'｜'+date(fc.payDate)+'發放':'')+'<br>依雲端最新持股試算，除息前增減股數會改變金額；未計入已領股息。</small>':'<b>等待公告</b><small>尚無可核對的下次配息金額或除息日期，不以舊金額假定未來配息。</small>';
+ const estimate=valid?'<b>'+money0(fc.cashEstimate)+'元</b><small>'+escapeHTML(fStatus)+'｜'+fmt(fc.amount)+'元／股 × '+money0(fc.sharesEstimate)+'股｜'+date(fc.exDate)+' 除息'+(fc.confirmDate?'｜'+date(fc.confirmDate)+'正式確認':'')+(fc.payDate?'｜'+date(fc.payDate)+'發放':'')+'<br>依目前畫面持有股數即時計算；尚未同步的股數須以雲端校對為準。已除息及已領股息不會因後續加碼而增加。</small>':'<b>等待公告</b><small>尚無可核對的下次配息金額或除息日期，不以舊金額假定未來配息。</small>';
  return '<div class="grid4" style="margin-top:10px"><div class="box"><span class="k">已領股息（計入報酬）</span><b class="upc">'+money0(ds.received)+'元</b><small>新增股數不追領過去的股息。</small></div>' +
  '<div class="box"><span class="k">已除息待入帳（未計入報酬）</span><b>'+money0(ds.pending)+'元</b><small>'+(locked?money0(locked.shares)+'股 × '+fmt(locked.amount)+'元｜'+date(locked.payDate)+'發放':'沒有已鎖定的待入帳股息')+'</small></div>' +
  '<div class="box" style="grid-column:span 2"><span class="k">下一次配息預估（未計入報酬）</span>'+estimate+'</div></div>';
