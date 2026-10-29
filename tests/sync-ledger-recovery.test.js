@@ -40,9 +40,9 @@ test('pending purchases upload before historical trade-performance revisions',as
   modelTradeClean:t=>{const x={...t};delete x._syncDirty;return x;},modelSyncSaveLocal:()=>{}};
  const run=new Function('d','const {MODEL_TRADES,MODEL_PENDING_DELETES,MODEL_SYNC,HOLDINGS_PENDING_TRADES,modelSyncFetch,modelTradeClean,modelSyncSaveLocal}=d;'+source+';return syncDirtyModelTrades')(deps);
  await run();
- assert.equal(uploaded.length,8);
+ assert.equal(uploaded.length,3);
  for(const id of incoming)assert.ok(uploaded.includes(id));
- assert.equal(trades.filter(t=>t._syncDirty).length,17);
+ assert.equal(trades.filter(t=>t._syncDirty).length,22);
 });
 
 test('new holdings operation requires persisted, exact matching trade',async()=>{
@@ -64,9 +64,60 @@ test('overlapping sync requests queue a new pass',async()=>{
  const source=section(client,'async function syncAllCloud(force=false){','\n\nasync function connectModelSync(');
  let calls=0,holds=0,release;
  const block=new Promise(resolve=>{release=resolve;});
- const ctx={document:{visibilityState:'visible'},SYNC_ALL_BUSY:false,SYNC_ALL_RERUN:false,SYNC_ALL_FORCE:false,MODEL_SYNC:{ready:true},
-  syncModelTrades:async()=>{calls++;if(calls===1)await block;},syncHoldingsCloud:async()=>{holds++;},loadDividendAuto:async()=>{},renderModelTrades:()=>{},setTimeout:cb=>cb()};
+ const ctx={document:{visibilityState:'visible'},SYNC_ALL_BUSY:false,SYNC_ALL_RERUN:false,SYNC_ALL_FORCE:false,MODEL_SYNC:{ready:true,status:'ready'},API_TRAFFIC:{cooldownUntil:0},HOLDINGS_PENDING_TRADES:[],
+  commitPendingPurchasesFirst:async()=>{},syncModelTrades:async()=>{calls++;if(calls===1)await block;},syncHoldingsCloud:async()=>{holds++;},loadDividendAuto:async()=>{},renderModelTrades:()=>{},setTimeout:cb=>cb()};
  const run=new Function('ctx','with(ctx){'+source+';return syncAllCloud;}')(ctx);
  const first=run(false),second=run(true);release();await Promise.all([first,second]);
  assert.equal(calls,2);assert.equal(holds,2);
+});
+
+test('recovery commits at most two new purchases directly before background sync',async()=>{
+ const source=section(client,'async function commitPendingPurchasesFirst(){','\nasync function flushPendingHoldingsTrades(){');
+ const pending=[
+  {id:'mt_1793000000001_buy1',code:'0050',shares:20,entryPrice:108},
+  {id:'mt_1793000000002_buy2',code:'00878',shares:20,entryPrice:35.28},
+  {id:'mt_1793000000003_buy3',code:'0056',shares:50,entryPrice:56.30}
+ ];
+ const originals=pending.map(x=>({...x,_syncDirty:true}));
+ let calls=[],durable=0,revisions=0;
+ const deps={HOLDINGS_OP_BUSY:false,HOLDINGS_PUSH_BUSY:false,HOLDINGS_PENDING_TRADES:pending,
+  MODEL_SYNC:{knownUnlocked:true,ready:false,status:'degraded'},API_TRAFFIC:{cooldownUntil:0},
+  MODEL_TRADES:originals,HOLDINGS_SYNC:{},HOLDINGS_REMOTE_REV:0,
+  modelTradeClean:t=>{const x={...t};delete x._syncDirty;return x;},
+  modelSyncFetch:async(url,opts)=>{assert.equal(url,'/api/model-trades/commit-purchase');const t=JSON.parse(opts.body).trade;calls.push(t.id);return {ok:true,tradePersisted:true,applied:true,tradeId:t.id};},
+  persistPendingHoldingsOps:()=>{durable++;},modelSyncSaveLocal:()=>{revisions++;},renderModelTrades:()=>{}};
+ const run=new Function('d','with(d){'+source+';return commitPendingPurchasesFirst;}')(deps);
+ await run();
+ assert.equal(calls.length,2);assert.equal(deps.HOLDINGS_PENDING_TRADES.length,1);
+ assert.equal(durable,2);assert.equal(revisions,2);
+ assert.equal(originals.filter(t=>t._syncDirty).length,1);
+ await run();assert.equal(calls.length,3);
+ assert.equal(deps.HOLDINGS_PENDING_TRADES.length,0);
+ assert.equal(deps.HOLDINGS_REMOTE_REV,3);
+});
+
+test('429 or failed purchase response never clears pending holdings or transaction dirty flag',async()=>{
+ const source=section(client,'async function commitPendingPurchasesFirst(){','\nasync function flushPendingHoldingsTrades(){');
+ const op={id:'mt_1793000000001_buy1',code:'0050',shares:20,entryPrice:108};
+ const trade={...op,_syncDirty:true};
+ let durable=0;
+ const deps={HOLDINGS_OP_BUSY:false,HOLDINGS_PUSH_BUSY:false,HOLDINGS_PENDING_TRADES:[op],
+  MODEL_SYNC:{knownUnlocked:true,ready:false,status:'degraded'},API_TRAFFIC:{cooldownUntil:0},
+  MODEL_TRADES:[trade],HOLDINGS_SYNC:{},HOLDINGS_REMOTE_REV:0,
+  modelTradeClean:t=>{const x={...t};delete x._syncDirty;return x;},
+  modelSyncFetch:async()=>{const e=Error('API限流');e.status=429;throw e;},
+  persistPendingHoldingsOps:()=>{durable++;},modelSyncSaveLocal:()=>{},renderModelTrades:()=>{}};
+ const run=new Function('d','with(d){'+source+';return commitPendingPurchasesFirst;}')(deps);
+ await run();
+ assert.equal(deps.HOLDINGS_PENDING_TRADES.length,1);
+ assert.equal(trade._syncDirty,true);assert.equal(durable,0);assert.equal(deps.HOLDINGS_REMOTE_REV,0);
+ assert.match(deps.HOLDINGS_SYNC.message,/已保留本機持股/);
+});
+
+test('deletion reversal is not referenced from ordinary upsert and builds match',()=>{
+ const upsert=section(server,'async function cloudUpsertTrade(input){','\nasync function cloudUpsertTradesBatch(');
+ assert.equal(upsert.includes('reverseAppliedHoldingsTrade('),false);
+ assert.ok(server.includes("'/api/model-trades/commit-purchase'"));
+ const serverBuild=server.match(/const BUILD='([^']+)'/)?.[1],clientBuild=client.match(/CLIENT_BUILD='([^']+)'/)?.[1];
+ assert.equal(serverBuild,clientBuild);
 });
