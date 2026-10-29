@@ -19,7 +19,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 const ETF=['0050','0056','00878','00919'],NAME={'0050':'元大台灣50','0056':'元大高股息','00878':'國泰永續高股息','00919':'群益台灣精選高息'};
-const CLIENT_BUILD='16.8.101-SYNC-RELIABILITY',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
+const CLIENT_BUILD='16.8.102-LEDGER-COMMIT',CONFIRM_RULE_VERSION='layer-confirm-v8-all-layer-hysteresis',SHADOW_CONFIRM_VERSION='shadow-confirm-v2-live-observation';
 const TRADE_RETURN_REQUIRED='cash-entitlement-total-return-v2';
 const hasNumber=n=>n!==null&&n!==undefined&&n!==''&&Number.isFinite(Number(n));
 const $=id=>document.getElementById(id),fmt=n=>hasNumber(n)?Number(n).toFixed(2):'—',pct=n=>hasNumber(n)?(Number(n)>=0?'+':'')+Number(n).toFixed(2)+'%':'—',cls=n=>Number(n)>0?'upc':Number(n)<0?'downc':'';
@@ -1161,6 +1161,43 @@ function modelSyncBar(){
 }
 function escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
+// New buys do not wait for a large queue of historical perf uploads.
+// The server persists each trade before applying its idempotent holdings increment.
+async function commitPendingPurchasesFirst(){
+ if(HOLDINGS_OP_BUSY||HOLDINGS_PUSH_BUSY||!HOLDINGS_PENDING_TRADES.length||
+    (!MODEL_SYNC.knownUnlocked&&!MODEL_SYNC.ready))return;
+ if(Date.now()<API_TRAFFIC.cooldownUntil)return;
+ HOLDINGS_OP_BUSY=true;
+ try{
+  let completed=0;
+  // Keep the work bounded to avoid cloud API throttling. Remaining ops are durable.
+  while(HOLDINGS_PENDING_TRADES.length&&completed<2&&Date.now()>=API_TRAFFIC.cooldownUntil){
+   const op=HOLDINGS_PENDING_TRADES[0],trade=MODEL_TRADES.find(t=>t?.id===op.id);
+   if(!trade||trade._deleted)throw Error('待同步成交缺少本機交易明細：'+op.id+'；已停止加股');
+   const sent=modelTradeClean(trade),fingerprint=JSON.stringify(sent);
+   if(String(sent.code)!==String(op.code)||Number(sent.shares)!==Number(op.shares)||
+      Number(sent.entryPrice)!==Number(op.entryPrice))throw Error('交易與持股佇列內容不一致，已停止加股：'+op.id);
+   const d=await modelSyncFetch('/api/model-trades/commit-purchase',{
+    method:'POST',body:JSON.stringify({trade:sent}),timeoutMs:45000
+   });
+   if(!d.tradePersisted||!d.applied||d.tradeId!==op.id)throw Error('伺服器未確認交易明細與持股共同入帳');
+   // Keep newer local edits dirty; the cloud purchase itself was durably committed.
+   if(JSON.stringify(modelTradeClean(trade))===fingerprint)trade._syncDirty=false;
+   HOLDINGS_PENDING_TRADES=HOLDINGS_PENDING_TRADES.filter(x=>x.id!==op.id);
+   persistPendingHoldingsOps();modelSyncSaveLocal();
+   HOLDINGS_REMOTE_REV++;completed++;
+  }
+  HOLDINGS_SYNC.ready=false;
+  HOLDINGS_SYNC.message=HOLDINGS_PENDING_TRADES.length
+   ? '新成交已獨立補傳，剩餘 '+HOLDINGS_PENDING_TRADES.length+' 筆待確認；本機持股保留'
+   : '新成交明細與雲端加股已逐筆確認；正在核對持股';
+ }catch(e){
+  HOLDINGS_SYNC.ready=false;
+  if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.status='locked'}
+  HOLDINGS_SYNC.message='新成交補傳未完成，已保留本機持股與交易ID：'+(e.message||'連線異常');
+ }finally{HOLDINGS_OP_BUSY=false;renderModelTrades()}
+}
+
 async function flushPendingHoldingsTrades(){
  if(HOLDINGS_OP_BUSY||HOLDINGS_PUSH_BUSY||!MODEL_SYNC.ready||MODEL_SYNC.status!=='ready'||!HOLDINGS_PENDING_TRADES.length)return;
  HOLDINGS_OP_BUSY=true;
@@ -1284,26 +1321,33 @@ async function pushHoldingsCloud(){
 }
 async function syncAllCloud(force=false){
  if(document.visibilityState==='hidden'&&!force)return;
- // Multiple calls (trade save, performance refresh, timer) must not race.
- // A save arriving during a running sync requests another pass rather than being dropped.
  if(SYNC_ALL_BUSY){SYNC_ALL_RERUN=true;SYNC_ALL_FORCE=SYNC_ALL_FORCE||force;return}
  SYNC_ALL_BUSY=true;
  try{
   let nextForce=force,passes=0;
   do{
    SYNC_ALL_RERUN=false;SYNC_ALL_FORCE=false;
-   await syncModelTrades(nextForce);
-   if(MODEL_SYNC.ready){await syncHoldingsCloud(nextForce);await loadDividendAuto(nextForce)}
+   // A 429 cooldown is global: don't burn requests on historical or dividend reads.
+   if(Date.now()>=API_TRAFFIC.cooldownUntil){
+    await commitPendingPurchasesFirst();
+    if(Date.now()>=API_TRAFFIC.cooldownUntil){
+     await syncModelTrades(nextForce);
+     if(MODEL_SYNC.status==='ready'&&Date.now()>=API_TRAFFIC.cooldownUntil){
+      await syncHoldingsCloud(nextForce);
+      if(!HOLDINGS_PENDING_TRADES.length&&Date.now()>=API_TRAFFIC.cooldownUntil)await loadDividendAuto(nextForce);
+     }
+    }
+   }
    nextForce=SYNC_ALL_FORCE;
    passes++;
-  }while(SYNC_ALL_RERUN&&passes<3);
+  }while(SYNC_ALL_RERUN&&passes<3&&Date.now()>=API_TRAFFIC.cooldownUntil);
  }finally{
   SYNC_ALL_BUSY=false;
   renderModelTrades();
   if(SYNC_ALL_RERUN){
    const rerunForce=SYNC_ALL_FORCE;
    SYNC_ALL_RERUN=false;SYNC_ALL_FORCE=false;
-   setTimeout(()=>syncAllCloud(rerunForce),1500);
+   setTimeout(()=>syncAllCloud(rerunForce),Math.max(1500,API_TRAFFIC.cooldownUntil-Date.now()+1000));
   }
  }
 }
@@ -1329,7 +1373,7 @@ async function syncDirtyModelTrades(){
  const dirty=MODEL_TRADES.filter(t=>t?._syncDirty)
   .sort((a,b)=>Number(purchaseIds.has(b.id))-Number(purchaseIds.has(a.id))||
     (Date.parse(b.entryAt||b.entryDate||0)-Date.parse(a.entryAt||a.entryDate||0)))
-  .slice(0,8).map(modelTradeClean);
+  .slice(0,3).map(modelTradeClean);
  const sent=new Map(dirty.map(t=>[t.id,JSON.stringify(t)]));
  if(dirty.length)await modelSyncFetch('/api/model-trades/import',{method:'POST',body:JSON.stringify({trades:dirty})});
  // A performance refresh or user edit during upload is a new unsent revision.
@@ -1481,7 +1525,7 @@ async function refreshModelTradePerformance(){
       // Quotes can refresh every minute locally, but do not re-upload all historical
       // trades every minute. Keep pending purchase uploads ahead of performance.
       const markAt=Date.parse(t._lastPerfCloudMarkAt||'')||0;
-      if(!t._syncDirty&&Date.now()-markAt>=10*60*1000){
+      if(!t._syncDirty&&Date.now()-markAt>=30*60*1000){
        t._lastPerfCloudMarkAt=new Date().toISOString();
        markModelTradeDirty(t);
       }
