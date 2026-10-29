@@ -85,6 +85,7 @@ function money0(n){return hasNumber(n)?Math.round(Number(n)).toLocaleString():'�
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),SHADOW_STATE=loadJSON('v124_shadow_state',{day:null,models:{}}),SHADOW_LOG=loadJSON('v124_shadow_replay',[]),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null,knownUnlocked:!!loadJSON('v124_model_sync_known_unlocked',false)};
 let SYNC_SERVER_VERIFIED=false;
+let SYNC_ALL_BUSY=false,SYNC_ALL_RERUN=false,SYNC_ALL_FORCE=false;
 // R3.81: persisted, trade-ID keyed holdings operations. A network retry is safe because
 // the backend applies each trade ID once (including across phones / computers).
 const HOLDINGS_OP_KEY='v124_holdings_pending_trade_ops_r3802';
@@ -1283,11 +1284,28 @@ async function pushHoldingsCloud(){
 }
 async function syncAllCloud(force=false){
  if(document.visibilityState==='hidden'&&!force)return;
+ // Multiple calls (trade save, performance refresh, timer) must not race.
+ // A save arriving during a running sync requests another pass rather than being dropped.
+ if(SYNC_ALL_BUSY){SYNC_ALL_RERUN=true;SYNC_ALL_FORCE=SYNC_ALL_FORCE||force;return}
+ SYNC_ALL_BUSY=true;
  try{
-  await syncModelTrades(force);
-  if(MODEL_SYNC.ready){await syncHoldingsCloud(force);await loadDividendAuto(force)}
+  let nextForce=force,passes=0;
+  do{
+   SYNC_ALL_RERUN=false;SYNC_ALL_FORCE=false;
+   await syncModelTrades(nextForce);
+   if(MODEL_SYNC.ready){await syncHoldingsCloud(nextForce);await loadDividendAuto(nextForce)}
+   nextForce=SYNC_ALL_FORCE;
+   passes++;
+  }while(SYNC_ALL_RERUN&&passes<3);
+ }finally{
+  SYNC_ALL_BUSY=false;
   renderModelTrades();
- }finally{renderModelTrades()}
+  if(SYNC_ALL_RERUN){
+   const rerunForce=SYNC_ALL_FORCE;
+   SYNC_ALL_RERUN=false;SYNC_ALL_FORCE=false;
+   setTimeout(()=>syncAllCloud(rerunForce),1500);
+  }
+ }
 }
 
 async function connectModelSync(){
@@ -1305,7 +1323,14 @@ async function syncDirtyModelTrades(){
   try{await modelSyncFetch('/api/model-trades/'+encodeURIComponent(id),{method:'DELETE'});MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(x=>x!==id)}
   catch(e){if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.status='locked'};throw e}
  }
- const dirty=MODEL_TRADES.filter(t=>t._syncDirty).map(modelTradeClean),sent=new Map(dirty.map(t=>[t.id,JSON.stringify(t)]));
+ // Persist purchases first; historical performance refreshes must never block a new fill.
+ // Bounded batches also avoid oversized requests and acknowledge each completed revision.
+ const purchaseIds=new Set(HOLDINGS_PENDING_TRADES.map(op=>op.id));
+ const dirty=MODEL_TRADES.filter(t=>t?._syncDirty)
+  .sort((a,b)=>Number(purchaseIds.has(b.id))-Number(purchaseIds.has(a.id))||
+    (Date.parse(b.entryAt||b.entryDate||0)-Date.parse(a.entryAt||a.entryDate||0)))
+  .slice(0,8).map(modelTradeClean);
+ const sent=new Map(dirty.map(t=>[t.id,JSON.stringify(t)]));
  if(dirty.length)await modelSyncFetch('/api/model-trades/import',{method:'POST',body:JSON.stringify({trades:dirty})});
  // A performance refresh or user edit during upload is a new unsent revision.
  for(const t of MODEL_TRADES)if(sent.get(t.id)===JSON.stringify(modelTradeClean(t)))t._syncDirty=false;
@@ -1452,7 +1477,15 @@ async function refreshModelTradePerformance(){
       // unable to obtain a current price; the UI's mark will still require
       // separately verified market freshness.
       if(!hasNumber(p.currentPrice)&&hasNumber(prev.currentPrice))p.currentPrice=prev.currentPrice;
-      t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);markModelTradeDirty(t);changed=true;
+      t.perf={...prev,...p};normalizeModelTradeTotalReturn(t);
+      // Quotes can refresh every minute locally, but do not re-upload all historical
+      // trades every minute. Keep pending purchase uploads ahead of performance.
+      const markAt=Date.parse(t._lastPerfCloudMarkAt||'')||0;
+      if(!t._syncDirty&&Date.now()-markAt>=10*60*1000){
+       t._lastPerfCloudMarkAt=new Date().toISOString();
+       markModelTradeDirty(t);
+      }
+      changed=true;
      }
     }catch(e){if(e?.status===429){interrupted=true;break}}
     completed++;
@@ -1460,7 +1493,7 @@ async function refreshModelTradePerformance(){
    }
   }
   await Promise.all(Array.from({length:Math.min(3,jobs.length)},()=>worker()));
-  if(changed){modelSyncSaveLocal();renderModelTrades();await syncModelTrades(false)}
+  if(changed){modelSyncSaveLocal();renderModelTrades();void syncAllCloud(false)}
  }finally{TRADE_PERFORMANCE_REFRESH_ACTIVE=false}
 }
 
