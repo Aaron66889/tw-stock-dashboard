@@ -18,7 +18,7 @@ let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 const PORT=process.env.PORT||3000;
 const PUBLIC=path.join(__dirname,'public');
 const VERSION='V12.4';
-const BUILD='16.8.101-SYNC-RELIABILITY';
+const BUILD='16.8.102-LEDGER-COMMIT';
 const TRADE_RETURN_VERSION='cash-entitlement-total-return-v2';
 const DATA_DIR=path.join(__dirname,'data'); if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/+$/,'');
@@ -3666,6 +3666,24 @@ const server=http.createServer(async(req,res)=>{
   }catch(e){return send(res,400,{ok:false,error:e.message})}
  }
 
+ // Commit one purchase as a recoverable server-side operation. The trade row must
+ // exist before any holdings increment, and the holdings ledger deduplicates by trade ID.
+ // A lost response is safe to replay; an old performance-upload queue cannot starve fills.
+ if(u.pathname==='/api/model-trades/commit-purchase'&&req.method==='POST'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'交易雲端同步尚未完成後端設定'});
+  if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'交易雲端同步尚未解鎖'});
+  try{
+   const body=await readJSONBody(req),trade=body.trade;
+   if(!trade||typeof trade!=='object'||trade._deleted||!ETF.includes(String(trade.code||''))||
+      !Number.isSafeInteger(Number(trade.shares))||Number(trade.shares)<=0||
+      !Number.isFinite(Number(trade.entryPrice))||Number(trade.entryPrice)<=0)
+    throw Error('交易資料不完整，不增加持股');
+   const saved=await cloudUpsertTrade(trade);
+   if(saved.deleted)throw Error('雲端已刪除這筆交易，不得重新計入持股');
+   const applied=await cloudApplyHoldingsTrade(trade);
+   return send(res,200,{...applied,build:BUILD,tradePersisted:true});
+  }catch(e){return send(res,400,{ok:false,error:e.message||String(e)})}
+ }
  if(u.pathname==='/api/holdings-sync/apply-trade'&&req.method==='POST'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'持股雲端同步尚未完成後端設定'});
   if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'持股雲端同步尚未解鎖'});
