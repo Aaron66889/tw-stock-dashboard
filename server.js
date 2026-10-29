@@ -3296,7 +3296,7 @@ async function cloudUpsertTrade(input){
 async function cloudUpsertTradesBatch(inputs){
  const trades=(Array.isArray(inputs)?inputs:[]).filter(Boolean);if(!trades.length)return{ok:true,count:0,written:0};
  for(const t of trades)if(!/^mt_[a-zA-Z0-9_-]{5,120}$/.test(String(t?.id||'')))throw Error('invalid trade');
- const results=await mapLimit(trades,4,cloudUpsertTrade);
+ const results=await mapLimit(trades,2,cloudUpsertTrade);
  return{ok:true,count:trades.length,written:results.filter(x=>!x.keptCloud&&!x.deleted).length};
 }
 async function cloudDeleteTrade(id){
@@ -3682,7 +3682,7 @@ const server=http.createServer(async(req,res)=>{
    if(saved.deleted)throw Error('雲端已刪除這筆交易，不得重新計入持股');
    const applied=await cloudApplyHoldingsTrade(trade);
    return send(res,200,{...applied,build:BUILD,tradePersisted:true});
-  }catch(e){return send(res,400,{ok:false,error:e.message||String(e)})}
+  }catch(e){const msg=e.message||String(e);return send(res,/HTTP 429/.test(msg)?429:400,{ok:false,error:msg})}
  }
  if(u.pathname==='/api/holdings-sync/apply-trade'&&req.method==='POST'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'持股雲端同步尚未完成後端設定'});
@@ -3718,7 +3718,7 @@ const server=http.createServer(async(req,res)=>{
    const body=await readJSONBody(req),trades=Array.isArray(body.trades)?body.trades:[];
    if(trades.length>500)throw Error('too many trades');
    return send(res,200,await cloudUpsertTradesBatch(trades));
-  }catch(e){return send(res,400,{ok:false,error:e.message})}
+  }catch(e){return send(res,/HTTP 429/.test(String(e.message||''))?429:400,{ok:false,error:e.message})}
  }
  if(u.pathname.startsWith('/api/model-trades/')&&req.method==='DELETE'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'模型雲端同步尚未完成後端設定'});
