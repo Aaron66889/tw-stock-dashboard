@@ -3289,7 +3289,7 @@ async function cloudUpsertTrade(input){
   }
   merged._syncUpdatedAt=merged._syncUpdatedAt||new Date().toISOString();delete merged._syncDirty;delete merged._cloudUpdatedAt;
   const row={id,code:String(merged.code||''),entry_at:merged.entryAt||new Date().toISOString(),payload:merged};
-  if(await conditionalCloudTradeWrite(row0,row)){await ensureModelSyncMeta();const reversal=await reverseAppliedHoldingsTrade(id);return{ok:true,id,reversal}}
+  if(await conditionalCloudTradeWrite(row0,row)){if(!row0)await ensureModelSyncMeta();return{ok:true,id}}
  }
  throw Error('交易同時被其他裝置更新，請稍後重試');
 }
