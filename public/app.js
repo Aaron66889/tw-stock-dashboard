@@ -164,7 +164,7 @@ function resetDaily(){
 function resetShadowDaily(){const d=dayKey();if(SHADOW_STATE.day===d)return;SHADOW_STATE={day:d,models:{}};saveJSON('v124_shadow_state',SHADOW_STATE);SHADOW_LOG=(SHADOW_LOG||[]).filter(x=>x?.day&&x.day>=d).slice(-2000);saveJSON('v124_shadow_replay',SHADOW_LOG)}
 function ztxt(z){return z&&Number.isFinite(z.low)&&Number.isFinite(z.high)?`${z.low.toFixed(2)}–${z.high.toFixed(2)}`:'—'}
 function hmTaipei(ts){if(!ts)return'';try{return new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(ts))}catch{return''}}
-function confirmSnapshotText(L){return L?.confirmedZone&&L?.confirmedAt?`首次確認：${ztxt(L.confirmedZone)}｜${hmTaipei(L.confirmedAt)}${Number.isFinite(L.executionHigh)?`｜執行上限 ${Number(L.executionHigh).toFixed(2)}`:''}`:''}
+function confirmSnapshotText(L){return L?.confirmedZone&&L?.confirmedAt?`首次確認：${ztxt(L.confirmedZone)}｜${hmTaipei(L.confirmedAt)}${Number.isFinite(L.executionLow)?`｜執行下限 ${Number(L.executionLow).toFixed(2)}`:''}${Number.isFinite(L.executionHigh)?`｜執行上限 ${Number(L.executionHigh).toFixed(2)}`:''}`:''}
 function center(z){return z?(z.low+z.high)/2:null}
 function moveZone(cur,target,maxDown,maxUp,allowDown=true){if(!cur)return JSON.parse(JSON.stringify(target));const c=center(cur),t=center(target),half=(cur.high-cur.low)/2;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
 function moveZoneTimed(cur,target,maxDown30,maxUp30,allowDown=true,elapsedSec=30){if(!cur)return JSON.parse(JSON.stringify(target));const scale=Math.max(.15,Math.min(4,Number(elapsedSec||30)/30)),c=center(cur),t=center(target),half=(cur.high-cur.low)/2,maxDown=maxDown30*scale,maxUp=maxUp30*scale;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
@@ -176,7 +176,11 @@ function executionDownAllowance(atr,i=0){return Math.max(.02,Number(atr||0)*([.0
 function ensureExecutionEnvelope(L,atr,i=0){
  const z=L?.confirmedZone||L?.zone;if(!z)return null;
  if(!Number.isFinite(L.executionHigh))L.executionHigh=z.high+executionUpAllowance(atr,i);
- if(!Number.isFinite(L.executionLow))L.executionLow=z.low;
+ // Only L1: the already-defined 0.08 ATR intraband tolerance must also apply
+ // AFTER confirmation. Migrate today's saved snapshots locked to the old band
+ // edge once; never widen the fixed confirmed envelope on future ticks.
+ if(!Number.isFinite(L.executionLow)||(i===0&&Math.abs(L.executionLow-z.low)<1e-7))
+  L.executionLow=i===0?z.low-executionDownAllowance(atr,i):z.low;
  return{low:L.executionLow,high:L.executionHigh};
 }
 function layerView(L,px){if(!L)return'WAIT';if(L.confirmed){if(L.gateBlocked)return'CONFIRMED_BLOCKED';const z=L.confirmedZone||L.zone,hi=Number.isFinite(L.executionHigh)?L.executionHigh:z.high,lo=Number.isFinite(L.executionLow)?L.executionLow:z.low;if(px>hi)return'CONFIRMED_ABOVE';if(px<lo)return'CONFIRMED_BELOW';return'CONFIRMED_IN'}if(L.invalid)return'INVALID';if(L.fastPass)return'FAST_PASS';if(L.forming)return'FORMING';return'WAIT'}
@@ -510,8 +514,12 @@ function markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,reason){
  if(!L.confirmedAt)L.confirmedAt=nowIso;
  if(!Number.isFinite(L.confirmedPrice))L.confirmedPrice=px;
  if(!L.confirmedObservationKey)L.confirmedObservationKey=observationKey;
- const cz=L.confirmedZone||z;L.executionLow=cz.low;L.executionHigh=cz.high+executionUpAllowance(atr,i);
- L.confirmationReason=`${reason}｜可接受成交上限 ${L.executionHigh.toFixed(2)}`;
+ const cz=L.confirmedZone||z;
+ // L1 uses the SAME downside tolerance as the pre-confirmation envelope;
+ // L2/L3 execution ranges and all Gate rules remain unchanged.
+ L.executionLow=i===0?cz.low-executionDownAllowance(atr,i):cz.low;
+ L.executionHigh=cz.high+executionUpAllowance(atr,i);
+ L.confirmationReason=`${reason}｜成交容許帶 ${L.executionLow.toFixed(2)}～${L.executionHigh.toFixed(2)}`;
  STATE.noSignalDays=STATE.noSignalDays||{};STATE.noSignalDays[code]=0;
  addEvent(`${code} 第${i+1}層正式確認：${ztxt(cz)}，現價${px.toFixed(2)}｜${L.confirmationReason}`,'buy');
 }
