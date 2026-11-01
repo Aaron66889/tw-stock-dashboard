@@ -9,10 +9,10 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 function auditSnippet(a){
  if(!a)return'';
  const flags=a.flags||[],hit=flags.filter(x=>x.hit).map(x=>x.label).join('、')||'無';
- return'<div class="reading" style="margin-top:7px;border-left:3px solid #d1a85b"><b>#13 急跌風控實驗（唯讀）</b>｜原判斷 '+a.existing.flagCount+'票'+(a.existing.blocked?'（阻擋）':'（未阻擋）')+
-  '｜排除綜合環境重複計票 '+a.independent.flagCount+'項'+(a.independent.blocked?'（仍阻擋）':'（候選觀察）')+
+ return'<div class="reading" style="margin-top:7px;border-left:3px solid #d1a85b"><b>#13 急跌風控驗證（唯讀）</b>｜舊版四票 '+a.existing.flagCount+'票'+(a.existing.blocked?'（阻擋）':'（未阻擋）')+
+  '｜現行獨立風險 +a.independent.flagCount+'項'+(a.independent.blocked?'（仍阻擋）':'（候選觀察）')+
   '<br><small>觸發項目：'+esc(hit)+'。'+(a.doubleCountRisk?'<b>可能重複計算風險；不代表安全可買。</b>':'獨立風險仍需評估。')+
-  ' 此區不改正式硬Gate。</small></div>';
+  ' 正式Gate現採獨立風險計票；本區僅呈現觀察資料。</small></div>';
 }
 function statsLine(x){
  if(!x||!x.matured)return'<span class="note">無成熟樣本</span>';
