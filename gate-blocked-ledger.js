@@ -17,7 +17,7 @@ function observationCandidates(code,model,quote,data,{day,nowMs=Date.now()}={}){
  if(!CODES.includes(code)||!validDay(day)||!Number.isFinite(nowMs))return[];
  if(data?.modelFreshByCode?.[code]!==true||!TREND.quoteValid(quote,day,nowMs))return[];
  if(!model||model.modelVariant!=='official'||model.hardVeto!==true||
-   !String(model.hardVetoReason||'').includes('至少兩項急殺')||
+   !/至少兩項(?:獨立)?急殺/.test(String(model.hardVetoReason||''))||
    model.referenceReliable===false||model.corporateActionReferenceMissing===true)return[];
  const generated=Date.parse(data?.fetchedAt||'');
  if(!Number.isFinite(generated)||generated>nowMs+15000||nowMs-generated>110000)return[];

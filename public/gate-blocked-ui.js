@@ -66,12 +66,33 @@ function octAuditHtml(d){
  return out;
 }
 
+function dedupForwardHtml(data){
+ const d=data?.dedupForward;if(!d)return'<div class="note">新版去重 Gate 前向績效尚未開放或伺服器仍是舊版。</div>';
+ const n=d.eventCount||0,o=d.summary?.byHorizon||{};
+ let html='<section class="reading" style="margin:12px 0"><div class="sectiontitle">新版急跌 Gate｜去重後可觀察買點（獨立前向帳簿）</div>'+
+  '<div class="note">舊版會因綜合環境重複計票而阻擋；新版獨立硬 Gate 未阻擋，但<b>仍不代表止跌確認、正式模型放行或已成交</b>。</div>'+
+  '<div>真實盤中首次落帶觀察 '+num(n)+'筆｜5日 '+stat(o[5])+'｜20日 '+stat(o[20])+'｜60日 '+stat(o[60])+'</div>';
+ if(n){
+  html+='<div style="overflow-x:auto;margin-top:8px"><table style="width:100%;white-space:nowrap"><thead><tr>'+
+   '<th>時間（台灣）</th><th>ETF</th><th>層</th><th>觀察價</th><th>舊／新風險票</th>'+
+   '<th>5日假設淨報酬</th><th>20日</th><th>60日</th></tr></thead><tbody>';
+  for(const x of (d.events||[]).slice(0,20)){
+   let stamp='—';try{stamp=new Date(x.observedAt).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false})}catch(_){}
+   html+='<tr><td>'+esc(stamp)+'</td><td>'+esc(x.code)+'</td><td>L'+num(x.layer)+'</td><td>'+num(x.price)+'</td>'+
+    '<td>'+num(x.legacyCount)+' / '+num(x.independentCount)+'</td><td>'+pct(x.outcome?.horizons?.[5]?.netReturnPct)+
+    '</td><td>'+pct(x.outcome?.horizons?.[20]?.netReturnPct)+'</td><td>'+pct(x.outcome?.horizons?.[60]?.netReturnPct)+'</td></tr>';
+  }
+  html+='</tbody></table></div>';
+ }else html+='<div class="note">目前沒有符合新條件的真實盤中觀測。系統不會用歷史最低價倒填假紀錄。</div>';
+ return html+'</section>';
+}
+
 function render(data){
  const dest=el();if(!dest)return;
  if(!data?.ok){dest.textContent='紀錄暫時無法載入：'+(data?.error||'請稍後重試');return}
  if(!data.storageReady){dest.innerHTML='<div class="notice">雲端保存尚未啟用；沒有假裝背景追蹤成功。'+esc(data.error||'')+'</div>';return}
  const sm=data.summary||{},n=data.eventCount||0;
- let html=octAuditHtml(data)+'<div class="reading">累積觀察 '+num(n)+'筆（最近最多500筆）｜觀察日期至 '+esc(data.asOf)+
+ let html=octAuditHtml(data)+dedupForwardHtml(data)+'<div class="reading">累積觀察 '+num(n)+'筆（最近最多500筆）｜觀察日期至 '+esc(data.asOf)+
   '｜<b>僅研究、未下單、不列入持股或正式交易績效</b>。記錄限於背景真正看見的報價，無法回填已錯過的盤中最低價。</div>';
  html+='<div class="grid4" style="margin-top:12px">';
  for(const code of ['0050','0056','00878','00919']){
