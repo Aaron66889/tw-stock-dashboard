@@ -77,7 +77,7 @@ test('立即同步 acknowledges two holdings operations, clears queue and confir
 });
 
 test('failed holdings writes keep queue, local shares and exact error',async()=>{
- const c=client();c.run(`H=[{t:'0050',s:1010,c:100}];MODEL_SYNC.ready=true;HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
+ const c=client();c.run(`H=[{t:'0050',s:1010,c:100}];MODEL_SYNC.ready=true;MODEL_SYNC.status='ready';HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
  c.route(async()=>({ok:false,error:'mock write rejected'}));
  await c.run('syncHoldingsCloud(true)');
  assert.equal(c.run('HOLDINGS_PENDING_TRADES.length'),1);assert.equal(c.run('H[0].s'),1010);assert.match(c.run('HOLDINGS_SYNC.message'),/mock write rejected/);assert.doesNotMatch(c.run('modelSyncBar()'),/^.*<b>全部同步完成/);
@@ -108,7 +108,7 @@ test('a new trade or deletion during the final download survives reconciliation'
 });
 
 test('overlapping sync callers share completion, avoiding duplicate apply requests',async()=>{
- const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
+ const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;MODEL_SYNC.status='ready';HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
  c.route(async url=>url.includes('apply-trade')?(writes++,{ok:true,applied:true}):{ok:true});
  await Promise.all([c.run('flushPendingHoldingsTrades()'),c.run('flushPendingHoldingsTrades()')]);assert.equal(writes,1);assert.equal(c.run('HOLDINGS_PENDING_TRADES.length'),0);
 });
@@ -124,13 +124,15 @@ test('cloud bootstrap can acknowledge shares already included in the local aggre
 test('two concurrent devices add shares once each; retry after lost response is idempotent',async()=>{
  const b=backend();await b.run(`cloudUpsertHoldings([{t:'0050',s:1000,c:80}],null)`);
  b.ctx.tradeA=trade('mt_device_A');b.ctx.tradeB={...trade('mt_device_B'),shares:20,entryPrice:110};
+ // Current server requires immutable matching cloud-trade rows before incrementing holdings.
+ await b.run('cloudUpsertTrade(tradeA)');await b.run('cloudUpsertTrade(tradeB)');
  await Promise.all([b.run('cloudApplyHoldingsTrade(tradeA)'),b.run('cloudApplyHoldingsTrade(tradeB)')]);
  await b.run('cloudApplyHoldingsTrade(tradeA)');
  const row=b.rows.get('__HOLDINGS_STATE__');assert.equal(row.payload.holdings[0].s,1030);assert.ok(Math.abs(row.payload.holdings[0].c-(80000+1000+2200)/1030)<1e-8);assert.equal(row.payload.appliedTradeIds.length,2);
 });
 
 test('stale and missing cloud revision cannot replace a newer holdings portfolio',async()=>{
- const b=backend();const first=await b.run(`cloudUpsertHoldings([{t:'0050',s:1000,c:80}],null)`);b.ctx.t=trade();await b.run('cloudApplyHoldingsTrade(t)');b.ctx.oldRevision=first.updatedAt;
+ const b=backend();const first=await b.run(`cloudUpsertHoldings([{t:'0050',s:1000,c:80}],null)`);b.ctx.t=trade();await b.run('cloudUpsertTrade(t)');await b.run('cloudApplyHoldingsTrade(t)');b.ctx.oldRevision=first.updatedAt;
  await assert.rejects(b.run(`cloudUpsertHoldings([{t:'0050',s:1000,c:80}],oldRevision)`),/其他裝置/);
  assert.equal(b.rows.get('__HOLDINGS_STATE__').payload.holdings[0].s,1010);
 });
@@ -293,7 +295,7 @@ test('official dividend announcement is preferred over estimate for any of the f
  }
 });
 
-test('future estimated, entitled-unpaid and already-paid dividends render separately in all ETF cards',()=>{
+test('unconfirmed future dividends do not become invented forecasts; entitled cash stays separate',()=>{
  const c=client();
  c.run(`H=[{t:'0050',s:3380,c:79.65},{t:'0056',s:820,c:35.78},{t:'00878',s:4080,c:18.39},{t:'00919',s:650,c:20.78}];
  DIVIDEND_AUTO={ready:true,snapshotDay:'2026-10-13',byCode:{
@@ -304,12 +306,12 @@ test('future estimated, entitled-unpaid and already-paid dividends render separa
  const h=c.nodes.get('holdings').innerHTML;
  for(const code of ['0050','0056','00878','00919'])assert.match(h,new RegExp(code));
  assert.match(h,/已除息待入帳/);assert.match(h,/下一次配息預估/);
- assert.match(h,/1,410元/);assert.match(h,/605元/);
+ assert.doesNotMatch(h,/1,410元/);assert.match(h,/605元/);
  assert.match(h,/550股 × 1\.10元/);assert.match(h,/等待公告/);
- assert.match(h,/預估公告（尚未確認）/);
+ assert.doesNotMatch(h,/預估公告（尚未確認）/);
  assert.equal(c.run('dividendStats(\'00919\',H[3]).received'),1788);
  assert.equal(c.run('dividendStats(\'00919\',H[3]).pending'),605);
- assert.equal(c.run('dividendStats(\'0056\',H[1]).nextForecast.cashEstimate'),1410);
+ assert.equal(c.run('dividendStats(\'0056\',H[1]).nextForecast'),null);
  assert.equal(c.run('DIVIDEND_AUTO.byCode[\'00919\'].received'),1788);
 });
 
@@ -502,7 +504,7 @@ test('MAE and MFE include zero baseline when all subsequent trading prices stay 
 });
 
 test('mixed frontend/backend builds block writes before applying any holdings operation',async()=>{
- const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
+ const c=client();let writes=0;c.run(`MODEL_SYNC.ready=true;MODEL_SYNC.status='ready';HOLDINGS_PENDING_TRADES=[${JSON.stringify(trade())}];`);
  c.route(async(url,opts)=>{if(opts.method==='POST')writes++;return{ok:true,build:'older-deployed-server'}});
  await c.run('flushPendingHoldingsTrades()');assert.equal(writes,0);assert.equal(c.run('HOLDINGS_PENDING_TRADES.length'),1);assert.match(c.run('HOLDINGS_SYNC.message'),/前後端版本不同/);
 });
