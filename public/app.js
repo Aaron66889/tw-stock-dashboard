@@ -232,11 +232,17 @@ function displayModelState(x){
 // Keep the existing confirmation snapshot, but suspend model execution.
 function officialExecutionSnapshotReady(code,nowMs=Date.now()){
  const m=lastBuy,q=lastLive?.quotes?.[code];
- const mTime=Date.parse(m?.fetchedAt||''),qTime=Date.parse(q?.fetchTime||q?.serverFetchedAt||'');
+ // A newly received HTTP response does not make an old upstream price fresh.
+ // Check both timestamps independently. Every complete /api/etf-live quote
+ // carries serverFetchedAt; missing source timestamps fail closed.
+ const mTime=Date.parse(m?.fetchedAt||''),
+       receivedAt=Date.parse(q?.fetchTime||''),
+       sourceAt=Date.parse(q?.serverFetchedAt||'');
  const ageValid=t=>Number.isFinite(t)&&t<=nowMs+15000&&nowMs-t<=90000;
  return !!(m?.modelFreshByCode?.[code]===true&&ageValid(mTime)&&
   q?.date===dayKey()&&Number(q?.last)>0&&q?.realtime!==false&&
-  q?.lastGoodFallback!==true&&q?.corporateActionReferenceMissing!==true&&ageValid(qTime));
+  q?.lastGoodFallback!==true&&q?.corporateActionReferenceMissing!==true&&
+  ageValid(receivedAt)&&ageValid(sourceAt));
 }
 function officialExecutionExplanation(x){
  if(!x)return'模型資料尚未載入';
