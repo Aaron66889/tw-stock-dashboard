@@ -112,5 +112,5 @@ test('separate Supabase ledger, no writes on buy-model API or browser session, a
  assert.ok(h.indexOf('/gate-blocked-ui.js')<h.indexOf('/app.js?v='));
  assert.match(app,/GateBlockedUI\?\.load\(false\)/);
  assert.doesNotMatch(ui,/localStorage\.setItem|POST|write/);
- assert.match(s,/const knife=\(/); // Official scoring/gate remains unchanged.
+ assert.match(s,/hardVeto=gatePolicy\.hardBlocked/); // Official scoring/gate remains unchanged.
 });
