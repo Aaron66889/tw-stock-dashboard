@@ -19,6 +19,6 @@ test('real HTTP server starts, serves current assets and reports unconfigured sy
    const privateAPI=['/api/model-trades','/api/holdings-sync','/api/dividend-auto'].includes(result.p);assert.equal(result.status,privateAPI?503:200,result.p);
    if(privateAPI)assert.equal(JSON.parse(result.body).ok,false);
   }
-  assert.equal(JSON.parse(results[0].body).build,'16.8.101-SYNC-RELIABILITY');assert.match(results[1].body,/16\.8\.101 同步修正版/);assert.match(results[2].body,/16\.8\.101-SYNC-RELIABILITY/);assert.match(results[2].cache,/no-store/);assert.equal(JSON.parse(results[6].body).configured,false);
+  assert.equal(JSON.parse(results[0].body).build,'16.8.102-LEDGER-COMMIT');assert.match(results[1].body,/16\.8\.102 同步修正版/);assert.match(results[2].body,/16\.8\.102-LEDGER-COMMIT/);assert.match(results[2].cache,/no-store/);assert.equal(JSON.parse(results[6].body).configured,false);
  }finally{child.kill('SIGTERM');await once(child,'exit')}
 });
