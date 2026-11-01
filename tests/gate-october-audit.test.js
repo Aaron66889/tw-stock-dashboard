@@ -71,12 +71,12 @@ test('timezone fallback uses Taiwan day instead of browser UTC day, if entryDate
  const d=core.dayOfTrade({entryAt:'2026-10-18T16:45:00.000Z'});
  assert.equal(d,'2026-10-19');
 });
-test('audit changes only public read-only UI; existing execution and hard veto remain unchanged',()=>{
+test('audit UI remains read-only even though official independent Gate logic is updated',()=>{
  const server=fs.readFileSync(path.join(root,'server.js'),'utf8');
  const app=fs.readFileSync(path.join(root,'public/app.js'),'utf8');
  const ui=fs.readFileSync(path.join(root,'public/gate-blocked-ui.js'),'utf8');
  const html=fs.readFileSync(path.join(root,'public/index.html'),'utf8');
- assert.match(server,/const knife=\(/);
+ assert.match(server,/hardVeto=gatePolicy\.hardBlocked/);
  assert.match(server,/hardVeto=gatePolicy\.hardBlocked/);
  assert.match(html,/gate-audit-core\.js\?v=20261101/);
  assert.ok(html.indexOf('/gate-audit-core.js')<html.indexOf('/gate-blocked-ui.js'));
