@@ -33,6 +33,6 @@ test('background calibration is rate-limited, never awaited by model page, and d
  assert.match(backend,/SHADOW_POLICY_CACHE\.has\(key\)/);
  assert.match(backend,/shadowPolicyCalibration\(code,rows\)/);
  assert.match(text,/setInterval\(warmShadowPolicyOffHours,4\*60\*1000\)/);
- assert.match(text,/const knife=\(/);
+ assert.match(text,/hardVeto=gatePolicy\.hardBlocked/);
  assert.match(text,/if\(hardVeto\)score=Math\.min\(score,42\)/);
 });
