@@ -56,7 +56,7 @@ const checkSource=src.slice(start,end)+'\nofficialExecutionSnapshotReady';
 function check(modelChanges={},quoteChanges={}){
  const now=Date.parse('2026-10-30T03:00:30Z'),asOf=new Date(now-30000).toISOString();
  const lastBuy={fetchedAt:asOf,modelFreshByCode:{'0050':true},...modelChanges};
- const lastLive={quotes:{'0050':{last:108.2,date:'2026-10-30',fetchTime:asOf,realtime:true,lastGoodFallback:false,...quoteChanges}}};
+ const lastLive={quotes:{'0050':{last:108.2,date:'2026-10-30',fetchTime:asOf,serverFetchedAt:asOf,realtime:true,lastGoodFallback:false,...quoteChanges}}};
  const fn=vm.runInNewContext(checkSource,{lastBuy,lastLive,dayKey:()=> '2026-10-30',Date});
  return fn('0050',now);
 }
@@ -67,6 +67,9 @@ test('no new model confirmations from prior-date or stale model/quote',()=>{
   [{modelFreshByCode:{'0050':false}},{}],
   [{},{date:'2026-10-29'}],
   [{},{fetchTime:'2026-10-30T02:50:00Z'}],
+  [{},{serverFetchedAt:'2026-10-30T02:50:00Z'}],
+  [{},{serverFetchedAt:null}],
+  [{},{serverFetchedAt:'2026-10-30T03:05:00Z'}],
   [{},{realtime:false}],
   [{},{lastGoodFallback:true}],
   [{},{corporateActionReferenceMissing:true}],
@@ -74,6 +77,11 @@ test('no new model confirmations from prior-date or stale model/quote',()=>{
  ]){
   assert.equal(check(m,q),false,JSON.stringify({m,q}));
  }
+});
+test('fresh browser response cannot disguise stale upstream ETF quote',()=>{
+ const recent='2026-10-30T03:00:20Z';
+ assert.equal(check({}, {fetchTime:recent,serverFetchedAt:'2026-10-30T02:50:00Z'}),false);
+ assert.equal(check({}, {fetchTime:recent,serverFetchedAt:recent}),true);
 });
 test('all three official model execution paths require a fresh snapshot',()=>{
  const server=fs.readFileSync(path.join(root,'server.js'),'utf8');
