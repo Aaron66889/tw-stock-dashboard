@@ -77,7 +77,7 @@ test('audit changes only public read-only UI; existing execution and hard veto r
  const ui=fs.readFileSync(path.join(root,'public/gate-blocked-ui.js'),'utf8');
  const html=fs.readFileSync(path.join(root,'public/index.html'),'utf8');
  assert.match(server,/const knife=\(/);
- assert.match(server,/knife>=2\|\|corpActionBlocked/);
+ assert.match(server,/hardVeto=gatePolicy\.hardBlocked/);
  assert.match(html,/gate-audit-core\.js\?v=20261101/);
  assert.ok(html.indexOf('/gate-audit-core.js')<html.indexOf('/gate-blocked-ui.js'));
  assert.ok(html.indexOf('/gate-blocked-ui.js')<html.indexOf('/app.js?v='));
