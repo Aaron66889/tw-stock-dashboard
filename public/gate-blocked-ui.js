@@ -23,7 +23,7 @@ function octAuditHtml(d){
  let trades=null;
  try{if(tradeProvider)trades=tradeProvider()}catch(_){}
  const a=core.audit(d.events||[],trades);
- let out='<section style="margin:12px 0"><div class="sectiontitle">2026年10月｜硬Gate實證稽核（不更改正式訊號）</div>'+
+ let out='<section style="margin:12px 0"><div class="sectiontitle">2026年10月｜舊版 Gate 擋下的真實觀察（歷史封存）</div>'+
   '<div class="reading">已留存 '+num(a.observations)+' 筆真實盤中被擋觀察，分布在 '+num(a.uniqueDays)+' 個交易日、'+num(a.uniqueCodeDays)+
   ' 個 ETF／交易日。<b>重複計票候選 '+num(a.classification.DERIVED_OVERLAP)+' 筆</b>｜至少兩項獨立風險仍阻擋 '+
   num(a.classification.INDEPENDENT_BLOCK)+' 筆｜資料不足 '+num(a.classification.UNKNOWN)+' 筆。</div>';
@@ -62,7 +62,7 @@ function octAuditHtml(d){
  out+='<div class="note" style="margin-top:9px"><b>驗證界線：</b>'+
   '這些是假設以當時觀測價進場的事後日K代理報酬，並非成交或正式模型放行。當日其他時段仍可能已正式確認。'+
   '未滿5／20／60交易日不得計為贏或輸。自主／模型實際成交使用含權息總報酬、研究代理使用估計往返成本，兩者口徑及樣本不同，不可用平均值直接判定誰優。'+
-  '樣本只有'+num(a.observations)+'筆，不能據此直接移除硬Gate；正式 Gate、持股及交易紀錄均未改動。</div></section>';
+  '樣本只有'+num(a.observations)+'筆，不能據此證明新版 Gate 長期績效更好。現行 Gate 已改為獨立風險計票；持股與實際交易紀錄沒有因本次研究而修改。</div></section>';
  return out;
 }
 
