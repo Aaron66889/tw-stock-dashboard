@@ -39,7 +39,7 @@ function client(storage=new Map()){
  vm.runInContext(code,ctx,{filename:'public/app.js'});
  const run=code=>vm.runInContext(code,ctx),json=code=>clone(run(code));
  run('apiTrafficPermit=async()=>{}');
- const route=fn=>ctx.fetch=async(url,opts={})=>{const original=await fn(url,opts),d=original&&typeof original==='object'?{build:'16.8.101-SYNC-RELIABILITY',...original}:original;return{ok:true,status:200,headers:{get:()=>null},text:async()=>typeof d==='string'?d:JSON.stringify(d)}};
+ const route=fn=>ctx.fetch=async(url,opts={})=>{const original=await fn(url,opts),d=original&&typeof original==='object'?{build:'16.8.102-LEDGER-COMMIT',...original}:original;return{ok:true,status:200,headers:{get:()=>null},text:async()=>typeof d==='string'?d:JSON.stringify(d)}};
  return{ctx,run,json,nodes,events,timers,storage,alerts,confirms,route};
 }
 
