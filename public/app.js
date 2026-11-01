@@ -83,6 +83,7 @@ function dividendStats(code,holding){
 
 function money0(n){return hasNumber(n)?Math.round(Number(n)).toLocaleString():'—'}
 let H=loadHoldings(),EVENTS=loadJSON('v124_events',[]),STATE=loadJSON('v124_state',{day:null,models:{},noSignalDays:{}}),SHADOW_STATE=loadJSON('v124_shadow_state',{day:null,models:{}}),SHADOW_LOG=loadJSON('v124_shadow_replay',[]),PREOPEN=loadJSON('v124_preopen',{}),HIST=loadJSON('v124_buy_history',{}),CONSTVERS=loadJSON('v124_constituent_versions',{}),VALIDATION=null,MODEL_TRADES=loadJSON('v124_model_trades',[]),HISTORY_STATUS=null;
+window.GateBlockedUI?.setTradeProvider?.(()=>MODEL_TRADES); // October audit reads current local/cloud-synced trades without uploading personal entries.
 let MODEL_SYNC={status:'checking',ready:false,busy:false,message:'雲端同步檢查中',lastAt:null,knownUnlocked:!!loadJSON('v124_model_sync_known_unlocked',false)};
 let SYNC_SERVER_VERIFIED=false;
 let SYNC_ALL_BUSY=false,SYNC_ALL_RERUN=false,SYNC_ALL_FORCE=false;
