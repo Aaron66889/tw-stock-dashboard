@@ -81,7 +81,7 @@ test('all three official model execution paths require a fresh snapshot',()=>{
  assert.match(server,/hardVeto=gatePolicy\.hardBlocked/);
  assert.match(server,/riskGate:gatePolicy/);
  assert.match(src,/const gatePass=executionFresh&&!r\.hardVeto/);
- assert.equal((src.match(/if\(confirmable&&officialExecutionSnapshotReady\(code\)&&cashSessionIsOpenForNewConfirmation\(\)\)/g)||[]).length,2);
+ assert.equal((src.match(/if\(confirmable&&newObservation&&officialExecutionSnapshotReady\(code\)&&cashSessionIsOpenForNewConfirmation\(\)\)/g)||[]).length,2);\n // A repeated browser refresh of the identical exchange quote must never finalize a new official confirmation.
  assert.match(src,/if\(!officialExecutionSnapshotReady\(code\)\)return alert/);
  assert.match(src,/if\(!x\|\|!officialExecutionSnapshotReady\(code\)/);
  assert.match(src,/!officialExecutionSnapshotReady\(selectedETF\)/);
