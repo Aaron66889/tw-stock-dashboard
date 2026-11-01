@@ -1,0 +1,25 @@
+name: October Gate Audit Checks
+on:
+  pull_request:
+    paths:
+      - 'public/gate-audit-core.js'
+      - 'public/gate-blocked-ui.js'
+      - 'public/index.html'
+      - 'public/app.js'
+      - 'tests/gate-october-audit.test.js'
+      - '.github/workflows/october-gate-audit.yml'
+  workflow_dispatch:
+jobs:
+  audit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm test
