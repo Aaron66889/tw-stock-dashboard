@@ -25,7 +25,8 @@
   if(/^\d{4}-\d{2}-\d{2}$/.test(day))return day;
   const dt=Date.parse(t?.entryAt||'');
   if(!Number.isFinite(dt))return'';
-  return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(dt));
+  const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(dt));
+  const get=k=>parts.find(x=>x.type===k)?.value||'';return [get('year'),get('month'),get('day')].join('-');
  }
  function summarizeHorizon(events,h){
   const eligible=events.map(e=>e?.outcome?.horizons?.[h]).filter(x=>number(x?.netReturnPct)!==null);
@@ -34,6 +35,12 @@
   const pct=mean('netReturnPct');
   return{matured:n,pending:events.length-n,meanNetPct:pct,winRatePct:n?eligible.filter(x=>Number(x.netReturnPct)>0).length/n*100:null,
    meanMAEPct:mean('maePct'),meanMFEPct:mean('mfePct')};
+ }
+ function summarizeTradeHorizon(trades,h){
+  const total=trades.length,perf=trades.map(t=>t?.perf?.horizon?.[h]).filter(x=>number(x?.totalReturnPct)!==null);
+  const n=perf.length;
+  return{matured:n,pending:total-n,meanTotalReturnPct:n?perf.reduce((a,b)=>a+Number(b.totalReturnPct),0)/n:null,
+   winRatePct:n?perf.filter(x=>Number(x.totalReturnPct)>0).length/n*100:null};
  }
  function audit(events,trades,range=RANGE){
   const first=String(range?.start||RANGE.start),last=String(range?.end||RANGE.end);
@@ -76,8 +83,10 @@
     model:validTrades.filter(t=>t._auditType==='model').length,
     other:validTrades.filter(t=>t._auditType==='other').length},
    horizons:Object.fromEntries([5,20,60].map(h=>[h,summarizeHorizon(observed,h)])),
+   tradePerformance:Object.fromEntries(['manual','model'].map(type=>[type,
+    Object.fromEntries([5,20,60].map(h=>[h,summarizeTradeHorizon(validTrades.filter(t=>t._auditType===type),h)]))])),
    limitation:'一筆被擋報價不是整日被擋，也不是可執行成交。10月前向事件僅涵蓋已實際觀測的報價；缺失時段無法回填。實際交易與被擋事件是不同樣本，不可直接拿均值判定哪個策略更好。'
   };
  }
- return{RANGE,category,dayOfTrade,summarizeHorizon,audit};
+ return{RANGE,category,dayOfTrade,summarizeHorizon,summarizeTradeHorizon,audit};
 });
