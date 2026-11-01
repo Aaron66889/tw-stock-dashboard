@@ -1,5 +1,6 @@
 'use strict';
 // Research-only. No mutations to official market Gate, trades, or model signals.
+const GATE_POLICY=require('./gate-policy');
 const SETTINGS=Object.freeze({marketDropPct:-2.2,etfDropPct:-1.5,reboundAtr:0.20,minReboundPrice:0.12,cooldownDays:7,warmup:65,feePct:0.385,horizons:[5,20,60]});
 const pct=(now,prev)=>now>0&&prev>0?(now/prev-1)*100:null;
 const val=x=>Number.isFinite(Number(x))&&Number(x)>0?Number(x):null;
@@ -18,19 +19,13 @@ function prepare(rows,asOfDate='9999-12-31'){
  return[...map.values()].sort((a,b)=>a.date.localeCompare(b.date));
 }
 function analyzeGate({marketPct=null,tsmcPct=null,breadthRatio=null,breadthUsable=false,environmentScore=null,fresh=true,corpActionBlocked=false}={}){
- const flags=[
-  {id:'market',label:'大盤<-2.2%',available:Number.isFinite(marketPct),hit:Number.isFinite(marketPct)&&marketPct<-2.2,group:'market'},
-  {id:'tsmc',label:'台積電<-3%',available:Number.isFinite(tsmcPct),hit:Number.isFinite(tsmcPct)&&tsmcPct<-3,group:'concentration'},
-  {id:'breadth',label:'上市廣度<22%',available:!!breadthUsable&&Number.isFinite(breadthRatio),hit:!!breadthUsable&&Number.isFinite(breadthRatio)&&breadthRatio<.22,group:'breadth'},
-  {id:'environment',label:'綜合環境分數<-65',available:Number.isFinite(environmentScore),hit:Number.isFinite(environmentScore)&&environmentScore<-65,group:'derived'}
- ];
- const counted=flags.filter(x=>x.hit).length,independent=flags.filter(x=>x.hit&&x.group!=='derived').length;
- const existing=(!fresh||corpActionBlocked||counted>=2);
- const dedup=(!fresh||corpActionBlocked||independent>=2);
- return{flags,existing:{flagCount:counted,blocked:existing},independent:{flagCount:independent,blocked:dedup},
-  doubleCountRisk:flags[3].hit&&counted>=2&&independent<2,
-  effectiveCount:counted,evidenceComplete:flags.slice(0,3).every(x=>x.available),
-  note:'僅研究：環境分數由大盤/台積電/廣度等因素衍生，不宜未驗證就當成獨立一次急殺票。未改官方Gate。'};
+ const r=GATE_POLICY.evaluate({marketPct,tsmcPct,breadthRatio,breadthUsable,environmentScore,fresh,corpActionBlocked});
+ return{flags:r.flags,
+  existing:{flagCount:r.legacy.count,blocked:(!fresh||corpActionBlocked||r.legacy.blocked)},
+  independent:{flagCount:r.independent.count,blocked:r.hardBlocked},
+  effective:{flagCount:r.independent.count,blocked:r.hardBlocked,reason:r.reason,version:r.version},
+  doubleCountRisk:r.overlapRisk,effectiveCount:r.independent.count,evidenceComplete:r.evidenceComplete,
+  note:'現在正式Gate僅計大盤、台積電、廣度三項獨立風險；環境分數繼續影響分數但不重複投票。原四票模型只用作歷史比較。行情逾時、除權息基準缺失仍直接暫停。'};
 }
 function futureOutcome(rows,i,h,feePct){
  if(i+h>=rows.length)return null;
