@@ -223,9 +223,21 @@ function displayModelState(x){
  if(x.r?.noBuyToday)return'今日暫無合理買點';
  return stageText(x.activeStatus,x.activeLayer+1);
 }
+// A live quote cannot re-validate a stale 30s model score/Gate. Fail closed
+// if either source is old, previous-day, last-good fallback or not real time.
+// Keep the existing confirmation snapshot, but suspend model execution.
+function officialExecutionSnapshotReady(code,nowMs=Date.now()){
+ const m=lastBuy,q=lastLive?.quotes?.[code];
+ const mTime=Date.parse(m?.fetchedAt||''),qTime=Date.parse(q?.fetchTime||q?.serverFetchedAt||'');
+ const ageValid=t=>Number.isFinite(t)&&t<=nowMs+15000&&nowMs-t<=90000;
+ return !!(m?.modelFreshByCode?.[code]===true&&ageValid(mTime)&&
+  q?.date===dayKey()&&Number(q?.last)>0&&q?.realtime!==false&&
+  q?.lastGoodFallback!==true&&q?.corporateActionReferenceMissing!==true&&ageValid(qTime));
+}
 function officialExecutionExplanation(x){
  if(!x)return'模型資料尚未載入';
  const i=x.activeLayer,L=x.m?.layers?.[i],s=x.activeStatus,rule=LAYER_CONFIRM_RULES[i];
+ if(!officialExecutionSnapshotReady(x.r.code))return '禁止模型買入：模型或即時報價逾時／日期不符，須等待最新有效行情重新確認';
  if(x.r.hardVeto)return '禁止模型買入：硬Gate｜'+(x.r.hardVetoReason||'未提供原因');
  if(x.r.noBuyToday)return '禁止模型買入：'+(x.r.noBuyReason||'本日風險條件未通過');
  if(s==='CONFIRMED_IN')return '允許記錄正式模型買入：第'+(i+1)+'層確認、價格及Gate均通過';
@@ -547,10 +559,11 @@ function updateOne(code,r){
   }
   const upAllow=executionUpAllowance(atr,i),downAllow=executionDownAllowance(atr,i),confirmDownAllow=Math.max(Number(rule.confirmDownAbs||downAllow),atr*Number(rule.confirmDownAtr||([.08,.15,.18][i]??.10))),wasTouched=!!L.touchedAt,inConfirmEnvelope=wasTouched&&px<=z.high+upAllow&&px>=z.low-confirmDownAllow;
   if(wasTouched&&newObservation){L.priceSamples.push(px);L.priceSamples=L.priceSamples.slice(-10)}
-  const gatePass=!r.hardVeto&&!r.noBuyToday&&r.score>=rule.minScore;
+  const executionFresh=officialExecutionSnapshotReady(code);
+  const gatePass=executionFresh&&!r.hardVeto&&!r.noBuyToday&&r.score>=rule.minScore;
   // Confirmation is latched for the day. Gate/score changes pause execution but never erase the historical confirmation snapshot.
   if(L.confirmed){
-   ensureExecutionEnvelope(L,atr,i);L.invalid=false;L.gateBlocked=!gatePass;L.gateBlockedReason=!gatePass?(r.hardVetoReason||r.noBuyReason||`分數低於 ${rule.minScore}`):null;
+   ensureExecutionEnvelope(L,atr,i);L.invalid=false;L.gateBlocked=!gatePass;L.gateBlockedReason=!gatePass?(!executionFresh?'模型或即時報價逾時，等待新有效行情':(r.hardVetoReason||r.noBuyReason||`分數低於 ${rule.minScore}`)):null;
    return;
   }
   if(r.hardVeto){L.invalid=true;L.forming=false;L.fastPass=false;L.confirmCount=0;L.gateBlocked=true;L.gateBlockedReason=r.hardVetoReason||'Hard Gate';return}
@@ -566,7 +579,7 @@ function updateOne(code,r){
     L.forming=zoneStable&&inConfirmEnvelope;
     L.confirmationReason=`${rule.name}｜低點後 ${stableSec}/${needSec}秒｜反彈 ${rebound.toFixed(2)}/${reboundNeed.toFixed(2)}｜有效破低容忍 ${breakTol.toFixed(2)}｜確認容許至 ${(z.high+upAllow).toFixed(2)}｜${gatePass?'Gate PASS':`需分數≥${rule.minScore}/Gate PASS`}`;
    }else L.forming=false;
-   if(confirmable&&cashSessionIsOpenForNewConfirmation())markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
+   if(confirmable&&officialExecutionSnapshotReady(code)&&cashSessionIsOpenForNewConfirmation())markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
    return;
   }
   // L2/L3 no longer depend on two consecutive browser samples or a razor-thin envelope.
@@ -577,7 +590,7 @@ function updateOne(code,r){
    L.forming=zoneStable&&inConfirmEnvelope;
    L.confirmationReason=`${rule.name}｜低點後 ${stableSec}/${needSec}秒｜反彈 ${rebound.toFixed(2)}/${reboundNeed.toFixed(2)}｜有效破低容忍 ${breakTol.toFixed(2)}｜下穿容忍 ${confirmDownAllow.toFixed(2)}｜${gatePass?'Gate PASS':`需分數≥${rule.minScore}/Gate PASS`}`;
   }else L.forming=false;
-  if(confirmable&&cashSessionIsOpenForNewConfirmation())markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
+  if(confirmable&&officialExecutionSnapshotReady(code)&&cashSessionIsOpenForNewConfirmation())markOfficialConfirmed(code,L,z,px,nowIso,observationKey,atr,i,L.confirmationReason);
  });
  m.prevEnv=r.environmentScore;m.prevHealth=healthNow;m.lastPrice=px;if(observationKey)m.lastObservationKey=observationKey;m.lastAt=nowIso;STATE.models[code]=m;appendHistory(code,r,m,px)
 }
@@ -1442,6 +1455,7 @@ function fillTradeSnapshot(code,x,manual=false){
 }
 function openModelTrade(code,layer=1){
  const x=statusFor(code);if(!x)return alert('模型尚未載入');
+ if(!officialExecutionSnapshotReady(code))return alert('模型／即時報價已逾時，不能記錄成正式模型買入；請先等待新行情。');
  if(x.r?.hardVeto||x.r?.noBuyToday)return alert('正式模型的硬Gate或暫停條件尚未解除，不能記作模型訊號；若你自行決定買進，請選擇「記錄自主買入」。');
  setTradeEntryMode('model');
  $('mtCode').value=code;$('mtPrice').value=Number(x.px).toFixed(2);$('mtShares').value='';$('mtLayer').value=String(layer);
@@ -1471,7 +1485,7 @@ function closeModelTrade(){$('modelTradeModal').classList.remove('on')}
 function saveModelTrade(){
  const code=$('mtCode').value,price=Number($('mtPrice').value),shares=Number($('mtShares').value),mode=$('mtTradeType').value,manual=mode==='manual',trendMode=mode==='trend',tradeType=manual?'manual':'model',modelFamily=manual?'manual':trendMode?'trend':'reasonable',layer=(manual||trendMode)?null:Number($('mtLayer').value);
  if(!Number.isFinite(price)||price<=0||price>1e7||!Number.isSafeInteger(shares)||shares<=0||(!manual&&!trendMode&&![1,2,3].includes(layer)))return alert(manual?'請確認成交價與整數股數':trendMode?'請確認成交價與整數股數':'請確認成交價、整數股數與層級');
- if(!manual&&!trendMode){const x=statusFor(code),L=x?.m?.layers?.[layer-1],rule=LAYER_CONFIRM_RULES[layer-1];if(!x||x.r.hardVeto||x.r.noBuyToday||!L?.confirmed||L.gateBlocked||!rule||x.r.score<rule.minScore||x.statuses[layer-1]!=='CONFIRMED_IN')return alert('這筆尚未通過正式L'+layer+'買點確認及Gate，不可以標記為正式模型買入。如已自主成交，請改用「自主買入」紀錄。');}
+ if(!manual&&!trendMode){const x=statusFor(code),L=x?.m?.layers?.[layer-1],rule=LAYER_CONFIRM_RULES[layer-1];if(!x||!officialExecutionSnapshotReady(code)||x.r.hardVeto||x.r.noBuyToday||!L?.confirmed||L.gateBlocked||!rule||x.r.score<rule.minScore||x.statuses[layer-1]!=='CONFIRMED_IN')return alert('這筆尚未通過正式L'+layer+'買點確認及Gate，不可以標記為正式模型買入。如已自主成交，請改用「自主買入」紀錄。');}
  let snapshot=null,signalText='';
  if(trendMode){
   const m=lastTrendBuy?.models?.[code];if(!m?.ok)return alert('強勢加碼模型尚未載入');
