@@ -1,7 +1,8 @@
 /* Read-only Gate-blocked live opportunity ledger. Loaded only in Model / Validation. */
 (function(root){
 'use strict';
-let cache=null,inflight=null,lastLoad=0;
+let cache=null,inflight=null,lastLoad=0,tradeProvider=null;
+function setTradeProvider(fn){tradeProvider=typeof fn==='function'?fn:null;}
 const el=()=>document.getElementById('gateBlockedLedger');
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pct=x=>Number.isFinite(Number(x))&&x!==null?Number(x).toFixed(2)+'%':'—';
@@ -10,12 +11,67 @@ function stat(x){
  if(!x?.matured)return'未到期';
  return num(x.matured)+'筆｜平均 '+pct(x.meanNetPct)+'｜勝率 '+pct(x.winRatePct)+'｜MAE '+pct(x.meanMAEPct);
 }
+
+const classificationLabel=t=>({
+ DERIVED_OVERLAP:'綜合環境重複計票候選',
+ INDEPENDENT_BLOCK:'至少兩項獨立急跌風險',
+ UNKNOWN:'缺少足夠原始證據'
+})[t]||'未分類';
+function octAuditHtml(d){
+ const core=root.GateAuditCore;
+ if(!core?.audit)return'<div class="notice">10月稽核模組未載入，請重新整理。</div>';
+ let trades=null;
+ try{if(tradeProvider)trades=tradeProvider()}catch(_){}
+ const a=core.audit(d.events||[],trades);
+ let out='<section style="margin:12px 0"><div class="sectiontitle">2026年10月｜硬Gate實證稽核（不更改正式訊號）</div>'+
+  '<div class="reading">已留存 '+num(a.observations)+' 筆真實盤中被擋觀察，分布在 '+num(a.uniqueDays)+' 個交易日、'+num(a.uniqueCodeDays)+
+  ' 個 ETF／交易日。<b>重複計票候選 '+num(a.classification.DERIVED_OVERLAP)+' 筆</b>｜至少兩項獨立風險仍阻擋 '+
+  num(a.classification.INDEPENDENT_BLOCK)+' 筆｜資料不足 '+num(a.classification.UNKNOWN)+' 筆。</div>';
+ if(!a.observations)out+='<div class="note">10月沒有已存的真實被擋觀察；不能把事後最低價當成當時曾觸價。</div>';
+ for(const [key,label] of [['DERIVED_OVERLAP','重複計票候選'],['INDEPENDENT_BLOCK','獨立風險仍阻擋']]){
+  const g=a.groups[key];
+  out+='<div class="reading" style="margin-top:6px"><b>'+label+'：'+num(g.observations)+'筆</b>'+
+   [5,20,60].map(h=>{const m=g.horizons[h];return h+'日成熟 '+m.matured+'/'+g.observations+
+    '｜平均假設淨報酬 '+pct(m.meanNetPct)+'｜MAE '+pct(m.meanMAEPct)}).join('<br>')+'</div>';
+ }
+ if(a.trades.available){
+  const tp=a.tradePerformance||{};
+  out+='<div class="reading" style="margin-top:8px"><b>本裝置／已同步實戰紀錄（2026年10月）</b>：自主買入 '+
+   num(a.trades.manual)+' 筆、模型買入 '+num(a.trades.model)+' 筆、其他 '+num(a.trades.other)+
+   ' 筆。交易紀錄只在本裝置對照，不上傳至本研究 API。<br>'+
+   [5,20,60].map(h=>{const m=tp.manual?.[h],z=tp.model?.[h];return h+'日：自主 '+num(m?.matured??0)+'筆'+
+    (m?.meanTotalReturnPct==null?'（未到期／未更新）':'、平均總報酬 '+pct(m.meanTotalReturnPct))+
+    '；模型 '+num(z?.matured??0)+'筆'+
+    (z?.meanTotalReturnPct==null?'（未到期／未更新）':'、平均總報酬 '+pct(z.meanTotalReturnPct));}).join('<br>')+
+   '</div>';
+ }else out+='<div class="note">個人交易資料未載入；僅呈現公開 Gate 前向事件，並不假設當天沒有實際買入。</div>';
+ if(a.detailed.length){
+  out+='<div style="overflow-x:auto;margin-top:8px"><table style="width:100%;white-space:nowrap"><thead><tr><th>觀測（台灣時間）</th>'+
+   '<th>ETF / 層</th><th>觀察價</th><th>研究分類</th><th>同日正式模型買入（觀察前/後）</th><th>同日自主買入（前/後）</th><th>5日假設淨報酬</th></tr></thead><tbody>';
+  for(const x of a.detailed){
+   const e=x.event,t=x.sameDayTrades,o=e.outcome?.horizons||{};
+   let stamp='—';try{stamp=new Date(e.observedAt).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false})}catch(_){}
+   out+='<tr><td>'+esc(stamp)+'</td><td>'+esc(e.code)+' L'+num(e.layer)+'</td><td>'+num(e.price)+'</td>'+
+    '<td>'+esc(classificationLabel(x.category))+'</td>'+
+    '<td>'+ (a.trades.available?num(t.modelBefore)+' / '+num(t.modelAfter):'—')+'</td>'+
+    '<td>'+ (a.trades.available?num(t.manualBefore)+' / '+num(t.manualAfter):'—')+'</td>'+
+    '<td>'+pct(o[5]?.netReturnPct)+'</td></tr>';
+  }
+  out+='</tbody></table></div>';
+ }
+ out+='<div class="note" style="margin-top:9px"><b>驗證界線：</b>'+
+  '這些是假設以當時觀測價進場的事後日K代理報酬，並非成交或正式模型放行。當日其他時段仍可能已正式確認。'+
+  '未滿5／20／60交易日不得計為贏或輸。自主／模型實際成交使用含權息總報酬、研究代理使用估計往返成本，兩者口徑及樣本不同，不可用平均值直接判定誰優。'+
+  '樣本只有'+num(a.observations)+'筆，不能據此直接移除硬Gate；正式 Gate、持股及交易紀錄均未改動。</div></section>';
+ return out;
+}
+
 function render(data){
  const dest=el();if(!dest)return;
  if(!data?.ok){dest.textContent='紀錄暫時無法載入：'+(data?.error||'請稍後重試');return}
  if(!data.storageReady){dest.innerHTML='<div class="notice">雲端保存尚未啟用；沒有假裝背景追蹤成功。'+esc(data.error||'')+'</div>';return}
  const sm=data.summary||{},n=data.eventCount||0;
- let html='<div class="reading">累積觀察 '+num(n)+'筆（最近最多500筆）｜觀察日期至 '+esc(data.asOf)+
+ let html=octAuditHtml(data)+'<div class="reading">累積觀察 '+num(n)+'筆（最近最多500筆）｜觀察日期至 '+esc(data.asOf)+
   '｜<b>僅研究、未下單、不列入持股或正式交易績效</b>。記錄限於背景真正看見的報價，無法回填已錯過的盤中最低價。</div>';
  html+='<div class="grid4" style="margin-top:12px">';
  for(const code of ['0050','0056','00878','00919']){
@@ -63,5 +119,5 @@ async function load(force=false){
  })();
  return inflight;
 }
-root.GateBlockedUI={load,render};
+root.GateBlockedUI={load,render,setTradeProvider};
 })(window);
