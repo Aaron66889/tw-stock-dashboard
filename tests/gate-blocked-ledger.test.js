@@ -106,11 +106,11 @@ test('separate Supabase ledger, no writes on buy-model API or browser session, a
  assert.match(s,/GATE_LEDGER\.observationCandidates/);
  assert.match(s,/gateLedgerLease\(\)/);
  assert.match(s,/if\(old\)continue; \/\/ Historical first live observation must remain immutable/);
- assert.match(s,/code:GATE_LEDGER\.RECORD_CODE/);
+ assert.match(s,/storageCode:GATE_LEDGER\.RECORD_CODE/);\n assert.match(s,/code:storageCode/);\n assert.match(s,/GATE_DEDUP\.observationCandidates/); // shared immutable forward scanner
  assert.match(s,/api\/gate-blocked-forward/);
  assert.match(h,/id="gateBlockedLedger"/);
  assert.ok(h.indexOf('/gate-blocked-ui.js')<h.indexOf('/app.js?v='));
  assert.match(app,/GateBlockedUI\?\.load\(false\)/);
  assert.doesNotMatch(ui,/localStorage\.setItem|POST|write/);
- assert.match(s,/hardVeto=gatePolicy\.hardBlocked/); // Official scoring/gate remains unchanged.
+ assert.match(s,/hardVeto=gatePolicy\.hardBlocked/); // Official risk Gate has been explicitly revised; read-only ledger remains separate.
 });
