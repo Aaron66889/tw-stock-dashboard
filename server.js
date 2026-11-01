@@ -14,6 +14,7 @@ const TREND_LEDGER=require('./trend-forward-ledger');
 const CRASH_GATE_LAB=require('./crash-gate-lab');
 const GATE_LEDGER=require('./gate-blocked-ledger');
 const OFFICIAL_GATE=require('./gate-policy');
+const GATE_DEDUP=require('./gate-dedup-forward-ledger');
 let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 
 const PORT=process.env.PORT||3000;
@@ -3221,6 +3222,13 @@ async function gateLedgerRows(){
  return(rows||[]).map(r=>r.payload).filter(p=>p?.version===GATE_LEDGER.VERSION&&
   ETF.includes(p.code)&&p.id===GATE_LEDGER.eventId(p.code,p.day,p.layer));
 }
+async function gateDedupRows(){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return[];
+ const rows=await supabaseRest('model_trades?code=eq.'+encodeURIComponent(GATE_DEDUP.RECORD_CODE)+
+  '&select=payload&order=entry_at.desc&limit=500',{timeoutMs:9000});
+ return(rows||[]).map(r=>r.payload).filter(p=>p?.version===GATE_DEDUP.VERSION&&
+  ETF.includes(p.code)&&p.id===GATE_DEDUP.eventId(p.code,p.day,p.layer));
+}
 async function gateLedgerLease(){
  const now=Date.now(),id=GATE_LEDGER.LEASE_ID;
  for(let attempt=0;attempt<3;attempt++){
@@ -3239,18 +3247,23 @@ async function gateLedgerScan(){
  const data=RUNTIME.bm,now=Date.now();
  // Never fetch/recompute buyModel or external quotes merely to populate this ledger.
  // It only observes already-computed live, fresh official snapshots.
- const candidates=ETF.flatMap(code=>GATE_LEDGER.observationCandidates(code,
-  data?.models?.[code],data?.quotes?.[code],data,{day:clock.day,nowMs:now}));
+ const candidates=ETF.flatMap(code=>{
+  const args=[code,data?.models?.[code],data?.quotes?.[code],data,{day:clock.day,nowMs:now}];
+  return[
+   ...GATE_LEDGER.observationCandidates(...args).map(candidate=>({candidate,storageCode:GATE_LEDGER.RECORD_CODE})),
+   ...GATE_DEDUP.observationCandidates(...args).map(candidate=>({candidate,storageCode:GATE_DEDUP.RECORD_CODE}))
+  ];
+ });
  if(!candidates.length)return;
  GATE_LEDGER_SCANNING=true;GATE_LEDGER_STATUS.lastAttemptAt=new Date(now).toISOString();
  try{
   if(!await gateLedgerLease())return;
   let writes=0;
-  for(const candidate of candidates){
+  for(const {candidate,storageCode} of candidates){
    const old=(await cloudRowsById(candidate.id))[0];
    if(old)continue; // Historical first live observation must remain immutable.
    if(await conditionalCloudTradeWrite(null,{
-    id:candidate.id,code:GATE_LEDGER.RECORD_CODE,
+    id:candidate.id,code:storageCode,
     entry_at:candidate.observedAt,payload:candidate
    }))writes++;
   }
@@ -3264,18 +3277,24 @@ async function gateLedgerReport(){
  const storageReady=!!(SUPABASE_URL&&SUPABASE_SECRET_KEY),today=ymdTaipei();
  if(!storageReady)return{ok:true,storageReady:false,version:GATE_LEDGER.VERSION,
   error:'Supabase未設定，未啟用持久化觀察',summary:GATE_LEDGER.summarize([]),events:[]};
- const raw=await gateLedgerRows(),codes=[...new Set(raw.map(x=>x.code))],hist={};
+ const [raw,rawDedup]=await Promise.all([gateLedgerRows(),gateDedupRows()]);
+ const codes=[...new Set([...raw,...rawDedup].map(x=>x.code))],hist={};
  await Promise.all(codes.map(async code=>{
   const h=await deadline(etfHistory(code).catch(()=>null),8000,null);
   hist[code]=Array.isArray(h?.rows)?h.rows:null;
  }));
  const evaluated=raw.map(e=>hist[e.code]?GATE_LEDGER.evaluate(e,hist[e.code],today):
   {...e,outcome:null,dataError:'歷史日K尚未取得，績效暫不計算'});
+ const evaluatedDedup=rawDedup.map(e=>hist[e.code]?GATE_LEDGER.evaluate(e,hist[e.code],today):
+  {...e,outcome:null,dataError:'歷史日K尚未取得，績效暫不計算'});
  return{ok:true,version:GATE_LEDGER.VERSION,build:BUILD,storageReady:true,
   asOf:today,generatedAt:new Date().toISOString(),source:'Supabase獨立不可改寫事件帳簿',
   sampleWindow:'最近最多500筆，依首次盤中觀測時間排序；不是全市場完整樣本',
   scanStatus:{...GATE_LEDGER_STATUS},eventCount:evaluated.length,
   summary:GATE_LEDGER.summarize(evaluated),events:evaluated.slice(0,80),
+  dedupForward:{version:GATE_DEDUP.VERSION,eventCount:evaluatedDedup.length,
+   summary:GATE_LEDGER.summarize(evaluatedDedup),events:evaluatedDedup.slice(0,50),
+   label:'僅記錄舊Gate會阻擋、現行獨立硬Gate未阻擋的實際盤中落帶報價；不等於正式買入確認'},
   limitations:'僅記錄背景程序實際觀測到的報價落在買點帶、但正式硬Gate阻擋之事件，每檔每層每天最多一筆。不回填未觀測到的盤中最低價。被阻擋並不等於完整兩次確認或保證能以觀測價成交。績效為還原日K代理、約扣0.385%往返成本，排除進場當日MAE/MFE，需下一交易日才有完整持有期；不等於實際交易，也不是已驗證的替代策略。'};
 }
 
