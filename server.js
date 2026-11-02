@@ -380,6 +380,21 @@ async function yahooTwOne(code,isIndex=false){
  };
 }
 
+// Cache only today's independently dated TWSE opening quotes.
+const ETF_SESSION_OPENS={};
+function officialQuoteDay(raw){
+ const v=String(raw||'').trim();
+ if(/^20\d{2}-\d{2}-\d{2}$/.test(v))return v;
+ if(/^20\d{6}$/.test(v))return v.slice(0,4)+'-'+v.slice(4,6)+'-'+v.slice(6,8);
+ if(/^1\d{6}$/.test(v))return String(Number(v.slice(0,3))+1911)+'-'+v.slice(3,5)+'-'+v.slice(5,7);
+ const roc=v.match(/^(1\d{2})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+ if(roc)return String(Number(roc[1])+1911)+'-'+roc[2].padStart(2,'0')+'-'+roc[3].padStart(2,'0');
+ return null;
+}
+function verifiedEtfOpen(code,day){const v=ETF_SESSION_OPENS[code];return v?.day===day&&v.price>0?v:null}
+function storeVerifiedEtfOpen(code,day,price,source){
+ if(Number(price)>0)ETF_SESSION_OPENS[code]={day,price:Number(price),source};
+}
 const ETF_QUOTE_LAST_GOOD={};
 const MARKET_LAST_GOOD={data:null,at:0,day:null};
 function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||Number(q?.open)>0)}
@@ -422,11 +437,15 @@ async function liveEtf4(){
  // trading day, including after 13:30. Without it the official first-layer
  // cap can silently disappear when Anue omits its opening-price field.
  const openRequiredToday=twAfterCashOpenNow();
- const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!(quotes[c]?.open>0)));
+ const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!verifiedEtfOpen(c,today)));
  if(needMis.length){
   try{
    const ex=needMis.map(c=>'tse_'+c+'.tw').join('|'),rows=(await mis(ex)).msgArray||[],by={};
-   for(const x of rows){const q=parseMis(x);if(ETF.includes(q.ticker))by[q.ticker]=q}
+   for(const x of rows){const q=parseMis(x);if(ETF.includes(q.ticker)){
+    by[q.ticker]=q;
+    if(openRequiredToday&&officialQuoteDay(q.date)===today&&q.open>0)
+     storeVerifiedEtfOpen(q.ticker,today,q.open,'TWSE MIS');
+   }}
    for(const c of needMis){
     const q=by[c];if(!q)continue;
     if(!quotes[c]&&q.last>0)quotes[c]={...q,source:'TWSE MIS fallback',realtime:true,serverFetchedAt:new Date().toISOString()};
@@ -438,6 +457,22 @@ async function liveEtf4(){
     }
    }
   }catch(e){errors.push('TWSE MIS field fill: '+(e.message||String(e)))}
+ }
+ // TWSE official open overrides an unverified Anue opening field.
+ for(const c of ETF){const o=verifiedEtfOpen(c,today);if(o&&quotes[c]){
+   quotes[c].open=o.price;quotes[c].openSource=o.source;
+ }}
+ // After cash close, cross-check with today's official OHLC (never prior-day).
+ if(openRequiredToday&&!twMarketOpenNow()){
+  try{
+   const daily=await deadline(twseDailyAll().catch(()=>null),3800,null);
+   for(const c of ETF){const row=daily?.map?.[c];
+    if(row?.open>0&&officialQuoteDay(row.date)===today){
+     storeVerifiedEtfOpen(c,today,row.open,'TWSE STOCK_DAY_ALL');
+     if(quotes[c]){quotes[c].open=row.open;quotes[c].openSource='TWSE STOCK_DAY_ALL'}
+    }
+   }
+  }catch(e){errors.push('TWSE official session open: '+(e.message||String(e)))}
  }
  // Cash-session open is required by the existing anti-chase ceiling.
  // Some ETF transports return fresh last/prev but leave open blank.
@@ -2446,6 +2481,7 @@ function buildEnvironment(code,ld,ctx,ovs,nf,health){
 }
 function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  const cfg=options.cfgOverride||META[code].cfg,st=histStats(hist.rows,cfg.q),px=quote?.last??st.prevClose,prev=quote?.prevClose??st.prevClose,rawPrev=n(quote?.rawPrevClose)??prev;if(!(px>0&&prev>0))throw Error('No current price '+code);
+ if(twAfterCashOpenNow()&&!(n(quote?.open)>0))throw Error('今日開盤價缺失，停止發布未受開盤價限制的買點');
  // On an ex-right/ex-dividend day the live price is on the post-action scale while yesterday's history is still on the pre-action scale.
  // Use TWSE's effective reference for today's layers/P&L and map current-price-vs-history diagnostics back to the pre-action scale so chaseRisk is not mechanically deflated by the dividend gap.
  const actionFactor=quote?.corporateActionAdjusted&&rawPrev>0&&prev>0?prev/rawPrev:1,histPx=actionFactor>0?px/actionFactor:px;
