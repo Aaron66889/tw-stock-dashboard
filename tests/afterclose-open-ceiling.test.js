@@ -58,7 +58,7 @@ test('all ETF open caps remain inactive before 09:00 and on weekend',()=>{
 
 test('server fetches and validates the actual open after cash close, not only while trading',()=>{
  assert.match(server,/const openRequiredToday=twAfterCashOpenNow\(\)/);
- assert.match(server,/const needMis=ETF\.filter\([^;\n]+openRequiredToday&&!\(quotes\[c\]\?\.open>0\)/);
+ assert.match(server,/const needMis=ETF\.filter\([^;\n]+openRequiredToday&&!verifiedEtfOpen\(c,today\)/);
  assert.match(server,/if\(openRequiredToday\)\{\s*const needOpen=ETF\.filter/);
  assert.match(server,/const openRequired=openRequiredToday,now=Date\.now\(\)/);
  assert.match(server,/openRequired=twAfterCashOpenNow\(\)/);
