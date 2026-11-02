@@ -41,8 +41,10 @@ async function run(){
   const open=Number(st.open??q.open),L1=Number(model?.raw?.first?.high);
   const gate=model?.decisionGate?.status||null;
   const session=model?.firstLayerCalibration?.sessionOpenPolicy||{};
-  const isFlex=String(model?.firstLayerCalibration?.version||'').startsWith('first-touch-flex-v4');
-  const policy=SessionEntry.calculate({open,atr:model?.history?.atr14,
+  const version=String(model?.firstLayerCalibration?.version||'');
+  const isFlex=version.startsWith('first-touch-flex-v4')||version.startsWith('first-touch-depth-v5');
+  const isDepth=version.startsWith('first-touch-depth-v5');
+  const policy=SessionEntry.calculate({open,referenceClose:model?.prevClose,atr:model?.history?.atr14,
    environmentScore:model?.environmentScore,chaseRisk:model?.chaseRisk,
    chaseWarningThreshold:model?.chaseWarningThreshold,
    chaseHardThreshold:model?.chaseHardThreshold,hardVeto:model?.hardVeto});
@@ -57,15 +59,19 @@ async function run(){
    }else if(!(open>0)||st.openVerified!==true){
     result='FAIL_OPEN_UNVERIFIED';
     issues.push(code+' model issued without independently date-verified open');
-   }else if(isFlex&&(!(policy.active)||Math.abs(policy.maxFirstZoneHigh-cap)>.002)){
+   }else if(isFlex&&(!(policy.active)||Math.abs((isDepth?policy.maxFirstZoneHigh:policy.openCeiling)-cap)>.002)){
     result='FAIL_L1_POLICY_MISMATCH';
     issues.push(code+' reported cap='+cap+' differs from independent risk policy '+policy.maxFirstZoneHigh);
+    }else if(isDepth&&(!(session.minimumDepth>0)||!(session.referenceClose>0)||
+    !(cap<=Number(session.referenceClose)-Number(session.minimumDepth)+.002))){
+    result='FAIL_MINIMUM_RETRACE_MISSING';
+    issues.push(code+' missing actual ATR-depth gate; cap='+cap+' close='+session.referenceClose);
    }else if(!(L1>0)||!(cap>0)||L1>cap+.001){
     result='FAIL_L1_ABOVE_RISK_CAP';
     issues.push(code+' L1 high='+L1+' exceeds independently checked cap='+cap+' opening='+open);
-   }else result=isFlex?'PASS_ATR_LIMITED_CAP':'PASS_LEGACY_OPEN_CAP';
+   }else result=isDepth?'PASS_MINIMUM_DEPTH':isFlex?'PASS_ATR_LIMITED_CAP':'PASS_LEGACY_OPEN_CAP';
   }
-  console.log(JSON.stringify({code,marketDate:q.date||null,price:Number(q.last)||null,open:Number.isFinite(open)?open:null,openSource:st.openSource||q.openSource||null,openVerified:st.openVerified===true,l1High:Number.isFinite(L1)?L1:null,l1PolicyCap:Number.isFinite(cap)?cap:null,sessionHeadroom:isFlex?session.headroom:null,mode:isFlex?session.mode:'LEGACY',gate,modelFresh:buy.modelFreshByCode?.[code],modelError:model?.error||null,result}));
+  console.log(JSON.stringify({code,marketDate:q.date||null,price:Number(q.last)||null,open:Number.isFinite(open)?open:null,openSource:st.openSource||q.openSource||null,openVerified:st.openVerified===true,l1High:Number.isFinite(L1)?L1:null,l1PolicyCap:Number.isFinite(cap)?cap:null,sessionHeadroom:isFlex?session.headroom:null,effectivePriorClose:isDepth?session.referenceClose:null,minDepth:isDepth?session.minimumDepth:null,currentToL1:Number(q.last)-L1,mode:isFlex?session.mode:'LEGACY',gate,modelFresh:buy.modelFreshByCode?.[code],modelError:model?.error||null,result}));
  }
  if(eligible&&issues.length)throw Error(issues.length+' ETF live checks failed: '+issues.join(' | '));
  console.log('Production cash-open smoke '+(eligible?'PASS':'SKIP: preopen/non-session time'));

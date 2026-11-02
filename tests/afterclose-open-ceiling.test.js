@@ -64,7 +64,7 @@ test('server fetches and validates the actual open after cash close, not only wh
  assert.match(server,/openRequired=twAfterCashOpenNow\(\)/);
  assert.match(server,/const openRefMissing=cashOpenCapActive&&!\(sessionOpen>0\)/);
  assert.match(server,/const stale=!fresh\|\|openRefMissing/);
- assert.match(server,/當日開盤價尚未確認，第一層不得高於開盤價/);
+ assert.match(server,/當日開盤價尚未確認，無法計算有效回檔深度/);
 });
 
 test('one valid same-day open caps L1 but does not raise a lower statistical target',()=>{
