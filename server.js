@@ -14,6 +14,7 @@ const TREND_LEDGER=require('./trend-forward-ledger');
 const CRASH_GATE_LAB=require('./crash-gate-lab');
 const GATE_LEDGER=require('./gate-blocked-ledger');
 const OFFICIAL_GATE=require('./gate-policy');
+const SESSION_ENTRY=require('./public/session-entry-policy');
 const GATE_DEDUP=require('./gate-dedup-forward-ledger');
 let XLSX=null; try{XLSX=require('xlsx')}catch(_){}
 
@@ -2506,18 +2507,27 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  // R16.8.44 hard anti-chase rule: after the 09:00 cash open is known, Layer-1's HIGH edge may never be above today's ETF open.
  // If the statistical/re-anchor target rises above the open, cap Layer 1 at the open and push Layer 2/3 down only as much as needed to preserve spacing.
  const cashOpenCapActive=twAfterCashOpenNow(),sessionOpen=cashOpenCapActive?n(quote?.open):null,uncappedL1=l1;
- let openCapApplied=false;
- if(sessionOpen>0){const maxL1Center=sessionOpen-zoneW;if(l1>maxL1Center){l1=maxL1Center;openCapApplied=true}}
- l2=Math.min(l2,l1-Math.max(atr*.35,prev*.004));l3=Math.min(l3,l2-Math.max(atr*.45,prev*.006));
+ // Verified opening price remains mandatory; the cap itself can allow a small
+ // risk-filtered ATR headroom. The opening is never a blanket buy-price veto.
  const marketCh=movePct(env.liveMarket),tsmcCh=movePct(env.liveTsmc),b=env.breadth?.usableForModel?env.breadth:null;
- // Only count independently observed risk families. Composite environment
- // already contains market/TSMC/breadth and must not cast an extra veto vote.
  const openRefMissing=cashOpenCapActive&&!(sessionOpen>0);
  const stale=!fresh||openRefMissing,corpActionBlocked=quote?.corporateActionReferenceMissing===true;
  const gatePolicy=OFFICIAL_GATE.evaluate({marketPct:marketCh,tsmcPct:tsmcCh,
   breadthRatio:b?.ratio??null,breadthUsable:!!b,environmentScore:env.score,
   fresh:!stale,corpActionBlocked});
- const knife=gatePolicy.independent.count,hardVeto=gatePolicy.hardBlocked,z1=z(l1);
+ const knife=gatePolicy.independent.count,hardVeto=gatePolicy.hardBlocked;
+ const entryPolicy=SESSION_ENTRY.calculate({
+  open:sessionOpen,atr,environmentScore:env.score,chaseRisk,
+  chaseWarningThreshold,chaseHardThreshold,hardVeto
+ });
+ let openCapApplied=false;
+ if(entryPolicy.active&&l1+zoneW>entryPolicy.maxFirstZoneHigh){
+  l1=entryPolicy.maxFirstZoneHigh-zoneW;openCapApplied=true;
+ }
+ l2=Math.min(l2,l1-Math.max(atr*.35,prev*.004));l3=Math.min(l3,l2-Math.max(atr*.45,prev*.006));
+ // Composite environment score remains a scoring input, never an
+ // independent risk vote. Calculation shared above with entry headroom.
+ const z1=z(l1);
  // Price-fit must improve as price approaches layer 1. The previous formula rewarded being farther ABOVE l1, so score fell exactly when the buy zone was reached.
  const aboveZonePct=px>z1.high?(px-z1.high)/px*100:0,belowZonePct=px<z1.low?(z1.low-px)/px*100:0;
  const priceFit=px>z1.high?clamp(14-aboveZonePct*8,-8,14):(px<z1.low?clamp(14-belowZonePct*4,8,14):14);
@@ -2529,7 +2539,7 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  const chaseNoBuy=chaseRisk>=chaseHardThreshold&&(!(sessionOpen>0)||aboveSessionOpen);
  const noBuyToday=!hardVeto&&(chaseNoBuy||(score<40&&px>z1.high));
  const noBuyReason=noBuyToday?(chaseNoBuy&&sessionOpen>0?`現價仍高於今日開盤 ${sessionOpen.toFixed(2)}，追高風險 ${chaseRisk} 已達本檔歷史硬線 ${chaseHardThreshold}；不往上追買。`:'現價偏離合理區過遠／追高風險過高，今日不硬生買點'):null;
- const calibrationVersion=sessionOpen>0?'first-touch-open-cap-v3-three-layer-live':'first-touch-open-cap-v3-three-layer-preopen';
+ const calibrationVersion=sessionOpen>0?'first-touch-flex-v4-'+sessionOpen.toFixed(4):'first-touch-flex-v4-preopen';
  // 16.8.60 observability only: expose distance/reachability without changing any buy-point or Gate rule.
  const sessionLow=n(quote?.low),sessionHigh=n(quote?.high),dropNeeded=Math.max(0,px-z1.high),dropNeededPct=px>0?dropNeeded/px*100:null,atrPct=px>0?atr/px*100:null,atrUnits=atr>0?dropNeeded/atr:null;
  const touchedToday=sessionLow>0?sessionLow<=z1.high:px<=z1.high;
@@ -2539,7 +2549,7 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  const historyView={...st,sma20:Number.isFinite(st.sma20)?st.sma20*actionFactor:st.sma20,sma60:Number.isFinite(st.sma60)?st.sma60*actionFactor:st.sma60,sma120:Number.isFinite(st.sma120)?st.sma120*actionFactor:st.sma120,sma250:Number.isFinite(st.sma250)?st.sma250*actionFactor:st.sma250,atr14:atr};
  // Confirmation cycles must represent distinct market observations, not two browser/model refreshes of the same quote.
  const quoteObservationKey=[quote?.date||'',quote?.time||'',n(quote?.last)??'',n(quote?.high)??'',n(quote?.low)??'',n(quote?.volume)??''].join('|');
- return{code,name:META[code].name,price:px,prevClose:prev,rawPrevClose:rawPrev,effectivePrevClose:prev,referenceSource:quote?.referenceSource||'行情昨收',referenceReliable:quote?.referenceReliable!==false,corporateAction:quote?.corporateAction||null,corporateActionAdjusted:!!quote?.corporateActionAdjusted,corporateActionReferenceMissing:!!quote?.corporateActionReferenceMissing,quoteObservationKey,quoteObservedAt:quote?.time||null,riskGate:gatePolicy,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:hardReason,noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...historyView,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull,corporateActionScaleFactor:actionFactor},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:sessionOpen??null}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,cashHistory:hist.cashAdjusted||null,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),modelVariant:options.variant||'official',method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 cash-open hard anti-chase ceiling + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold + daily locked calibration + TWSE TWT49U effective ex-right/ex-dividend reference'};
+ return{code,name:META[code].name,price:px,prevClose:prev,rawPrevClose:rawPrev,effectivePrevClose:prev,referenceSource:quote?.referenceSource||'行情昨收',referenceReliable:quote?.referenceReliable!==false,corporateAction:quote?.corporateAction||null,corporateActionAdjusted:!!quote?.corporateActionAdjusted,corporateActionReferenceMissing:!!quote?.corporateActionReferenceMissing,quoteObservationKey,quoteObservedAt:quote?.time||null,riskGate:gatePolicy,score,chaseRisk,chaseWarningThreshold,chaseHardThreshold,chaseCalibration,hardVeto,hardVetoReason:hardReason,noBuyToday,noBuyReason,environmentScore:env.score,environmentParts:env.parts,health:health?{score:health.score,usable:health.usable,divergence:health.divergence,sourceCoverage:health.sourceCoverage,quoteCoverage:health.quoteCoverage}:null,scoreBreakdown:{base:58,priceFit,chase:chaseScore,environment:envScorePart,health:healthScorePart,preGateScore:58+priceFit+chaseScore+envScorePart+healthScorePart,finalScore:score,hardGateCap:hardVeto?42:null,aboveFirstZonePct:aboveZonePct,belowFirstZonePct:belowZonePct,firstZone:z1},decisionGate,reachability:{label:reachabilityLabel,touchedToday,dropNeeded,dropNeededPct,atr,atrPct,atrUnits,todayLow:sessionLow,todayHigh:sessionHigh,firstZoneHigh:z1.high},history:{...historyView,pricePercentile:pctile,dev20Pct:dev20*100,r20Pct:r20*100,bullStructure:!!bull,corporateActionScaleFactor:actionFactor},firstLayerCalibration:{version:calibrationVersion,targetQuantile:cfg.q[0],...firstCal,sessionOpenPolicy:{active:sessionOpen>0,sessionOpen:sessionOpen??null,applied:openCapApplied,uncappedCenter:uncappedL1,cappedCenter:l1,maxFirstZoneHigh:entryPolicy.active?entryPolicy.maxFirstZoneHigh:null,headroom:entryPolicy.headroom,mode:entryPolicy.mode,entryPolicyVersion:entryPolicy.version}},raw:{first:z1,second:z(l2),third:z(l3)},historySource:hist.source,cashHistory:hist.cashAdjusted||null,historyOfficial:!!hist.validation?.fullHistoryPass,historyProgress:historyProgress(code),modelVariant:options.variant||'official',method:'full-history price core + ETF-specific intraday touch quantile + ATR-bounded first-layer accessibility + 08:45 TXF day-session lead + 09:00 verified-open risk-filtered ATR entry headroom + threshold-based touch + proximity-correct score gate + environment/health + coherent three-layer confirmed-center re-anchor + ETF-specific historical walk-forward chase threshold + daily locked calibration + TWSE TWT49U effective ex-right/ex-dividend reference'};
 }
 async function buyModel(){
  const historyTimeout=c=>({ok:false,code:c,rows:[],source:'歷史來源逾時（模型暫以即時價＋保守預設運作）',validation:{fullHistoryPass:false},error:'history deadline exceeded'});
