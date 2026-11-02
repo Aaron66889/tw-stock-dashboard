@@ -220,7 +220,7 @@ test('complete formal models render all four ETFs, history and 45 validation slo
  const b=backend(),c=client();
  b.run(`diskWrite=()=>{};dailyChaseCalibration=()=>({effectiveHardThreshold:88,warningThreshold:80});`);
  b.ctx.history={rows:Array.from({length:300},(_,i)=>({date:new Date(Date.UTC(2025,8,1+i)).toISOString().slice(0,10),close:80+i*.06,open:79.9+i*.06,high:80.5+i*.06,low:79.5+i*.06,ohlc:true})),validation:{backtestReadyPass:true,fullHistoryPass:true},source:'mock validated history'};
- b.ctx.quotes=Object.fromEntries(['0050','0056','00878','00919'].map(code=>[code,{last:98,prevClose:99,open:99,low:97,high:99,time:new Date().toISOString()}]));
+ b.ctx.quotes=Object.fromEntries(['0050','0056','00878','00919'].map(code=>[code,{last:98,prevClose:99,open:99,openVerified:true,low:97,high:99,time:new Date().toISOString()}]));
  const models=clone(b.run(`Object.fromEntries(ETF.map(code=>[code,modelOne(code,quotes[code],history,{score:30,parts:[]},null,true)]))`));
  c.ctx.models=models;c.ctx.quotes=b.ctx.quotes;
  c.run(`lastLive={quotes};lastBuy={models,quotes,dataFresh:true,tradingDates:[]};updateState();renderAllModel();setPage('model');renderSpecs(true);`);

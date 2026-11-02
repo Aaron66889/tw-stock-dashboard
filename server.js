@@ -380,9 +380,24 @@ async function yahooTwOne(code,isIndex=false){
  };
 }
 
+// Cache only today's independently dated TWSE opening quotes.
+const ETF_SESSION_OPENS={};
+function officialQuoteDay(raw){
+ const v=String(raw||'').trim();
+ if(/^20\d{2}-\d{2}-\d{2}$/.test(v))return v;
+ if(/^20\d{6}$/.test(v))return v.slice(0,4)+'-'+v.slice(4,6)+'-'+v.slice(6,8);
+ if(/^1\d{6}$/.test(v))return String(Number(v.slice(0,3))+1911)+'-'+v.slice(3,5)+'-'+v.slice(5,7);
+ const roc=v.match(/^(1\d{2})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+ if(roc)return String(Number(roc[1])+1911)+'-'+roc[2].padStart(2,'0')+'-'+roc[3].padStart(2,'0');
+ return null;
+}
+function verifiedEtfOpen(code,day){const v=ETF_SESSION_OPENS[code];return v?.day===day&&v.price>0?v:null}
+function storeVerifiedEtfOpen(code,day,price,source){
+ if(Number(price)>0)ETF_SESSION_OPENS[code]={day,price:Number(price),source};
+}
 const ETF_QUOTE_LAST_GOOD={};
 const MARKET_LAST_GOOD={data:null,at:0,day:null};
-function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||Number(q?.open)>0)}
+function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||(Number(q?.open)>0&&q?.openVerified===true))}
 async function liveStable(extra=[]){
  let d=null,err=null;
  try{d=await live(extra)}catch(e){err=e}
@@ -422,11 +437,15 @@ async function liveEtf4(){
  // trading day, including after 13:30. Without it the official first-layer
  // cap can silently disappear when Anue omits its opening-price field.
  const openRequiredToday=twAfterCashOpenNow();
- const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!(quotes[c]?.open>0)));
+ const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!verifiedEtfOpen(c,today)));
  if(needMis.length){
   try{
    const ex=needMis.map(c=>'tse_'+c+'.tw').join('|'),rows=(await mis(ex)).msgArray||[],by={};
-   for(const x of rows){const q=parseMis(x);if(ETF.includes(q.ticker))by[q.ticker]=q}
+   for(const x of rows){const q=parseMis(x);if(ETF.includes(q.ticker)){
+    by[q.ticker]=q;
+    if(openRequiredToday&&officialQuoteDay(q.date)===today&&q.open>0)
+     storeVerifiedEtfOpen(q.ticker,today,q.open,'TWSE MIS');
+   }}
    for(const c of needMis){
     const q=by[c];if(!q)continue;
     if(!quotes[c]&&q.last>0)quotes[c]={...q,source:'TWSE MIS fallback',realtime:true,serverFetchedAt:new Date().toISOString()};
@@ -439,12 +458,28 @@ async function liveEtf4(){
    }
   }catch(e){errors.push('TWSE MIS field fill: '+(e.message||String(e)))}
  }
+ // TWSE official open overrides an unverified Anue opening field.
+ for(const c of ETF){const o=verifiedEtfOpen(c,today);if(o&&quotes[c]){
+   quotes[c].open=o.price;quotes[c].openSource=o.source;quotes[c].openVerified=true;
+ }}
+ // After cash close, cross-check with today's official OHLC (never prior-day).
+ if(openRequiredToday&&!twMarketOpenNow()){
+  try{
+   const daily=await deadline(twseDailyAll().catch(()=>null),3800,null);
+   for(const c of ETF){const row=daily?.map?.[c];
+    if(row?.open>0&&officialQuoteDay(row.date)===today){
+     storeVerifiedEtfOpen(c,today,row.open,'TWSE STOCK_DAY_ALL');
+     if(quotes[c]){quotes[c].open=row.open;quotes[c].openSource='TWSE STOCK_DAY_ALL';quotes[c].openVerified=true}
+    }
+   }
+  }catch(e){errors.push('TWSE official session open: '+(e.message||String(e)))}
+ }
  // Cash-session open is required by the existing anti-chase ceiling.
  // Some ETF transports return fresh last/prev but leave open blank.
  // Fill ONLY missing session fields from the already-existing Yahoo 1m/meta path.
  // Never overwrite a valid live last price.
  if(openRequiredToday){
-  const needOpen=ETF.filter(c=>quotes[c]?.last>0&&!(Number(quotes[c]?.open)>0));
+  const needOpen=ETF.filter(c=>quotes[c]?.last>0&&!quotes[c]?.openVerified);
   if(needOpen.length){
    try{
     const ys=await Promise.all(needOpen.map(async c=>[
@@ -452,13 +487,13 @@ async function liveEtf4(){
      await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
     ]));
     for(const [c,y] of ys){
-     if(!y||!(Number(y.open)>0)||!quotes[c])continue;
+     if(!y||!(Number(y.open)>0)||!quotes[c]||!Number.isFinite(Date.parse(y.time||''))||ymdTaipei(new Date(y.time))!==today)continue;
      const z=quotes[c];
      z.open=Number(y.open);
      if(!(Number(z.high)>0)&&Number(y.high)>0)z.high=Number(y.high);
      if(!(Number(z.low)>0)&&Number(y.low)>0)z.low=Number(y.low);
      if(!(Number(z.prevClose)>0)&&Number(y.prevClose)>0)z.prevClose=Number(y.prevClose);
-     z.openSource='Yahoo Finance 1m/meta';
+     z.openSource='Yahoo Finance 1m/meta（當日時間核對）';z.openVerified=true;
      z.source=(z.source||'ETF live')+'＋Yahoo開盤補全';
     }
    }catch(e){errors.push('Yahoo ETF open fill: '+(e.message||String(e)))}
@@ -2446,6 +2481,7 @@ function buildEnvironment(code,ld,ctx,ovs,nf,health){
 }
 function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  const cfg=options.cfgOverride||META[code].cfg,st=histStats(hist.rows,cfg.q),px=quote?.last??st.prevClose,prev=quote?.prevClose??st.prevClose,rawPrev=n(quote?.rawPrevClose)??prev;if(!(px>0&&prev>0))throw Error('No current price '+code);
+ if(twAfterCashOpenNow()&&(!(n(quote?.open)>0)||quote?.openVerified!==true))throw Error('今日開盤價尚未跨來源核對，暫停正式買點，避免第一層高於開盤');
  // On an ex-right/ex-dividend day the live price is on the post-action scale while yesterday's history is still on the pre-action scale.
  // Use TWSE's effective reference for today's layers/P&L and map current-price-vs-history diagnostics back to the pre-action scale so chaseRisk is not mechanically deflated by the dividend gap.
  const actionFactor=quote?.corporateActionAdjusted&&rawPrev>0&&prev>0?prev/rawPrev:1,histPx=actionFactor>0?px/actionFactor:px;
@@ -2533,8 +2569,8 @@ async function buyModel(){
  const marketFieldsOk=!!(ld?.market?.last>0&&(!openRequired||ld.realtime!==false));
  const marketFresh=marketFieldsOk&&Number.isFinite(marketAgeMs)&&marketAgeMs<90000;
  const quoteStatus=Object.fromEntries(ETF.map(c=>{const q=etfLd?.quotes?.[c]||{},qat=Date.parse(q.serverFetchedAt||etfLd?.fetchedAt||0),ageMs=qat?Date.now()-qat:Infinity;
-  const fieldsOk=Number(q.last)>0&&Number(q.prevClose)>0&&(!openRequired||Number(q.open)>0),ok=fieldsOk&&ageMs<90000;
-  return[c,{ok,fieldsOk,ageMs:Number.isFinite(ageMs)?ageMs:null,last:Number(q.last)||null,prevClose:Number(q.prevClose)||null,rawPrevClose:Number(q.rawPrevClose)||null,effectivePrevClose:Number(q.effectivePrevClose)||null,referenceSource:q.referenceSource||null,referenceReliable:q.referenceReliable!==false,corporateActionAdjusted:!!q.corporateActionAdjusted,corporateActionReferenceMissing:!!q.corporateActionReferenceMissing,corporateAction:q.corporateAction||null,open:Number(q.open)||null,openSource:q.openSource||null,source:q.source||null,lastGoodFallback:!!q.lastGoodFallback}]}));
+  const fieldsOk=Number(q.last)>0&&Number(q.prevClose)>0&&(!openRequired||(Number(q.open)>0&&q.openVerified===true)),ok=fieldsOk&&ageMs<90000;
+  return[c,{ok,fieldsOk,ageMs:Number.isFinite(ageMs)?ageMs:null,last:Number(q.last)||null,prevClose:Number(q.prevClose)||null,rawPrevClose:Number(q.rawPrevClose)||null,effectivePrevClose:Number(q.effectivePrevClose)||null,referenceSource:q.referenceSource||null,referenceReliable:q.referenceReliable!==false,corporateActionAdjusted:!!q.corporateActionAdjusted,corporateActionReferenceMissing:!!q.corporateActionReferenceMissing,corporateAction:q.corporateAction||null,open:Number(q.open)||null,openSource:q.openSource||null,openVerified:q.openVerified===true,source:q.source||null,lastGoodFallback:!!q.lastGoodFallback}]}));
  const etfQuotesOk=ETF.every(c=>quoteStatus[c].ok);
  const etfFresh=etfQuotesOk;
  const fresh=marketFresh&&etfFresh;
