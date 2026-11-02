@@ -1,0 +1,26 @@
+name: Live ETF cash-open verification (Render)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/live-buy-open-smoke.cjs'
+      - '.github/workflows/live-buy-open-smoke.yml'
+  schedule:
+    # Taipei 15:45, Monday through Friday. GitHub schedule may run late.
+    - cron: '45 7 * * 1-5'
+permissions:
+  contents: read
+jobs:
+  live-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Query live Render ETF quote and official L1 cap
+        env:
+          SMOKE_BASE_URL: https://tw-stock-dashboard-5.onrender.com
+        run: node scripts/live-buy-open-smoke.cjs
