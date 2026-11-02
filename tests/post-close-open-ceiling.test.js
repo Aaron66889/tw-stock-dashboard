@@ -46,7 +46,7 @@ function simulate(live={},modelOpen=105){
   lastBuy:{fetchedAt:'2026-11-02T07:38:00Z',models:{'0050':{
    firstLayerCalibration:{sessionOpenPolicy:{active:true,sessionOpen:modelOpen}}
   }}},
-  taipeiNow:()=>new Date('2026-11-02T07:42:00Z'),
+  taipeiNow:()=>new Date(2026,10,2,15,42,0),
   dayKey:()=>today,Date,Intl,Number,Math,JSON
  };
  const run=vm.runInNewContext(mathCode+'\n({cashSessionOpen,enforceCashOpenCeiling})',ctx);
