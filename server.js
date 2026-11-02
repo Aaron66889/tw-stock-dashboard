@@ -382,7 +382,7 @@ async function yahooTwOne(code,isIndex=false){
 
 const ETF_QUOTE_LAST_GOOD={};
 const MARKET_LAST_GOOD={data:null,at:0,day:null};
-function etfQuoteComplete(q,openRequired=twMarketOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||Number(q?.open)>0)}
+function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||Number(q?.open)>0)}
 async function liveStable(extra=[]){
  let d=null,err=null;
  try{d=await live(extra)}catch(e){err=e}
@@ -418,7 +418,11 @@ async function liveEtf4(){
 
  // Field-level TWSE MIS completion. Anue sometimes has last but omits prev/open/HLV.
  // Fill only missing fields; never overwrite a good Anue last price.
- const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(twMarketOpenNow()&&!(quotes[c]?.open>0)));
+ // Session open is required from 09:00 through the rest of the Taiwan
+ // trading day, including after 13:30. Without it the official first-layer
+ // cap can silently disappear when Anue omits its opening-price field.
+ const openRequiredToday=twAfterCashOpenNow();
+ const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!(quotes[c]?.open>0)));
  if(needMis.length){
   try{
    const ex=needMis.map(c=>'tse_'+c+'.tw').join('|'),rows=(await mis(ex)).msgArray||[],by={};
@@ -439,7 +443,7 @@ async function liveEtf4(){
  // Some ETF transports return fresh last/prev but leave open blank.
  // Fill ONLY missing session fields from the already-existing Yahoo 1m/meta path.
  // Never overwrite a valid live last price.
- if(twMarketOpenNow()){
+ if(openRequiredToday){
   const needOpen=ETF.filter(c=>quotes[c]?.last>0&&!(Number(quotes[c]?.open)>0));
   if(needOpen.length){
    try{
@@ -464,7 +468,7 @@ async function liveEtf4(){
  const corpRefs=await corpRefPromise;
  if(!corpRefs)errors.push('TWSE TWT49U: timeout');else if(!corpRefs.ok&&corpRefs.error)errors.push('TWSE TWT49U: '+corpRefs.error);
  applyEtfEffectiveReferences(quotes,corpRefs,errors);
- const openRequired=twMarketOpenNow(),now=Date.now();
+ const openRequired=openRequiredToday,now=Date.now();
  // Save each complete quote after the effective reference has been applied, so the 90s last-good path cannot resurrect an unadjusted ex-dividend previous close. A single transport wobble may reuse only the same-day quote for <=90 seconds.
  for(const c of ETF){
   const q=quotes[c];
@@ -2521,7 +2525,7 @@ async function buyModel(){
  // Volume is Shadow-only. Never wait for multiple MIS/Yahoo fallbacks before official A can respond.
  applyRecentBackgroundVolume(etfLd);
  const hs=Object.fromEntries(harr),hh=Object.fromEntries(hhealth),vh=Object.fromEntries(volWindows||[]),yc=Object.fromEntries(yahooChips||[]),models={},shadowModels={};
- const marketAt=ld.fetchedAt?Date.parse(ld.fetchedAt):0,etfAt=etfLd?.fetchedAt?Date.parse(etfLd.fetchedAt):0,openRequired=twMarketOpenNow();
+ const marketAt=ld.fetchedAt?Date.parse(ld.fetchedAt):0,etfAt=etfLd?.fetchedAt?Date.parse(etfLd.fetchedAt):0,openRequired=twAfterCashOpenNow();
  const marketAgeMs=ld.lastGoodFallback
   ? Number(ld.fallbackAgeMs)
   : (marketAt?Date.now()-marketAt:Infinity);
