@@ -2476,7 +2476,8 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  const marketCh=movePct(env.liveMarket),tsmcCh=movePct(env.liveTsmc),b=env.breadth?.usableForModel?env.breadth:null;
  // Only count independently observed risk families. Composite environment
  // already contains market/TSMC/breadth and must not cast an extra veto vote.
- const stale=!fresh,corpActionBlocked=quote?.corporateActionReferenceMissing===true;
+ const openRefMissing=cashOpenCapActive&&!(sessionOpen>0);
+ const stale=!fresh||openRefMissing,corpActionBlocked=quote?.corporateActionReferenceMissing===true;
  const gatePolicy=OFFICIAL_GATE.evaluate({marketPct:marketCh,tsmcPct:tsmcCh,
   breadthRatio:b?.ratio??null,breadthUsable:!!b,environmentScore:env.score,
   fresh:!stale,corpActionBlocked});
@@ -2497,7 +2498,7 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  const sessionLow=n(quote?.low),sessionHigh=n(quote?.high),dropNeeded=Math.max(0,px-z1.high),dropNeededPct=px>0?dropNeeded/px*100:null,atrPct=px>0?atr/px*100:null,atrUnits=atr>0?dropNeeded/atr:null;
  const touchedToday=sessionLow>0?sessionLow<=z1.high:px<=z1.high;
  const reachabilityLabel=touchedToday||dropNeeded<=0?'已觸及':(atrUnits<=.60?'高':atrUnits<=1.20?'中':'低');
- const hardReason=gatePolicy.reason;
+ const hardReason=openRefMissing?'當日開盤價尚未確認，第一層不得高於開盤價；暫停正式買入':gatePolicy.reason;
  const decisionGate=hardVeto?{status:'FAIL',type:'HARD',reason:hardReason||'硬Gate'}:(noBuyToday?{status:'WAIT',type:'SOFT',reason:noBuyReason}:{status:'PASS',type:'NONE',reason:null});
  const historyView={...st,sma20:Number.isFinite(st.sma20)?st.sma20*actionFactor:st.sma20,sma60:Number.isFinite(st.sma60)?st.sma60*actionFactor:st.sma60,sma120:Number.isFinite(st.sma120)?st.sma120*actionFactor:st.sma120,sma250:Number.isFinite(st.sma250)?st.sma250*actionFactor:st.sma250,atr14:atr};
  // Confirmation cycles must represent distinct market observations, not two browser/model refreshes of the same quote.
