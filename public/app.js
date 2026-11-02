@@ -169,7 +169,22 @@ function confirmSnapshotText(L){return L?.confirmedZone&&L?.confirmedAt?`首次�
 function center(z){return z?(z.low+z.high)/2:null}
 function moveZone(cur,target,maxDown,maxUp,allowDown=true){if(!cur)return JSON.parse(JSON.stringify(target));const c=center(cur),t=center(target),half=(cur.high-cur.low)/2;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
 function moveZoneTimed(cur,target,maxDown30,maxUp30,allowDown=true,elapsedSec=30){if(!cur)return JSON.parse(JSON.stringify(target));const scale=Math.max(.15,Math.min(4,Number(elapsedSec||30)/30)),c=center(cur),t=center(target),half=(cur.high-cur.low)/2,maxDown=maxDown30*scale,maxUp=maxUp30*scale;let d=t-c;if(d<0&&!allowDown)d=Math.max(d,-maxDown*.12);else d=Math.max(-maxDown,Math.min(maxUp,d));return{low:c+d-half,high:c+d+half,center:c+d}}
-function cashSessionOpen(code){const d=taipeiNow(),wd=d.getDay(),m=d.getHours()*60+d.getMinutes(),o=Number(lastLive?.quotes?.[code]?.open);return wd>=1&&wd<=5&&m>=540&&o>0?o:null}
+function cashSessionOpen(code){
+ const d=taipeiNow(),wd=d.getDay(),m=d.getHours()*60+d.getMinutes();
+ if(wd<1||wd>5||m<540)return null;
+ // Prefer same-day quote open; the official buy-model may have recovered its
+ // open from TWSE/Yahoo even if the lighter /api/etf-live feed omitted it.
+ const q=lastLive?.quotes?.[code];
+ const liveOpen=q?.date===dayKey()&&Number(q?.open)>0?Number(q.open):null;
+ const modelAt=Date.parse(lastBuy?.fetchedAt||'');
+ const modelDay=Number.isFinite(modelAt)?
+  new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date(modelAt)):null;
+ const p=lastBuy?.models?.[code]?.firstLayerCalibration?.sessionOpenPolicy;
+ const modelOpen=modelDay===dayKey()&&p?.active&&Number(p.sessionOpen)>0?
+  Number(p.sessionOpen):null;
+ // If sources disagree, use the lower valid open as a conservative ceiling.
+ return liveOpen&&modelOpen?Math.min(liveOpen,modelOpen):(liveOpen||modelOpen);
+}
 function shiftZoneCenter(z,c){const half=(z.high-z.low)/2;return{low:c-half,high:c+half,center:c}}
 function enforceCashOpenCeiling(code,zones,atr){const o=cashSessionOpen(code);if(!(o>0)||!Array.isArray(zones)||zones.length<3)return zones;const out=zones.map(z=>JSON.parse(JSON.stringify(z)));if(out[0].high>o){const w=out[0].high-out[0].low;out[0]={low:o-w,high:o,center:o-w/2}}const prev=Number(lastLive?.quotes?.[code]?.prevClose)||o,g12=Math.max(atr*.35,prev*.004),g23=Math.max(atr*.45,prev*.006);let c0=center(out[0]),c1=center(out[1]),c2=center(out[2]);if(c1>c0-g12){c1=c0-g12;out[1]=shiftZoneCenter(out[1],c1)}if(c2>c1-g23){c2=c1-g23;out[2]=shiftZoneCenter(out[2],c2)}return out}
 function executionUpAllowance(atr,i=0){return Math.max(.03,Number(atr||0)*([.10,.08,.06][i]??.08))}
