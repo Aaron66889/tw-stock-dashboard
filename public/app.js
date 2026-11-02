@@ -177,8 +177,14 @@ function cashSessionOpen(code){
  const q=lastLive?.quotes?.[code];
  const liveOpen=q?.date===dayKey()&&Number(q?.open)>0?Number(q.open):null;
  const modelAt=Date.parse(lastBuy?.fetchedAt||'');
- const modelDay=Number.isFinite(modelAt)?
-  new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei'}).format(new Date(modelAt)):null;
+ const modelDay=Number.isFinite(modelAt)?(()=>{
+  // Safari / Node versions may format en-CA dates as MM/DD/YYYY;
+  // assemble ISO day from locale-independent date parts.
+  const pieces=Object.fromEntries(new Intl.DateTimeFormat('en-US',{
+   timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'
+  }).formatToParts(new Date(modelAt)).map(p=>[p.type,p.value]));
+  return pieces.year+'-'+pieces.month+'-'+pieces.day;
+ })():null;
  const p=lastBuy?.models?.[code]?.firstLayerCalibration?.sessionOpenPolicy;
  const modelOpen=modelDay===dayKey()&&p?.active&&Number(p.sessionOpen)>0?
   Number(p.sessionOpen):null;
