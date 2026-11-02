@@ -1,12 +1,13 @@
 'use strict';
 /**
  * Post-cash-close production smoke: verifies actual Render API returns a real
- * same-day cash open for each ETF, and the formal L1 upper bound <= that open.
+ * same-day cash open for each ETF, and the formal L1 upper bound <= its risk-adjusted ATR policy limit.
  * The script is read-only, does not touch user trades/holdings, and never
  * records fake observations or completes model signals.
  */
 const BASE=(process.env.SMOKE_BASE_URL||'https://tw-stock-dashboard-5.onrender.com').replace(/\/$/,'');
 const ETFS=['0050','0056','00878','00919'];
+const SessionEntry=require('../public/session-entry-policy');
 function taipeiDay(d=new Date()){
  const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{
   timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'
@@ -39,6 +40,13 @@ async function run(){
   const model=buy.models?.[code],st=buy.quoteStatus?.[code]||{};
   const open=Number(st.open??q.open),L1=Number(model?.raw?.first?.high);
   const gate=model?.decisionGate?.status||null;
+  const session=model?.firstLayerCalibration?.sessionOpenPolicy||{};
+  const isFlex=String(model?.firstLayerCalibration?.version||'').startsWith('first-touch-flex-v4');
+  const policy=SessionEntry.calculate({open,atr:model?.history?.atr14,
+   environmentScore:model?.environmentScore,chaseRisk:model?.chaseRisk,
+   chaseWarningThreshold:model?.chaseWarningThreshold,
+   chaseHardThreshold:model?.chaseHardThreshold,hardVeto:model?.hardVeto});
+  const cap=isFlex?Number(session.maxFirstZoneHigh):open;
   let result='OFF_HOURS_CHECK';
   if(eligible){
    if(model?.error){
@@ -49,12 +57,15 @@ async function run(){
    }else if(!(open>0)||st.openVerified!==true){
     result='FAIL_OPEN_UNVERIFIED';
     issues.push(code+' model issued without independently date-verified open');
-   }else if(!(L1>0)||L1>open+.001){
-    result='FAIL_L1_ABOVE_OPEN';
-    issues.push(code+' L1 high='+L1+' exceeds open='+open);
-   }else result='PASS_VERIFIED_OPEN_CAP';
+   }else if(isFlex&&(!(policy.active)||Math.abs(policy.maxFirstZoneHigh-cap)>.002)){
+    result='FAIL_L1_POLICY_MISMATCH';
+    issues.push(code+' reported cap='+cap+' differs from independent risk policy '+policy.maxFirstZoneHigh);
+   }else if(!(L1>0)||!(cap>0)||L1>cap+.001){
+    result='FAIL_L1_ABOVE_RISK_CAP';
+    issues.push(code+' L1 high='+L1+' exceeds independently checked cap='+cap+' opening='+open);
+   }else result=isFlex?'PASS_ATR_LIMITED_CAP':'PASS_LEGACY_OPEN_CAP';
   }
-  console.log(JSON.stringify({code,marketDate:q.date||null,price:Number(q.last)||null,open:Number.isFinite(open)?open:null,openSource:st.openSource||q.openSource||null,openVerified:st.openVerified===true,l1High:Number.isFinite(L1)?L1:null,gate,modelFresh:buy.modelFreshByCode?.[code],modelError:model?.error||null,result}));
+  console.log(JSON.stringify({code,marketDate:q.date||null,price:Number(q.last)||null,open:Number.isFinite(open)?open:null,openSource:st.openSource||q.openSource||null,openVerified:st.openVerified===true,l1High:Number.isFinite(L1)?L1:null,l1PolicyCap:Number.isFinite(cap)?cap:null,sessionHeadroom:isFlex?session.headroom:null,mode:isFlex?session.mode:'LEGACY',gate,modelFresh:buy.modelFreshByCode?.[code],modelError:model?.error||null,result}));
  }
  if(eligible&&issues.length)throw Error(issues.length+' ETF live checks failed: '+issues.join(' | '));
  console.log('Production cash-open smoke '+(eligible?'PASS':'SKIP: preopen/non-session time'));
