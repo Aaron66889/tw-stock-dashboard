@@ -1,6 +1,10 @@
 name: Live ETF cash-open verification (Render)
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/live-buy-open-smoke.cjs'
+      - '.github/workflows/live-buy-open-smoke.yml'
   push:
     branches: [main]
     paths:
