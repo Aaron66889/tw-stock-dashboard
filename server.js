@@ -2529,7 +2529,9 @@ function modelOne(code,quote,hist,env,health,fresh=true,options={}){
  const chaseNoBuy=chaseRisk>=chaseHardThreshold&&(!(sessionOpen>0)||aboveSessionOpen);
  const noBuyToday=!hardVeto&&(chaseNoBuy||(score<40&&px>z1.high));
  const noBuyReason=noBuyToday?(chaseNoBuy&&sessionOpen>0?`現價仍高於今日開盤 ${sessionOpen.toFixed(2)}，追高風險 ${chaseRisk} 已達本檔歷史硬線 ${chaseHardThreshold}；不往上追買。`:'現價偏離合理區過遠／追高風險過高，今日不硬生買點'):null;
- const calibrationVersion=sessionOpen>0?'first-touch-open-cap-v3-three-layer-live':'first-touch-open-cap-v3-three-layer-preopen';
+ // Version is tied to the verified exchange open: when a source is corrected,
+ // discard stale browser touch/confirmation state from older, higher price zones.
+ const calibrationVersion=sessionOpen>0?'first-touch-open-cap-v4-verified-'+sessionOpen.toFixed(4):'first-touch-open-cap-v4-preopen';
  // 16.8.60 observability only: expose distance/reachability without changing any buy-point or Gate rule.
  const sessionLow=n(quote?.low),sessionHigh=n(quote?.high),dropNeeded=Math.max(0,px-z1.high),dropNeededPct=px>0?dropNeeded/px*100:null,atrPct=px>0?atr/px*100:null,atrUnits=atr>0?dropNeeded/atr:null;
  const touchedToday=sessionLow>0?sessionLow<=z1.high:px<=z1.high;
