@@ -26,7 +26,7 @@ test('deeper weak-market discounts are monotonic, without continuously following
  const fair=m({environmentScore:-20}),weak=m({environmentScore:-51}),weaker=m({environmentScore:-61});
  assert.ok(fair.maxFirstZoneHigh>weak.maxFirstZoneHigh);
  assert.ok(weak.maxFirstZoneHigh>weaker.maxFirstZoneHigh);
- assert.equal(weaker.minimumAtr,.705);
+ assert.ok(Math.abs(weaker.minimumAtr-.705)<1e-10);
  for(const price of [103.4,104.1,105.2,100]){
   assert.equal(m({last:price}).maxFirstZoneHigh,weak.maxFirstZoneHigh);
  }
