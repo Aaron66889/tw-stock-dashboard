@@ -17,7 +17,7 @@
   chaseHardThreshold=88,hardVeto=false}={}){
   const o=Number(open),a=Number(atr),env=Number(environmentScore),risk=Number(chaseRisk);
   if(!(o>0))return{active:false,maxFirstZoneHigh:null,headroom:0,mode:'NO_VERIFIED_OPEN',version:'l1-session-flex-v1'};
-  const valid=finite(a)&&a>0&&finite(env)&&finite(risk);
+  const valid=finite(atr)&&atr>0&&finite(environmentScore)&&finite(chaseRisk);
   const defensive=hardVeto||!valid||env<=-65||risk>=Number(chaseWarningThreshold)||risk>=Number(chaseHardThreshold);
   // Max 0.40 ATR and 0.8% of the exchange-verified open; bearish but
   // non-critical environments reduce the headroom further.
