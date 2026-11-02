@@ -59,7 +59,7 @@ async function run(){
    }else if(!(open>0)||st.openVerified!==true){
     result='FAIL_OPEN_UNVERIFIED';
     issues.push(code+' model issued without independently date-verified open');
-   }else if(isFlex&&(!(policy.active)||Math.abs(policy.maxFirstZoneHigh-cap)>.002)){
+   }else if(isFlex&&(!(policy.active)||Math.abs((isDepth?policy.maxFirstZoneHigh:policy.openCeiling)-cap)>.002)){
     result='FAIL_L1_POLICY_MISMATCH';
     issues.push(code+' reported cap='+cap+' differs from independent risk policy '+policy.maxFirstZoneHigh);
     }else if(isDepth&&(!(session.minimumDepth>0)||!(session.referenceClose>0)||
