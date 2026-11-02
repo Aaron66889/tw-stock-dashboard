@@ -192,7 +192,24 @@ function cashSessionOpen(code){
  return liveOpen&&modelOpen?Math.min(liveOpen,modelOpen):(liveOpen||modelOpen);
 }
 function shiftZoneCenter(z,c){const half=(z.high-z.low)/2;return{low:c-half,high:c+half,center:c}}
-function enforceCashOpenCeiling(code,zones,atr){const o=cashSessionOpen(code);if(!(o>0)||!Array.isArray(zones)||zones.length<3)return zones;const out=zones.map(z=>JSON.parse(JSON.stringify(z)));if(out[0].high>o){const w=out[0].high-out[0].low;out[0]={low:o-w,high:o,center:o-w/2}}const prev=Number(lastLive?.quotes?.[code]?.prevClose)||o,g12=Math.max(atr*.35,prev*.004),g23=Math.max(atr*.45,prev*.006);let c0=center(out[0]),c1=center(out[1]),c2=center(out[2]);if(c1>c0-g12){c1=c0-g12;out[1]=shiftZoneCenter(out[1],c1)}if(c2>c1-g23){c2=c1-g23;out[2]=shiftZoneCenter(out[2],c2)}return out}
+function sessionFirstCeiling(code){
+ const open=cashSessionOpen(code);
+ if(!(open>0))return null;
+ const p=lastBuy?.models?.[code]?.firstLayerCalibration?.sessionOpenPolicy;
+ const modelAt=Date.parse(lastBuy?.fetchedAt||'');
+ const parts=Number.isFinite(modelAt)?Object.fromEntries(new Intl.DateTimeFormat('en-US',{
+  timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'
+ }).formatToParts(new Date(modelAt)).map(x=>[x.type,x.value])):null;
+ const modelDay=parts?parts.year+'-'+parts.month+'-'+parts.day:null;
+ // Use exactly the current backend's risk-adjusted cap, not the raw opening.
+ // If the backend model is unavailable or stale, fall back to a strict cap;
+ // official execution already fails closed on stale snapshots.
+ if(modelDay===dayKey()&&p?.active&&Number(p.sessionOpen)>0&&
+    Number.isFinite(Number(p.maxFirstZoneHigh))&&Number(p.maxFirstZoneHigh)>=Number(p.sessionOpen))
+  return Number(p.maxFirstZoneHigh);
+ return open;
+}
+function enforceCashOpenCeiling(code,zones,atr){const o=sessionFirstCeiling(code);if(!(o>0)||!Array.isArray(zones)||zones.length<3)return zones;const out=zones.map(z=>JSON.parse(JSON.stringify(z)));if(out[0].high>o){const w=out[0].high-out[0].low;out[0]={low:o-w,high:o,center:o-w/2}}const prev=Number(lastLive?.quotes?.[code]?.prevClose)||o,g12=Math.max(atr*.35,prev*.004),g23=Math.max(atr*.45,prev*.006);let c0=center(out[0]),c1=center(out[1]),c2=center(out[2]);if(c1>c0-g12){c1=c0-g12;out[1]=shiftZoneCenter(out[1],c1)}if(c2>c1-g23){c2=c1-g23;out[2]=shiftZoneCenter(out[2],c2)}return out}
 function executionUpAllowance(atr,i=0){return Math.max(.03,Number(atr||0)*([.10,.08,.06][i]??.08))}
 function executionDownAllowance(atr,i=0){return Math.max(.02,Number(atr||0)*([.08,.07,.06][i]??.07))}
 function ensureExecutionEnvelope(L,atr,i=0){
