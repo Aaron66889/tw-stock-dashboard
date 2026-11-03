@@ -67,3 +67,34 @@ test('cold-start backup requests begin before waiting on slow primary feeds',asy
  assert.equal(r.ok,true);
  assert.equal(r.incomplete.length,0);
 });
+
+test('real Yahoo parser uses same-day intraday opening even when metadata last-trade timestamp is yesterday',async()=>{
+ const parser=extract(server,'async function yahooTwOne(code,isIndex=false){','\n// Cache only today');
+ const first=Math.floor(Date.parse('2026-11-03T01:00:00Z')/1000),second=first+60,old=Math.floor(Date.parse('2026-11-02T05:30:00Z')/1000);
+ const api={chart:{result:[{timestamp:[first,second],meta:{
+  regularMarketTime:old,regularMarketPrice:102,regularMarketOpen:102,
+  chartPreviousClose:104.3,regularMarketDayHigh:103},
+  indicators:{quote:[{open:[103,103.1],close:[103.1,103.2],high:[103.3,103.4],low:[102.9,103]}]}}]}};
+ const d={META:{'0050':{name:'元大台灣50'}},
+  ymdTaipei:date=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(date||new Date('2026-11-03T01:08:00Z')),
+  getJSONQuick:async()=>api,n:x=>Number.isFinite(Number(x))&&Number(x)>0?Number(x):null};
+ const run=new Function('d','const {META,ymdTaipei,getJSONQuick,n}=d;'+parser+';return yahooTwOne;')(d);
+ const q=await run('0050');
+ assert.equal(q.open,103);
+ assert.equal(q.last,103.2);
+ assert.equal(q.date,'2026-11-03');
+ assert.equal(q.openSource,'Yahoo Finance 首根當日盤中1m K');
+ assert.equal(q.prevClose,104.3);
+});
+test('Yahoo parser refuses prior-day-only candles even when metadata advertises a price',async()=>{
+ const parser=extract(server,'async function yahooTwOne(code,isIndex=false){','\n// Cache only today');
+ const prior=Math.floor(Date.parse('2026-11-02T01:00:00Z')/1000);
+ const api={chart:{result:[{timestamp:[prior],meta:{
+  regularMarketTime:prior,regularMarketPrice:105,regularMarketOpen:105,chartPreviousClose:106},
+  indicators:{quote:[{open:[105],close:[105.1],high:[105.2],low:[104.8]}]}}]}};
+ const d={META:{'0050':{name:'元大台灣50'}},
+  ymdTaipei:date=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(date||new Date('2026-11-03T01:08:00Z')),
+  getJSONQuick:async()=>api,n:x=>Number.isFinite(Number(x))&&Number(x)>0?Number(x):null};
+ const run=new Function('d','const {META,ymdTaipei,getJSONQuick,n}=d;'+parser+';return yahooTwOne;')(d);
+ await assert.rejects(run('0050'),/no current-session price/);
+});
