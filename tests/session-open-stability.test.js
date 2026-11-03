@@ -33,12 +33,12 @@ test('cloud restore accepts only same-day validated opens, leaving existing loca
  const state={'0050':{day,price:103,source:'TWSE MIS'}},writes=[];
  const deps={SUPABASE_URL:'https://example.supabase.co',SUPABASE_SECRET_KEY:'test',ETF_OPEN_META_ID:'__ETF_VERIFIED_OPENS__',
   ETF_OPEN_CACHE_FILE:'open.json',ETF_SESSION_OPENS:state,ETF:names,
-  operationalMetaCloudPayload:async()=>({day,opens:{
+  console:{log:()=>{},warn:()=>{}},operationalMetaCloudPayload:async()=>({day,opens:{
    '0050':{day,price:109,source:'cloud old'},
    '0056':{day,price:56.9,source:'Yahoo chart'},
    '00878':{day:'2026-11-02',price:35.3,source:'old date'}
   }}),ymdTaipei:()=>day,diskWrite:(key,value)=>writes.push({key,value})};
- const run=new Function('d','const {SUPABASE_URL,SUPABASE_SECRET_KEY,ETF_OPEN_META_ID,ETF_OPEN_CACHE_FILE,ETF_SESSION_OPENS,ETF,operationalMetaCloudPayload,ymdTaipei,diskWrite}=d;'+restore+';return restoreVerifiedOpensCloud;')(deps);
+ const run=new Function('d','const {SUPABASE_URL,SUPABASE_SECRET_KEY,ETF_OPEN_META_ID,ETF_OPEN_CACHE_FILE,ETF_SESSION_OPENS,ETF,operationalMetaCloudPayload,ymdTaipei,diskWrite,console}=d;'+restore+';return restoreVerifiedOpensCloud;')(deps);
  await run();
  assert.equal(state['0050'].price,103);
  assert.equal(state['0056'].price,56.9);
