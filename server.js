@@ -343,88 +343,46 @@ async function yahooTwPageOne(code){
   open:open>0?open:null,high:high>0?high:null,low:low>0?low:null,volume:volume>0?volume:null,
   volumeSource:volume>0?'Yahoo台股報價頁總量':null,
   time:tm||new Date().toISOString(),
-  date:tm?ymdTaipei(new Date(tm)):null,
-  providerTimeVerified:!!tm,
+  date:ymdTaipei(),
   source:'Yahoo台股報價頁 '+code,
   realtime:true
  };
 }
 async function yahooTwOne(code,isIndex=false){
  const symbol=isIndex?'^TWII':code+'.TW',
-       host=arguments.length>=3&&arguments[2]==='query2.finance.yahoo.com'?'query2.finance.yahoo.com':'query1.finance.yahoo.com',
-       url='https://'+host+'/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=1m&range=1d&includePrePost=false&_='+Date.now();
+       url='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=1m&range=1d&includePrePost=false&_='+Date.now();
  const d=await getJSONQuick(url,{'Cache-Control':'no-cache','Pragma':'no-cache'},5000),
        r=d?.chart?.result?.[0];
  if(!r)throw Error('Yahoo no chart '+symbol);
  const q=r.indicators?.quote?.[0]||{},ts=r.timestamp||[],meta=r.meta||{};
- const today=ymdTaipei(),inTaipeiDay=i=>Number(ts[i])>0&&ymdTaipei(new Date(Number(ts[i])*1000))===today;
- // Yahoo regularMarketTime can lag a current intraday chart. Always derive a
- // verified opening from the FIRST current-session 1m candle, not the metadata
- // from yesterday or the first candle of an unrelated UTC day.
- const currentBars=ts.map((t,i)=>i).filter(i=>inTaipeiDay(i)&&
-  Number.isFinite(Number(q.open?.[i]))&&Number(q.open[i])>0);
- const firstBar=currentBars[0],marketTime=n(meta.regularMarketTime),
-       marketCurrent=marketTime>0&&ymdTaipei(new Date(marketTime*1000))===today,
-       lastBar=[...currentBars].reverse().find(i=>Number(q.close?.[i])>0),
-       marketSessionOpen=Number.isInteger(firstBar)?Number(q.open[firstBar]):null,
-       lastBarTime=Number.isInteger(lastBar)?Number(ts[lastBar]):null;
- const last=marketCurrent&&n(meta.regularMarketPrice)>0?n(meta.regularMarketPrice):
-  Number.isInteger(lastBar)?Number(q.close[lastBar]):marketCurrent?n(meta.regularMarketPrice):null;
- const prev=n(meta.chartPreviousClose??meta.previousClose),
+ let idx=-1;
+ for(let i=(q.close||[]).length-1;i>=0;i--)if(Number.isFinite(q.close[i])){idx=i;break}
+ const candleLast=idx>=0?q.close[idx]:null,
+       metaLast=n(meta.regularMarketPrice),
+       last=(metaLast>0?metaLast:candleLast),
+       prev=n(meta.chartPreviousClose??meta.previousClose),
        opens=(q.open||[]).filter(Number.isFinite),
        highs=(q.high||[]).filter(Number.isFinite),
-       lows=(q.low||[]).filter(Number.isFinite);
- if(!(last>0))throw Error('Yahoo no current-session price '+symbol);
- const latestTime=lastBarTime||marketCurrent?Math.max(lastBarTime||0,marketCurrent?marketTime:0):null;
+       lows=(q.low||[]).filter(Number.isFinite),
+       marketTime=n(meta.regularMarketTime);
+ if(!(last>0))throw Error('Yahoo no price '+symbol);
  return{
   ticker:isIndex?'t00':code,
   name:isIndex?'加權指數':(META[code]?.name||code),
   last,prevClose:prev,
-  open:marketSessionOpen||(marketCurrent?n(meta.regularMarketOpen):null),
-  high:marketCurrent?n(meta.regularMarketDayHigh)??(highs.length?Math.max(...highs):null):
-   (highs.length?Math.max(...highs):null),
-  low:marketCurrent?n(meta.regularMarketDayLow)??(lows.length?Math.min(...lows):null):
-   (lows.length?Math.min(...lows):null),
-  volume:marketCurrent?n(meta.regularMarketVolume):null,
-  time:latestTime?new Date(latestTime*1000).toISOString():null,
-  date:latestTime?ymdTaipei(new Date(latestTime*1000)):null,
-  openSource:marketSessionOpen?'Yahoo Finance 首根當日盤中1m K':'Yahoo Finance 當日meta',
-  source:marketSessionOpen?'Yahoo Finance 當日1m K':marketCurrent?'Yahoo Finance regularMarketPrice':'Yahoo Finance 無同日盤中資料',
+  open:n(meta.regularMarketOpen)??opens[0],
+  high:n(meta.regularMarketDayHigh)??(highs.length?Math.max(...highs):null),
+  low:n(meta.regularMarketDayLow)??(lows.length?Math.min(...lows):null),
+  volume:n(meta.regularMarketVolume),
+  time:marketTime?new Date(marketTime*1000).toISOString():(idx>=0&&ts[idx]?new Date(ts[idx]*1000).toISOString():null),
+  date:marketTime?new Date(marketTime*1000).toISOString().slice(0,10):(idx>=0&&ts[idx]?new Date(ts[idx]*1000).toISOString().slice(0,10):null),
+  source:metaLast>0?'Yahoo Finance regularMarketPrice':'Yahoo Finance 1m fallback',
   realtime:true
  };
 }
 
-// Keep verified CASH session opens independent of every transient live-quote poll.
-// Both Render restarts and redeploys can otherwise erase the 09:00 verification
-// and randomly block all four models whenever TWSE MIS/Yahoo are rate-limited.
-const ETF_OPEN_CACHE_FILE='verified_etf_session_opens.json';
-const ETF_OPEN_META_ID='__ETF_VERIFIED_OPENS__';
-const ETF_SESSION_OPENS=(()=>{
- const raw=diskRead(ETF_OPEN_CACHE_FILE),out={},today=ymdTaipei();
- for(const code of ETF){
-  const r=raw?.[code];
-  if(r?.day===today&&Number(r.price)>0&&typeof r.source==='string')out[code]=r;
- }
- return out;
-})();
-let ETF_OPEN_SAVE_TIMER=null;
-async function restoreVerifiedOpensCloud(){
- if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return;
- try{
-  const payload=await operationalMetaCloudPayload(ETF_OPEN_META_ID),today=ymdTaipei();
-  if(payload?.day!==today)return;
-  let restored=0;
-  for(const code of ETF){
-   const row=payload.opens?.[code];
-   if(!ETF_SESSION_OPENS[code]&&row?.day===today&&Number(row.price)>0&&typeof row.source==='string'){
-    ETF_SESSION_OPENS[code]={day:today,price:Number(row.price),source:row.source};
-    restored++;
-   }
-  }
-  if(restored){diskWrite(ETF_OPEN_CACHE_FILE,ETF_SESSION_OPENS);
-   console.log('[ETF-OPEN-RESTORED]',today,restored,'validated session opens recovered')}
- }catch(e){console.warn('[ETF-OPEN-RESTORE-UNAVAILABLE]',String(e.message||e).slice(0,160))}
-}
+// Cache only today's independently dated TWSE opening quotes.
+const ETF_SESSION_OPENS={};
 function officialQuoteDay(raw){
  const v=String(raw||'').trim();
  if(/^20\d{2}-\d{2}-\d{2}$/.test(v))return v;
@@ -436,47 +394,7 @@ function officialQuoteDay(raw){
 }
 function verifiedEtfOpen(code,day){const v=ETF_SESSION_OPENS[code];return v?.day===day&&v.price>0?v:null}
 function storeVerifiedEtfOpen(code,day,price,source){
- if(!ETF.includes(code)||day!==ymdTaipei()||!(Number(price)>0)||!source)return;
- const old=ETF_SESSION_OPENS[code],value={day,price:Number(price),source:String(source)};
- if(old?.day===day&&old.price===value.price&&old.source===value.source)return;
- ETF_SESSION_OPENS[code]=value;diskWrite(ETF_OPEN_CACHE_FILE,ETF_SESSION_OPENS);
- if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return;
- // Coalesce four tickers into a single daily cloud write. Never wait on this
- // operational backup before answering the live buy model.
- clearTimeout(ETF_OPEN_SAVE_TIMER);
- ETF_OPEN_SAVE_TIMER=setTimeout(()=>{
-  const today=ymdTaipei(),opens=Object.fromEntries(ETF.filter(c=>ETF_SESSION_OPENS[c]?.day===today)
-   .map(c=>[c,ETF_SESSION_OPENS[c]]));
-  persistOperationalMetaCloud(ETF_OPEN_META_ID,ETF_OPEN_META_ID,{day:today,opens})
-   .catch(e=>console.warn('[ETF-OPEN-PERSIST-UNAVAILABLE]',String(e.message||e).slice(0,160)));
- },1800);
-}
-// Independent dated quote providers for cash-open verification.
-// A temporary source block is cached briefly so cold instances do not issue
-// twelve new Yahoo requests on every 5-second live quote refresh.
-const VERIFIED_OPEN_BACKUPS=new Map();
-async function verifiedYahooOpenBackup(code){
- const now=Date.now(),old=VERIFIED_OPEN_BACKUPS.get(code);
- if(old&&now-old.at<15000)return old.promise;
- const validate=async (provider,task)=>{
-  const q=await task;
-  if(!(q?.open>0)||!(q?.last>0)||!Number.isFinite(Date.parse(q.time||''))||
-   ymdTaipei(new Date(q.time))!==ymdTaipei()||
-   (provider==='Yahoo頁面'&&q.providerTimeVerified!==true))
-   throw Error(provider+' 無同日有效開盤與時間戳');
-  return {...q,backupProvider:provider};
- };
- const candidates=[
-  validate('Yahoo query2',yahooTwOne(code,false,'query2.finance.yahoo.com')),
-  validate('Yahoo query1',yahooTwOne(code,false)),
-  validate('Yahoo頁面',yahooTwPageOne(code))
- ];
- const promise=Promise.any(candidates).catch(e=>{
-  const reasons=(e?.errors||[]).map(x=>x?.message||String(x)).slice(0,3);
-  throw Error('Yahoo三路備援均失敗：'+reasons.join(' / '));
- });
- VERIFIED_OPEN_BACKUPS.set(code,{at:now,promise});
- return promise;
+ if(Number(price)>0)ETF_SESSION_OPENS[code]={day,price:Number(price),source};
 }
 const ETF_QUOTE_LAST_GOOD={};
 const MARKET_LAST_GOOD={data:null,at:0,day:null};
@@ -495,31 +413,6 @@ async function liveStable(extra=[]){
 }
 async function liveEtf4(){
  const quotes={},errors=[],today=ymdTaipei();
- // On free-instance cold starts, two sequential 4.5s provider waits exceed the
- // buy-model deadline. Warm missing/expired ETF quotes concurrently with Anue.
- // Once today's complete quote and verified open are cached, no extra fetch runs.
- // A verified daily open is durable across quote-refresh ticks. Do not call
- // query1 + query2 + Yahoo HTML for all four ETFs every 60s just because
- // the latest last-good price aged. That causes avoidable request bursts and
- // can rate-limit the exact providers needed when a genuine outage occurs.
- // Prewarm only missing session opens. Once a verified open is restored
- // from cloud on restart, let the primary quote provider fetch current prices;
- // a genuinely missing primary price still triggers Yahoo/TWSE below.
- // Avoid expensive premature fallback storms before the 09:00 session.
- const coldYahoo=twAfterCashOpenNow()
-  ? ETF.filter(c=>!verifiedEtfOpen(c,today)) : [];
- const earlyYahooPromise=Promise.all(coldYahoo.map(async c=>[
-  c,await deadline(verifiedYahooOpenBackup(c).catch(e=>{
-   errors.push(c+': '+(e.message||String(e)));
-   return null;
-  }),4200,null)
- ]));
- // On cold starts MIS and Anue must not consume two consecutive 4.5s
- // deadlines. Start the authoritative MIS quote batch in parallel too.
- // Convert early rejection to data immediately to avoid unhandled rejection.
- const earlyMisPromise=coldYahoo.length
-  ? mis(ETF.map(c=>'tse_'+c+'.tw').join('|')).then(value=>({value})).catch(error=>({error}))
-  : null;
  // Fetch the official ex-right/ex-dividend reference in parallel with live quotes so the first request does not add serial latency.
  const corpRefPromise=deadline(twseExRightReferences(today).catch(e=>({ok:false,day:today,map:{},source:'TWSE TWT49U',error:e.message})),4200,null);
  // Primary: Anue. Keep its live last price when available.
@@ -545,26 +438,10 @@ async function liveEtf4(){
  // trading day, including after 13:30. Without it the official first-layer
  // cap can silently disappear when Anue omits its opening-price field.
  const openRequiredToday=twAfterCashOpenNow();
- // Start the independent Yahoo fallback BEFORE awaiting MIS. A cold Render
- // instance may miss three ETF quotes at once; opening-only Yahoo completion
- // used to skip instruments with NO last price, leaving cards stuck loading.
- const yahooCandidates=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||
-  (openRequiredToday&&!verifiedEtfOpen(c,today)));
- const yahooFallbackPromise=(async()=>{
-  const early=new Map(await earlyYahooPromise);
-  return Promise.all(yahooCandidates.map(async c=>[
-   c,early.has(c)?early.get(c):await deadline(verifiedYahooOpenBackup(c).catch(e=>{
-    errors.push(c+': '+(e.message||String(e)));return null;
-   }),4200,null)
-  ]));
- })();
  const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!verifiedEtfOpen(c,today)));
  if(needMis.length){
   try{
-   const ex=needMis.map(c=>'tse_'+c+'.tw').join('|');
-   const misResult=earlyMisPromise?await earlyMisPromise:{value:await mis(ex)};
-   if(misResult.error)throw misResult.error;
-   const rows=misResult.value?.msgArray||[],by={};
+   const ex=needMis.map(c=>'tse_'+c+'.tw').join('|'),rows=(await mis(ex)).msgArray||[],by={};
    for(const x of rows){const q=parseMis(x);if(ETF.includes(q.ticker)){
     by[q.ticker]=q;
     if(openRequiredToday&&officialQuoteDay(q.date)===today&&q.open>0)
@@ -598,35 +475,31 @@ async function liveEtf4(){
    }
   }catch(e){errors.push('TWSE official session open: '+(e.message||String(e)))}
  }
- // Yahoo is an independently dated fallback for BOTH an entirely absent quote
- // and incomplete fields, not just an opening-price supplement. The request
- // was launched in parallel with MIS above to stay within endpoint deadlines.
- // A prior-day Yahoo quote must never be accepted as today's live buy signal.
- const yahooPairs=await yahooFallbackPromise;
- for(const [c,y] of yahooPairs){
-  if(!y||!Number.isFinite(Date.parse(y.time||''))||ymdTaipei(new Date(y.time))!==today)continue;
-  let z=quotes[c];
-  if(!(Number(z?.last)>0)){
-   if(!(Number(y.last)>0&&Number(y.prevClose)>0))continue;
-   z={...y,ticker:c,date:today,serverFetchedAt:y.time,
-      source:'Yahoo Finance 日內K備援',realtime:true};
-   quotes[c]=z;
-  }else{
-   // Do not replace an available primary live price or its existing timestamp.
-   if(!(Number(z.prevClose)>0)&&Number(y.prevClose)>0)z.prevClose=Number(y.prevClose);
-   if(!(Number(z.high)>0)&&Number(y.high)>0)z.high=Number(y.high);
-   if(!(Number(z.low)>0)&&Number(y.low)>0)z.low=Number(y.low);
-  }
-  if(openRequiredToday&&!z.openVerified&&Number(y.open)>0){
-   z.open=Number(y.open);
-   z.openSource='Yahoo Finance 1m/meta（當日時間核對）';
-   z.openVerified=true;
-   storeVerifiedEtfOpen(c,today,z.open,z.openSource);
+ // Cash-session open is required by the existing anti-chase ceiling.
+ // Some ETF transports return fresh last/prev but leave open blank.
+ // Fill ONLY missing session fields from the already-existing Yahoo 1m/meta path.
+ // Never overwrite a valid live last price.
+ if(openRequiredToday){
+  const needOpen=ETF.filter(c=>quotes[c]?.last>0&&!quotes[c]?.openVerified);
+  if(needOpen.length){
+   try{
+    const ys=await Promise.all(needOpen.map(async c=>[
+     c,
+     await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
+    ]));
+    for(const [c,y] of ys){
+     if(!y||!(Number(y.open)>0)||!quotes[c]||!Number.isFinite(Date.parse(y.time||''))||ymdTaipei(new Date(y.time))!==today)continue;
+     const z=quotes[c];
+     z.open=Number(y.open);
+     if(!(Number(z.high)>0)&&Number(y.high)>0)z.high=Number(y.high);
+     if(!(Number(z.low)>0)&&Number(y.low)>0)z.low=Number(y.low);
+     if(!(Number(z.prevClose)>0)&&Number(y.prevClose)>0)z.prevClose=Number(y.prevClose);
+     z.openSource='Yahoo Finance 1m/meta（當日時間核對）';z.openVerified=true;
+     z.source=(z.source||'ETF live')+'＋Yahoo開盤補全';
+    }
+   }catch(e){errors.push('Yahoo ETF open fill: '+(e.message||String(e)))}
   }
  }
- // Surface the real unavailable ticker rather than falsely marking the
- // entire four-ETF response complete or using an undated prior-close quote.
- for(const c of ETF)if(!quotes[c]?.last)errors.push(c+': 今日有效現價尚未取得');
 
  const corpRefs=await corpRefPromise;
  if(!corpRefs)errors.push('TWSE TWT49U: timeout');else if(!corpRefs.ok&&corpRefs.error)errors.push('TWSE TWT49U: '+corpRefs.error);
@@ -3007,23 +2880,7 @@ async function preopenTxfPump(){
  }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}
  finally{PREOPEN_PUMP_RUNNING=false}
 }
-let LAST_BUY_MODEL_HEALTH_KEY='';
-async function refreshRuntime(){
- if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;
- const errors=[],jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cachedSingleFlight('buymodel',8000,buyModel)]];
- try{
-  await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));
-  const bm=RUNTIME.bm,states=ETF.map(c=>({code:c,error:bm?.models?.[c]?.error||null,
-   openVerified:bm?.quoteStatus?.[c]?.openVerified===true,
-   quoteSource:bm?.quoteStatus?.[c]?.source||null,
-   openSource:bm?.quoteStatus?.[c]?.openSource||null}));
-  const signature=JSON.stringify(states.map(x=>[x.code,x.error,x.openVerified,x.openSource]));
-  if(signature!==LAST_BUY_MODEL_HEALTH_KEY){
-   LAST_BUY_MODEL_HEALTH_KEY=signature;
-   console.log('[ETF-MODEL-HEALTH]',JSON.stringify({day:ymdTaipei(),states,quoteErrors:(bm?.etfQuoteErrors||[]).slice(0,6),refreshErrors:errors.slice(0,4)}));
-  }
- }finally{RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
-}
+async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cachedSingleFlight('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
 function V(status,evidence,detail='',updatedAt=new Date().toISOString()){return{status,evidence,detail,updatedAt}}
 async function validationReport(deep=false){
  const out={},errors=[...(RUNTIME.errors||[])],ld=RUNTIME.live,ctx=RUNTIME.ctx,nf=RUNTIME.nf,ovs=RUNTIME.ovs,bm=RUNTIME.bm;
@@ -4078,8 +3935,6 @@ server.listen(PORT,'0.0.0.0',()=>{
  console.log(VERSION+' '+BUILD+' listening on '+PORT);
  // Restore small operational snapshots before the first live/model refresh when Supabase is configured.
  setTimeout(()=>ensureOperationalMetaRestored().catch(()=>{}),0);
- // Cash-session open is a once-per-day verified value, not a disposable quote tick.
- setTimeout(()=>restoreVerifiedOpensCloud().catch(()=>{}),0);
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
  setInterval(refreshRuntime,120000);
