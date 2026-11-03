@@ -355,28 +355,39 @@ async function yahooTwOne(code,isIndex=false){
        r=d?.chart?.result?.[0];
  if(!r)throw Error('Yahoo no chart '+symbol);
  const q=r.indicators?.quote?.[0]||{},ts=r.timestamp||[],meta=r.meta||{};
- let idx=-1;
- for(let i=(q.close||[]).length-1;i>=0;i--)if(Number.isFinite(q.close[i])){idx=i;break}
- const candleLast=idx>=0?q.close[idx]:null,
-       metaLast=n(meta.regularMarketPrice),
-       last=(metaLast>0?metaLast:candleLast),
-       prev=n(meta.chartPreviousClose??meta.previousClose),
+ const today=ymdTaipei(),inTaipeiDay=i=>Number(ts[i])>0&&ymdTaipei(new Date(Number(ts[i])*1000))===today;
+ // Yahoo regularMarketTime can lag a current intraday chart. Always derive a
+ // verified opening from the FIRST current-session 1m candle, not the metadata
+ // from yesterday or the first candle of an unrelated UTC day.
+ const currentBars=ts.map((t,i)=>i).filter(i=>inTaipeiDay(i)&&
+  Number.isFinite(Number(q.open?.[i]))&&Number(q.open[i])>0);
+ const firstBar=currentBars[0],marketTime=n(meta.regularMarketTime),
+       marketCurrent=marketTime>0&&ymdTaipei(new Date(marketTime*1000))===today,
+       lastBar=[...currentBars].reverse().find(i=>Number(q.close?.[i])>0),
+       marketSessionOpen=Number.isInteger(firstBar)?Number(q.open[firstBar]):null,
+       lastBarTime=Number.isInteger(lastBar)?Number(ts[lastBar]):null;
+ const last=marketCurrent&&n(meta.regularMarketPrice)>0?n(meta.regularMarketPrice):
+  Number.isInteger(lastBar)?Number(q.close[lastBar]):marketCurrent?n(meta.regularMarketPrice):null;
+ const prev=n(meta.chartPreviousClose??meta.previousClose),
        opens=(q.open||[]).filter(Number.isFinite),
        highs=(q.high||[]).filter(Number.isFinite),
-       lows=(q.low||[]).filter(Number.isFinite),
-       marketTime=n(meta.regularMarketTime);
- if(!(last>0))throw Error('Yahoo no price '+symbol);
+       lows=(q.low||[]).filter(Number.isFinite);
+ if(!(last>0))throw Error('Yahoo no current-session price '+symbol);
+ const latestTime=lastBarTime||marketCurrent?Math.max(lastBarTime||0,marketCurrent?marketTime:0):null;
  return{
   ticker:isIndex?'t00':code,
   name:isIndex?'加權指數':(META[code]?.name||code),
   last,prevClose:prev,
-  open:n(meta.regularMarketOpen)??opens[0],
-  high:n(meta.regularMarketDayHigh)??(highs.length?Math.max(...highs):null),
-  low:n(meta.regularMarketDayLow)??(lows.length?Math.min(...lows):null),
-  volume:n(meta.regularMarketVolume),
-  time:marketTime?new Date(marketTime*1000).toISOString():(idx>=0&&ts[idx]?new Date(ts[idx]*1000).toISOString():null),
-  date:marketTime?new Date(marketTime*1000).toISOString().slice(0,10):(idx>=0&&ts[idx]?new Date(ts[idx]*1000).toISOString().slice(0,10):null),
-  source:metaLast>0?'Yahoo Finance regularMarketPrice':'Yahoo Finance 1m fallback',
+  open:marketSessionOpen||(marketCurrent?n(meta.regularMarketOpen):null),
+  high:marketCurrent?n(meta.regularMarketDayHigh)??(highs.length?Math.max(...highs):null):
+   (highs.length?Math.max(...highs):null),
+  low:marketCurrent?n(meta.regularMarketDayLow)??(lows.length?Math.min(...lows):null):
+   (lows.length?Math.min(...lows):null),
+  volume:marketCurrent?n(meta.regularMarketVolume):null,
+  time:latestTime?new Date(latestTime*1000).toISOString():null,
+  date:latestTime?ymdTaipei(new Date(latestTime*1000)):null,
+  openSource:marketSessionOpen?'Yahoo Finance 首根當日盤中1m K':'Yahoo Finance 當日meta',
+  source:marketSessionOpen?'Yahoo Finance 當日1m K':marketCurrent?'Yahoo Finance regularMarketPrice':'Yahoo Finance 無同日盤中資料',
   realtime:true
  };
 }
