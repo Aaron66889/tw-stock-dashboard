@@ -502,12 +502,12 @@ async function liveEtf4(){
  // query1 + query2 + Yahoo HTML for all four ETFs every 60s just because
  // the latest last-good price aged. That causes avoidable request bursts and
  // can rate-limit the exact providers needed when a genuine outage occurs.
- // Only prewarm missing session opens or an ETF that has NEVER had a
- // current-day good quote; after Anue, missing current prices still get
- // the normal on-demand Yahoo/MIS completion below.
- const coldYahoo=ETF.filter(c=>
-  (twAfterCashOpenNow()&&!verifiedEtfOpen(c,today))||
-  ETF_QUOTE_LAST_GOOD[c]?.day!==today);
+ // Prewarm only missing session opens. Once a verified open is restored
+ // from cloud on restart, let the primary quote provider fetch current prices;
+ // a genuinely missing primary price still triggers Yahoo/TWSE below.
+ // Avoid expensive premature fallback storms before the 09:00 session.
+ const coldYahoo=twAfterCashOpenNow()
+  ? ETF.filter(c=>!verifiedEtfOpen(c,today)) : [];
  const earlyYahooPromise=Promise.all(coldYahoo.map(async c=>[
   c,await deadline(verifiedYahooOpenBackup(c).catch(e=>{
    errors.push(c+': '+(e.message||String(e)));
