@@ -394,8 +394,37 @@ async function yahooTwOne(code,isIndex=false){
  };
 }
 
-// Cache only today's independently dated TWSE opening quotes.
-const ETF_SESSION_OPENS={};
+// Keep verified CASH session opens independent of every transient live-quote poll.
+// Both Render restarts and redeploys can otherwise erase the 09:00 verification
+// and randomly block all four models whenever TWSE MIS/Yahoo are rate-limited.
+const ETF_OPEN_CACHE_FILE='verified_etf_session_opens.json';
+const ETF_OPEN_META_ID='__ETF_VERIFIED_OPENS__';
+const ETF_SESSION_OPENS=(()=>{
+ const raw=diskRead(ETF_OPEN_CACHE_FILE),out={},today=ymdTaipei();
+ for(const code of ETF){
+  const r=raw?.[code];
+  if(r?.day===today&&Number(r.price)>0&&typeof r.source==='string')out[code]=r;
+ }
+ return out;
+})();
+let ETF_OPEN_SAVE_TIMER=null;
+async function restoreVerifiedOpensCloud(){
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return;
+ try{
+  const payload=await operationalMetaCloudPayload(ETF_OPEN_META_ID),today=ymdTaipei();
+  if(payload?.day!==today)return;
+  let restored=0;
+  for(const code of ETF){
+   const row=payload.opens?.[code];
+   if(!ETF_SESSION_OPENS[code]&&row?.day===today&&Number(row.price)>0&&typeof row.source==='string'){
+    ETF_SESSION_OPENS[code]={day:today,price:Number(row.price),source:row.source};
+    restored++;
+   }
+  }
+  if(restored){diskWrite(ETF_OPEN_CACHE_FILE,ETF_SESSION_OPENS);
+   console.log('[ETF-OPEN-RESTORED]',today,restored,'validated session opens recovered')}
+ }catch(e){console.warn('[ETF-OPEN-RESTORE-UNAVAILABLE]',String(e.message||e).slice(0,160))}
+}
 function officialQuoteDay(raw){
  const v=String(raw||'').trim();
  if(/^20\d{2}-\d{2}-\d{2}$/.test(v))return v;
@@ -407,7 +436,20 @@ function officialQuoteDay(raw){
 }
 function verifiedEtfOpen(code,day){const v=ETF_SESSION_OPENS[code];return v?.day===day&&v.price>0?v:null}
 function storeVerifiedEtfOpen(code,day,price,source){
- if(Number(price)>0)ETF_SESSION_OPENS[code]={day,price:Number(price),source};
+ if(!ETF.includes(code)||day!==ymdTaipei()||!(Number(price)>0)||!source)return;
+ const old=ETF_SESSION_OPENS[code],value={day,price:Number(price),source:String(source)};
+ if(old?.day===day&&old.price===value.price&&old.source===value.source)return;
+ ETF_SESSION_OPENS[code]=value;diskWrite(ETF_OPEN_CACHE_FILE,ETF_SESSION_OPENS);
+ if(!(SUPABASE_URL&&SUPABASE_SECRET_KEY))return;
+ // Coalesce four tickers into a single daily cloud write. Never wait on this
+ // operational backup before answering the live buy model.
+ clearTimeout(ETF_OPEN_SAVE_TIMER);
+ ETF_OPEN_SAVE_TIMER=setTimeout(()=>{
+  const today=ymdTaipei(),opens=Object.fromEntries(ETF.filter(c=>ETF_SESSION_OPENS[c]?.day===today)
+   .map(c=>[c,ETF_SESSION_OPENS[c]]));
+  persistOperationalMetaCloud(ETF_OPEN_META_ID,ETF_OPEN_META_ID,{day:today,opens})
+   .catch(e=>console.warn('[ETF-OPEN-PERSIST-UNAVAILABLE]',String(e.message||e).slice(0,160)));
+ },1800);
 }
 // Independent dated quote providers for cash-open verification.
 // A temporary source block is cached briefly so cold instances do not issue
@@ -4029,6 +4071,8 @@ server.listen(PORT,'0.0.0.0',()=>{
  console.log(VERSION+' '+BUILD+' listening on '+PORT);
  // Restore small operational snapshots before the first live/model refresh when Supabase is configured.
  setTimeout(()=>ensureOperationalMetaRestored().catch(()=>{}),0);
+ // Cash-session open is a once-per-day verified value, not a disposable quote tick.
+ setTimeout(()=>restoreVerifiedOpensCloud().catch(()=>{}),0);
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
  setInterval(refreshRuntime,120000);
