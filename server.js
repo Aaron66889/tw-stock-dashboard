@@ -438,6 +438,14 @@ async function liveEtf4(){
  // trading day, including after 13:30. Without it the official first-layer
  // cap can silently disappear when Anue omits its opening-price field.
  const openRequiredToday=twAfterCashOpenNow();
+ // Start the independent Yahoo fallback BEFORE awaiting MIS. A cold Render
+ // instance may miss three ETF quotes at once; opening-only Yahoo completion
+ // used to skip instruments with NO last price, leaving cards stuck loading.
+ const yahooCandidates=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||
+  (openRequiredToday&&!verifiedEtfOpen(c,today)));
+ const yahooFallbackPromise=Promise.all(yahooCandidates.map(async c=>[
+  c,await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
+ ]));
  const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!verifiedEtfOpen(c,today)));
  if(needMis.length){
   try{
@@ -475,31 +483,35 @@ async function liveEtf4(){
    }
   }catch(e){errors.push('TWSE official session open: '+(e.message||String(e)))}
  }
- // Cash-session open is required by the existing anti-chase ceiling.
- // Some ETF transports return fresh last/prev but leave open blank.
- // Fill ONLY missing session fields from the already-existing Yahoo 1m/meta path.
- // Never overwrite a valid live last price.
- if(openRequiredToday){
-  const needOpen=ETF.filter(c=>quotes[c]?.last>0&&!quotes[c]?.openVerified);
-  if(needOpen.length){
-   try{
-    const ys=await Promise.all(needOpen.map(async c=>[
-     c,
-     await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
-    ]));
-    for(const [c,y] of ys){
-     if(!y||!(Number(y.open)>0)||!quotes[c]||!Number.isFinite(Date.parse(y.time||''))||ymdTaipei(new Date(y.time))!==today)continue;
-     const z=quotes[c];
-     z.open=Number(y.open);
-     if(!(Number(z.high)>0)&&Number(y.high)>0)z.high=Number(y.high);
-     if(!(Number(z.low)>0)&&Number(y.low)>0)z.low=Number(y.low);
-     if(!(Number(z.prevClose)>0)&&Number(y.prevClose)>0)z.prevClose=Number(y.prevClose);
-     z.openSource='Yahoo Finance 1m/meta（當日時間核對）';z.openVerified=true;
-     z.source=(z.source||'ETF live')+'＋Yahoo開盤補全';
-    }
-   }catch(e){errors.push('Yahoo ETF open fill: '+(e.message||String(e)))}
+ // Yahoo is an independently dated fallback for BOTH an entirely absent quote
+ // and incomplete fields, not just an opening-price supplement. The request
+ // was launched in parallel with MIS above to stay within endpoint deadlines.
+ // A prior-day Yahoo quote must never be accepted as today's live buy signal.
+ const yahooPairs=await yahooFallbackPromise;
+ for(const [c,y] of yahooPairs){
+  if(!y||!Number.isFinite(Date.parse(y.time||''))||ymdTaipei(new Date(y.time))!==today)continue;
+  let z=quotes[c];
+  if(!(Number(z?.last)>0)){
+   if(!(Number(y.last)>0&&Number(y.prevClose)>0))continue;
+   z={...y,ticker:c,date:today,serverFetchedAt:y.time,
+      source:'Yahoo Finance 日內K備援',realtime:true};
+   quotes[c]=z;
+  }else{
+   // Do not replace an available primary live price or its existing timestamp.
+   if(!(Number(z.prevClose)>0)&&Number(y.prevClose)>0)z.prevClose=Number(y.prevClose);
+   if(!(Number(z.high)>0)&&Number(y.high)>0)z.high=Number(y.high);
+   if(!(Number(z.low)>0)&&Number(y.low)>0)z.low=Number(y.low);
+  }
+  if(openRequiredToday&&!z.openVerified&&Number(y.open)>0){
+   z.open=Number(y.open);
+   z.openSource='Yahoo Finance 1m/meta（當日時間核對）';
+   z.openVerified=true;
+   storeVerifiedEtfOpen(c,today,z.open,z.openSource);
   }
  }
+ // Surface the real unavailable ticker rather than falsely marking the
+ // entire four-ETF response complete or using an undated prior-close quote.
+ for(const c of ETF)if(!quotes[c]?.last)errors.push(c+': 今日有效現價尚未取得');
 
  const corpRefs=await corpRefPromise;
  if(!corpRefs)errors.push('TWSE TWT49U: timeout');else if(!corpRefs.ok&&corpRefs.error)errors.push('TWSE TWT49U: '+corpRefs.error);
