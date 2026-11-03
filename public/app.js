@@ -487,7 +487,72 @@ async function loadMarket(){if(document.visibilityState==='hidden')return;clearT
   lastLive={...c.data,quotes:{...(c.data.quotes||{}),...yahooETF}};renderMarket();renderHoldings();if(VALIDATION)renderSpecs();$('freshPill').textContent='● 最後成功資料 '+ageText(c.at);$('freshPill').className='pill warn'}else{$('freshPill').textContent='● 行情連線失敗';$('freshPill').className='pill bad'}console.warn('[MARKET]',e?.message||e)}marketTimer=setTimeout(loadMarket,10000)}
 async function loadSlow(){if(document.visibilityState==='hidden')return;clearTimeout(slowTimer);const jobs=[['ctx','/api/context'],['taiex','/api/taiex-history'],['overseas','/api/overseas']],rs=await Promise.allSettled(jobs.map(x=>get(x[1])));rs.forEach((r,i)=>{const k=jobs[i][0];if(r.status==='fulfilled'&&r.value){saveLastGood(k,r.value);if(k==='ctx')lastCtx=r.value;if(k==='taiex')lastTaiex=r.value;if(k==='overseas')lastOverseas=r.value}else{const c=loadLastGood(k);if(c?.data){if(k==='ctx')lastCtx=safeCtxLastGood(c);if(k==='taiex')lastTaiex=c.data;if(k==='overseas')lastOverseas=c.data}addEvent(k+'資料更新失敗：'+(r.reason?.message||'unknown'),'bad')}});renderMarket();renderExternal();renderTomorrow();if(VALIDATION)renderSpecs();slowTimer=setTimeout(loadSlow,30000)}
 async function loadNight(){if(document.visibilityState==='hidden')return;clearTimeout(nightTimer);try{const d=await get('/api/night-future');if(!d.ok&&d.available===false)throw Error(d.reason||d.error||'夜盤不可用');lastNight=d;saveLastGood('night',d)}catch(e){const c=loadLastGood('night');lastNight=c?.data||{available:false,reason:e.message};addEvent('夜盤資料更新失敗：'+e.message,'bad')}renderExternal();renderNight();renderTomorrow();if(VALIDATION)renderSpecs();nightTimer=setTimeout(loadNight,10000)}
-async function loadBuy(){if(document.visibilityState==='hidden'&&!(window.SignalAlerts?.monitoring()&&twMarketOpenClient()))return;clearTimeout(buyTimer);try{const d=await get('/api/buy-model');if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);lastBuy=d;saveLastGood('buy',d);if(!d.dataFresh){const bad=ETF.filter(c=>d.modelFreshByCode&&d.modelFreshByCode[c]===false);$('freshPill').textContent=bad.length?`● 部分模型資料降級：${bad.join('/')}`:'● 模型資料降級';$('freshPill').className='pill warn'}updateState();for(const c of ETF)window.DipWatch?.observe(c,lastLive?.quotes?.[c],lastBuy?.models?.[c],lastBuy,STATE.models?.[c]);window.SignalAlerts?.observeLayers(STATE,lastBuy,lastLive);renderAllModel();loadServerPreopen();if(VALIDATION)renderSpecs()}catch(e){const c=loadLastGood('buy');if(c?.data){lastBuy=c.data;renderAllModel();$('freshPill').textContent='● 模型沿用最後資料 '+ageText(c.at);$('freshPill').className='pill warn'}addEvent('買點模型暫時失敗：'+e.message,'bad')}buyTimer=setTimeout(loadBuy,30000)}
+
+function buySnapshotFullyValid(d){
+ return !!(d?.ok&&ETF.every(c=>d.models?.[c]&&!d.models[c].error&&d.models[c]?.raw?.first)&&
+  Number.isFinite(Date.parse(d.fetchedAt||''))&&
+  new Date(d.fetchedAt).toLocaleDateString('en-CA',{timeZone:'Asia/Taipei'})===dayKey());
+}
+function lastValidBuySnapshot(){
+ const x=loadLastGood('buy'),t=Date.parse(x?.at||'');
+ return buySnapshotFullyValid(x?.data)&&Number.isFinite(t)&&Date.now()-t<15*60*1000?x:null;
+}
+function readOnlyBuyReplay(data,missing,reason){
+ const d={...data,models:{...(data.models||{})},modelFreshByCode:{...(data.modelFreshByCode||{})},
+  shadowModels:{...(data.shadowModels||{})},_displayOnlyReason:reason};
+ for(const c of missing){
+  const r=d.models[c];
+  if(!r||r.error)continue;
+  d.models[c]={...r,_displayOnlyStale:true,hardVeto:true,
+   hardVetoReason:'行情中斷：最後有效買點僅供參考，正式買入停止',
+   noBuyToday:true,noBuyReason:'等待最新正式行情重新確認'};
+  d.modelFreshByCode[c]=false;
+  d.shadowModels[c]={code:c,error:'備援快照不提供Shadow正式訊號'};
+ }
+ return d;
+}
+async function loadBuy(){
+ if(document.visibilityState==='hidden'&&!(window.SignalAlerts?.monitoring()&&twMarketOpenClient()))return;
+ clearTimeout(buyTimer);
+ try{
+  const d=await get('/api/buy-model',15500);
+  if(!d.ok)throw Error((d.source||'buy-model')+': '+d.error);
+  const failed=ETF.filter(c=>!d.models?.[c]||!!d.models[c].error),old=failed.length?lastValidBuySnapshot():null;
+  if(!failed.length&&buySnapshotFullyValid(d))saveLastGood('buy',d);
+  if(old){
+   const merged={...d,models:{...(d.models||{})},shadowModels:{...(d.shadowModels||{})}};
+   for(const c of failed)if(old.data.models[c]&&!old.data.models[c].error)merged.models[c]=old.data.models[c];
+   lastBuy=readOnlyBuyReplay(merged,failed,'今日部分行情中斷');
+  }else lastBuy=d;
+  const replay=ETF.filter(c=>lastBuy.models?.[c]?._displayOnlyStale);
+  if(replay.length){
+   $('freshPill').textContent='● '+replay.join('/')+' 使用最後有效模型（禁止正式買入）';
+   $('freshPill').className='pill warn';
+  }else if(!d.dataFresh){
+   const bad=ETF.filter(c=>d.modelFreshByCode?.[c]===false);
+   $('freshPill').textContent=bad.length?'● 部分模型資料降級：'+bad.join('/'):'● 模型資料降級';
+   $('freshPill').className='pill warn';
+  }else{$('freshPill').textContent='● 模型資料正常';$('freshPill').className='pill live'}
+  updateState();
+  for(const c of ETF)if(!lastBuy.models?.[c]?._displayOnlyStale)
+   window.DipWatch?.observe(c,lastLive?.quotes?.[c],lastBuy?.models?.[c],lastBuy,STATE.models?.[c]);
+  if(!replay.length)window.SignalAlerts?.observeLayers(STATE,lastBuy,lastLive);
+  renderAllModel();loadServerPreopen();if(VALIDATION)renderSpecs();
+ }catch(e){
+  const old=lastValidBuySnapshot();
+  if(old){
+   lastBuy=readOnlyBuyReplay(old.data,ETF,'買點API暫時中斷');
+   $('freshPill').textContent='● 使用'+ageText(old.at)+'模型備援（禁止正式買入）';
+  }else{
+   lastBuy={ok:false,models:Object.fromEntries(ETF.map(c=>[c,{code:c,error:'當前模型API失敗：'+(e.message||String(e))}])),shadowModels:{}};
+   $('freshPill').textContent='● 模型來源暫時中斷，正在重試';
+  }
+  $('freshPill').className='pill warn';
+  renderAllModel();addEvent('買點模型暫時失敗：'+(e.message||String(e)),'bad');
+ }
+ buyTimer=setTimeout(loadBuy,30000);
+}
+
 
 function renderMarket(){
  if(lastLive?.market){const q=lastLive.market,ch=(q.last-q.prevClose)/q.prevClose*100;$('idx').textContent=q.last.toLocaleString('zh-TW',{maximumFractionDigits:2});$('idxchg').textContent=(ch>=0?'▲ ':'▼ ')+Math.abs(q.last-q.prevClose).toFixed(2)+'點　'+pct(ch);$('idxchg').className='change '+cls(ch);$('open').textContent=fmt(q.open);$('high').textContent=fmt(q.high);$('low').textContent=fmt(q.low);$('offHigh').textContent=q.high?pct((q.last-q.high)/q.high*100):'—';let text='目前多空震盪。';if(ch>0)text='大盤現貨高於昨收；仍要搭配市場廣度與台積電判斷是不是全面上漲。';if(ch<0)text='大盤現貨低於昨收；先看低點承接與市場廣度是否繼續惡化。';$('plain').innerHTML='<b>白話：</b>'+text}
@@ -667,7 +732,7 @@ function appendHistory(code,r,m,px){
  const last=arr.at(-1);if(last&&Math.abs(last.first-v.first)<.025&&Math.abs(last.second-v.second)<.025&&Math.abs(last.third-v.third)<.025&&last.status===v.status){last.to=now;last.priceLast=px;last.priceMin=Math.min(last.priceMin,px);last.priceMax=Math.max(last.priceMax,px);last.count++}else arr.push(v);
  HIST[code]=arr.slice(-1200);saveJSON('v124_buy_history',HIST)
 }
-function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error)updateOne(c,r);const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
+function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error&&!r._displayOnlyStale)updateOne(c,r);const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error&&!r?._displayOnlyStale)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
 function statusFor(c){const r=lastBuy?.models?.[c],m=STATE.models?.[c];if(!r||r.error||!m)return null;const px=Number(lastLive?.quotes?.[c]?.last??r.price),statuses=m.layers.map(L=>layerView(L,px));let activeLayer=statuses.lastIndexOf('CONFIRMED_IN');if(activeLayer<0){activeLayer=0;for(let i=statuses.length-1;i>=0;i--){if(statuses[i]!=='WAIT'&&statuses[i]!=='INVALID'){activeLayer=i;break}}}const activeStatus=statuses[activeLayer]||statuses[0];return{r,m,px,statuses,activeLayer,activeStatus,rank:rank(activeStatus)}}
 
 function renderPreopen(){const el=$('preopenSummary'),p=PREOPEN.day===dayKey()?(PREOPEN.locked||PREOPEN.draft):null,d=taipeiNow(),m=d.getHours()*60+d.getMinutes();$('preopenCard').style.border=m>=537&&m<540?'2px solid #d6a044':'';if(!p){el.innerHTML='今日尚未捕捉08:57盤前版本。08:45起會先累積台指期日盤走勢，盤中不會用事後價格冒充盤前預測。';return}const lead=p.txfLead,leadLine=lead?.available?`<br><b>08:45台指日盤先行：</b>${lead.sessionChangePct>=0?'+':''}${Number(lead.sessionChangePct).toFixed(2)}%｜3分 ${lead.d3?`${lead.d3.pct>=0?'+':''}${lead.d3.pct.toFixed(2)}%`:'累積中'}｜5分 ${lead.d5?`${lead.d5.pct>=0?'+':''}${lead.d5.pct.toFixed(2)}%`:'累積中'}｜${lead.source}${lead.confidence<.99?'（部分樣本）':''}`:(lead?.active?'<br><b>08:45台指日盤先行：</b>樣本累積中':'');el.innerHTML=`<b>${PREOPEN.locked?'🔒 已鎖定':'估算中'} ${new Date(p.at).toLocaleTimeString('zh-TW',{hour12:false})}</b>${leadLine}<br>`+ETF.filter(c=>p.models[c]).map(c=>`${c}　① ${ztxt(p.models[c].first)}　② ${ztxt(p.models[c].second)}　③ ${ztxt(p.models[c].third)}`).join('<br>')}
@@ -899,7 +964,7 @@ async function loadTrendBuy(force=false){
 function renderBuyCards(){
  $('buyCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x){const model=lastBuy?.models?.[c],details=model?.error||lastBuy?.etfQuoteErrors?.filter(e=>String(e).includes(c)).join('；')||null;
   const note=details?'資料來源尚未符合正式模型條件：'+escapeHTML(details):lastBuy?'今日報價或開盤參考尚未備齊':'首次載入行情與歷史模型中';
-  return`<section class="card"><div class="ticker">${c} ${NAME[c]}</div><div class="notice"><b>正式模型暫停，等待資料恢復</b><div class="note">${note}｜自動重試中，不以舊價冒充當日買點，也不開放正式模型買入。</div></div></section>`}const h=x.r.health||{};return`<section class="card buycard ${x.activeStatus==='CONFIRMED_IN'?'buyok':x.r.hardVeto?'invalid':''}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div><div class="score">${x.r.score}/100</div></div><div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(c)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b>${confirmSnapshotText(x.m.layers[0])?`<small>${confirmSnapshotText(x.m.layers[0])}</small>`:''}</div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div><div class="healthgrid"><div class="box"><span class="k">防追高風險</span><b>${x.r.chaseRisk}/100</b><small>歷史警戒 ${x.r.chaseWarningThreshold??'—'}｜追價硬線 ${x.r.chaseHardThreshold??88}<br>樣本 ${x.r.chaseCalibration?.observations??'—'}｜防追高門檻 WF ${x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0}期｜校準 ${x.r.chaseCalibration?.lockedDate||'未鎖定'}｜${chaseLockText(x.r.chaseCalibration)}</small></div><div class="box"><span class="k">環境</span><b>${x.r.environmentScore.toFixed(0)}</b></div><div class="box"><span class="k">成分健康</span><b>${h.usable?h.score+'/100':'資料不足'}</b></div><div class="box"><span class="k">連續買不到</span><b>${STATE.noSignalDays?.[c]||0}日</b></div></div><div class="reading"><b>白話：</b>${explain(c,x)}<br><b>決策拆解：</b>${decisionTransparency(x)}<br><b>正式買入判定：</b>${officialExecutionExplanation(x)}<br><b>第一層可觸及性：</b>${reachabilityText(x)}<br><b>開盤參考與上限：</b>${sessionEntryText(x)}</div>${window.DipWatch?.panel(c,x.r,x.m,lastLive?.quotes?.[c],lastBuy)||''}${window.CrashGateLabUI?.auditSnippet(lastBuy?.researchGateAudit?.[c])||''}${shadowPanel(c)}<div class="row" style="margin-top:8px"><span class="note">${h.usable?h.divergence:'完整成分覆蓋不足時不納入分數'}</span><button class="btn" onclick="openDetail('${c}')">查看成分／歷史</button> <button class="btn primary" ${(!officialExecutionSnapshotReady(c)||x.r.hardVeto||x.r.noBuyToday||x.activeStatus!=='CONFIRMED_IN')?'disabled title="尚未通過正式模型買入許可；請勿記為模型績效"':''} onclick="openModelTrade('${c}',${x.activeLayer+1})">${x.r.hardVeto||x.r.noBuyToday?'正式模型暫停':x.activeStatus==='CONFIRMED_IN'?'記錄模型買入':'模型買點未確認'}</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('')
+  return`<section class="card"><div class="ticker">${c} ${NAME[c]}</div><div class="notice"><b>正式模型暫停，等待資料恢復</b><div class="note">${note}｜自動重試中，不以舊價冒充當日買點，也不開放正式模型買入。</div></div></section>`}const h=x.r.health||{};return`<section class="card buycard ${x.activeStatus==='CONFIRMED_IN'?'buyok':x.r.hardVeto?'invalid':''}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${x.r._displayOnlyStale?'來源中斷｜最後有效買點（禁止買入）':displayModelState(x)}</span></div><div class="score">${x.r.score}/100</div></div>${x.r._displayOnlyStale?'<div class="notice"><b>最新模型資料中斷</b>：此處僅顯示今日最後成功價格區間，所有正式買入與確認均暫停，等待新報價恢復。</div>':''}<div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(c)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b>${confirmSnapshotText(x.m.layers[0])?`<small>${confirmSnapshotText(x.m.layers[0])}</small>`:''}</div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div><div class="healthgrid"><div class="box"><span class="k">防追高風險</span><b>${x.r.chaseRisk}/100</b><small>歷史警戒 ${x.r.chaseWarningThreshold??'—'}｜追價硬線 ${x.r.chaseHardThreshold??88}<br>樣本 ${x.r.chaseCalibration?.observations??'—'}｜防追高門檻 WF ${x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0}期｜校準 ${x.r.chaseCalibration?.lockedDate||'未鎖定'}｜${chaseLockText(x.r.chaseCalibration)}</small></div><div class="box"><span class="k">環境</span><b>${x.r.environmentScore.toFixed(0)}</b></div><div class="box"><span class="k">成分健康</span><b>${h.usable?h.score+'/100':'資料不足'}</b></div><div class="box"><span class="k">連續買不到</span><b>${STATE.noSignalDays?.[c]||0}日</b></div></div><div class="reading"><b>白話：</b>${explain(c,x)}<br><b>決策拆解：</b>${decisionTransparency(x)}<br><b>正式買入判定：</b>${officialExecutionExplanation(x)}<br><b>第一層可觸及性：</b>${reachabilityText(x)}<br><b>開盤參考與上限：</b>${sessionEntryText(x)}</div>${window.DipWatch?.panel(c,x.r,x.m,lastLive?.quotes?.[c],lastBuy)||''}${window.CrashGateLabUI?.auditSnippet(lastBuy?.researchGateAudit?.[c])||''}${shadowPanel(c)}<div class="row" style="margin-top:8px"><span class="note">${h.usable?h.divergence:'完整成分覆蓋不足時不納入分數'}</span><button class="btn" onclick="openDetail('${c}')">查看成分／歷史</button> <button class="btn primary" ${(!officialExecutionSnapshotReady(c)||x.r.hardVeto||x.r.noBuyToday||x.activeStatus!=='CONFIRMED_IN')?'disabled title="尚未通過正式模型買入許可；請勿記為模型績效"':''} onclick="openModelTrade('${c}',${x.activeLayer+1})">${x.r.hardVeto||x.r.noBuyToday?'正式模型暫停':x.activeStatus==='CONFIRMED_IN'?'記錄模型買入':'模型買點未確認'}</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('')
 }
 function renderModelCards(){
  $('modelCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return'';const r=x.r;return`<div class="card"><div class="row"><b>${c} ${NAME[c]}</b><span>${stageText(x.activeStatus,x.activeLayer+1)}</span></div><div class="grid4"><div class="box"><span class="k">${r.historyOfficial?'完整回測歷史':'暫用歷史樣本'}</span><b>${r.history.historyDays}日</b><small>${r.historyOfficial?'PASS':`${r.historyProgress?.doneMonths||0}/${r.historyProgress?.totalMonths||0}月｜${r.historyProgress?.percent||0}%`}</small></div><div class="box"><span class="k">5/20/60/120/250</span><b>全部納入</b></div><div class="box"><span class="k">防追高</span><b>${r.chaseRisk}/100</b><small>警戒 ${r.chaseWarningThreshold??'—'}｜硬線 ${r.chaseHardThreshold??88}｜${r.chaseCalibration?.regime||'—'}<br>樣本 ${r.chaseCalibration?.observations??'—'}｜防追高門檻 WF ${r.chaseCalibration?.walkForwardCount??r.chaseCalibration?.walkForwardYears?.length??0}期｜${r.chaseCalibration?.lockedDate||'未鎖定'}｜${chaseLockText(r.chaseCalibration)}</small></div><div class="box"><span class="k">參與率保護</span><b>${r.history.bullStructure&&Number(STATE.noSignalDays?.[c]||0)>=15?'重錨中':'監控'}</b></div></div><div class="reading">SMA20 ${fmt(r.history.sma20)}｜60 ${fmt(r.history.sma60)}｜120 ${fmt(r.history.sma120)}｜250 ${fmt(r.history.sma250)}｜ATR ${fmt(r.history.atr14)}｜近1年價格位置 ${r.history.pricePercentile.toFixed(0)}%。</div></div>`}).join('')
