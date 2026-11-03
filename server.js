@@ -413,6 +413,15 @@ async function liveStable(extra=[]){
 }
 async function liveEtf4(){
  const quotes={},errors=[],today=ymdTaipei();
+ // On free-instance cold starts, two sequential 4.5s provider waits exceed the
+ // buy-model deadline. Warm missing/expired ETF quotes concurrently with Anue.
+ // Once today's complete quote and verified open are cached, no extra fetch runs.
+ const coldYahoo=ETF.filter(c=>ETF_QUOTE_LAST_GOOD[c]?.day!==today||
+  Date.now()-(ETF_QUOTE_LAST_GOOD[c]?.at||0)>60000||
+  (twAfterCashOpenNow()&&!verifiedEtfOpen(c,today)));
+ const earlyYahooPromise=Promise.all(coldYahoo.map(async c=>[
+  c,await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
+ ]));
  // Fetch the official ex-right/ex-dividend reference in parallel with live quotes so the first request does not add serial latency.
  const corpRefPromise=deadline(twseExRightReferences(today).catch(e=>({ok:false,day:today,map:{},source:'TWSE TWT49U',error:e.message})),4200,null);
  // Primary: Anue. Keep its live last price when available.
@@ -443,9 +452,12 @@ async function liveEtf4(){
  // used to skip instruments with NO last price, leaving cards stuck loading.
  const yahooCandidates=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||
   (openRequiredToday&&!verifiedEtfOpen(c,today)));
- const yahooFallbackPromise=Promise.all(yahooCandidates.map(async c=>[
-  c,await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
- ]));
+ const yahooFallbackPromise=(async()=>{
+  const early=new Map(await earlyYahooPromise);
+  return Promise.all(yahooCandidates.map(async c=>[
+   c,early.has(c)?early.get(c):await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
+  ]));
+ })();
  const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!verifiedEtfOpen(c,today)));
  if(needMis.length){
   try{
