@@ -422,6 +422,12 @@ async function liveEtf4(){
  const earlyYahooPromise=Promise.all(coldYahoo.map(async c=>[
   c,await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
  ]));
+ // On cold starts MIS and Anue must not consume two consecutive 4.5s
+ // deadlines. Start the authoritative MIS quote batch in parallel too.
+ // Convert early rejection to data immediately to avoid unhandled rejection.
+ const earlyMisPromise=coldYahoo.length
+  ? mis(ETF.map(c=>'tse_'+c+'.tw').join('|')).then(value=>({value})).catch(error=>({error}))
+  : null;
  // Fetch the official ex-right/ex-dividend reference in parallel with live quotes so the first request does not add serial latency.
  const corpRefPromise=deadline(twseExRightReferences(today).catch(e=>({ok:false,day:today,map:{},source:'TWSE TWT49U',error:e.message})),4200,null);
  // Primary: Anue. Keep its live last price when available.
@@ -461,7 +467,10 @@ async function liveEtf4(){
  const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!verifiedEtfOpen(c,today)));
  if(needMis.length){
   try{
-   const ex=needMis.map(c=>'tse_'+c+'.tw').join('|'),rows=(await mis(ex)).msgArray||[],by={};
+   const ex=needMis.map(c=>'tse_'+c+'.tw').join('|');
+   const misResult=earlyMisPromise?await earlyMisPromise:{value:await mis(ex)};
+   if(misResult.error)throw misResult.error;
+   const rows=misResult.value?.msgArray||[],by={};
    for(const x of rows){const q=parseMis(x);if(ETF.includes(q.ticker)){
     by[q.ticker]=q;
     if(openRequiredToday&&officialQuoteDay(q.date)===today&&q.open>0)
