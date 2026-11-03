@@ -343,14 +343,16 @@ async function yahooTwPageOne(code){
   open:open>0?open:null,high:high>0?high:null,low:low>0?low:null,volume:volume>0?volume:null,
   volumeSource:volume>0?'Yahoo台股報價頁總量':null,
   time:tm||new Date().toISOString(),
-  date:ymdTaipei(),
+  date:tm?ymdTaipei(new Date(tm)):null,
+  providerTimeVerified:!!tm,
   source:'Yahoo台股報價頁 '+code,
   realtime:true
  };
 }
 async function yahooTwOne(code,isIndex=false){
  const symbol=isIndex?'^TWII':code+'.TW',
-       url='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=1m&range=1d&includePrePost=false&_='+Date.now();
+       host=arguments.length>=3&&arguments[2]==='query2.finance.yahoo.com'?'query2.finance.yahoo.com':'query1.finance.yahoo.com',
+       url='https://'+host+'/v8/finance/chart/'+encodeURIComponent(symbol)+'?interval=1m&range=1d&includePrePost=false&_='+Date.now();
  const d=await getJSONQuick(url,{'Cache-Control':'no-cache','Pragma':'no-cache'},5000),
        r=d?.chart?.result?.[0];
  if(!r)throw Error('Yahoo no chart '+symbol);
@@ -407,6 +409,33 @@ function verifiedEtfOpen(code,day){const v=ETF_SESSION_OPENS[code];return v?.day
 function storeVerifiedEtfOpen(code,day,price,source){
  if(Number(price)>0)ETF_SESSION_OPENS[code]={day,price:Number(price),source};
 }
+// Independent dated quote providers for cash-open verification.
+// A temporary source block is cached briefly so cold instances do not issue
+// twelve new Yahoo requests on every 5-second live quote refresh.
+const VERIFIED_OPEN_BACKUPS=new Map();
+async function verifiedYahooOpenBackup(code){
+ const now=Date.now(),old=VERIFIED_OPEN_BACKUPS.get(code);
+ if(old&&now-old.at<15000)return old.promise;
+ const validate=async (provider,task)=>{
+  const q=await task;
+  if(!(q?.open>0)||!(q?.last>0)||!Number.isFinite(Date.parse(q.time||''))||
+   ymdTaipei(new Date(q.time))!==ymdTaipei()||
+   (provider==='Yahoo頁面'&&q.providerTimeVerified!==true))
+   throw Error(provider+' 無同日有效開盤與時間戳');
+  return {...q,backupProvider:provider};
+ };
+ const candidates=[
+  validate('Yahoo query2',yahooTwOne(code,false,'query2.finance.yahoo.com')),
+  validate('Yahoo query1',yahooTwOne(code,false)),
+  validate('Yahoo頁面',yahooTwPageOne(code))
+ ];
+ const promise=Promise.any(candidates).catch(e=>{
+  const reasons=(e?.errors||[]).map(x=>x?.message||String(x)).slice(0,3);
+  throw Error('Yahoo三路備援均失敗：'+reasons.join(' / '));
+ });
+ VERIFIED_OPEN_BACKUPS.set(code,{at:now,promise});
+ return promise;
+}
 const ETF_QUOTE_LAST_GOOD={};
 const MARKET_LAST_GOOD={data:null,at:0,day:null};
 function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||(Number(q?.open)>0&&q?.openVerified===true))}
@@ -431,7 +460,10 @@ async function liveEtf4(){
   Date.now()-(ETF_QUOTE_LAST_GOOD[c]?.at||0)>60000||
   (twAfterCashOpenNow()&&!verifiedEtfOpen(c,today)));
  const earlyYahooPromise=Promise.all(coldYahoo.map(async c=>[
-  c,await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
+  c,await deadline(verifiedYahooOpenBackup(c).catch(e=>{
+   errors.push(c+': '+(e.message||String(e)));
+   return null;
+  }),4200,null)
  ]));
  // On cold starts MIS and Anue must not consume two consecutive 4.5s
  // deadlines. Start the authoritative MIS quote batch in parallel too.
@@ -472,7 +504,9 @@ async function liveEtf4(){
  const yahooFallbackPromise=(async()=>{
   const early=new Map(await earlyYahooPromise);
   return Promise.all(yahooCandidates.map(async c=>[
-   c,early.has(c)?early.get(c):await deadline(yahooTwOne(c,false).catch(()=>null),4200,null)
+   c,early.has(c)?early.get(c):await deadline(verifiedYahooOpenBackup(c).catch(e=>{
+    errors.push(c+': '+(e.message||String(e)));return null;
+   }),4200,null)
   ]));
  })();
  const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!verifiedEtfOpen(c,today)));
