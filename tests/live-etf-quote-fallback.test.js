@@ -58,3 +58,12 @@ test('missing individual models show an explicit non-trading error rather than l
  assert.match(client,/正式模型暫停，等待資料恢復/);
  assert.match(client,/不以舊價冒充當日買點/);
 });
+
+test('cold-start backup requests begin before waiting on slow primary feeds',async()=>{
+ const c=setup();
+ const response=c.run();
+ assert.equal(c.calls.length,4,'start four dated backups immediately; do not wait for Anue/MIS timeouts');
+ const r=await response;
+ assert.equal(r.ok,true);
+ assert.equal(r.incomplete.length,0);
+});
