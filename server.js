@@ -2924,7 +2924,23 @@ async function preopenTxfPump(){
  }catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]).filter(x=>!x.startsWith('preopen-txf:')),'preopen-txf:'+(e.message||String(e))].slice(-20)}
  finally{PREOPEN_PUMP_RUNNING=false}
 }
-async function refreshRuntime(){if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;const errors=[];const jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cachedSingleFlight('buymodel',8000,buyModel)]];await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
+let LAST_BUY_MODEL_HEALTH_KEY='';
+async function refreshRuntime(){
+ if(RUNTIME.refreshing)return;RUNTIME.refreshing=true;
+ const errors=[],jobs=[['live',()=>live()],['ctx',()=>cached('ctx',30000,context)],['nf',()=>nightFuture()],['ovs',()=>cached('ovs',45000,overseas)],['bm',()=>cachedSingleFlight('buymodel',8000,buyModel)]];
+ try{
+  await Promise.all(jobs.map(async([k,fn])=>{try{RUNTIME[k]=await fn()}catch(e){errors.push(k+':'+e.message)}}));
+  const bm=RUNTIME.bm,states=ETF.map(c=>({code:c,error:bm?.models?.[c]?.error||null,
+   openVerified:bm?.quoteStatus?.[c]?.openVerified===true,
+   quoteSource:bm?.quoteStatus?.[c]?.source||null,
+   openSource:bm?.quoteStatus?.[c]?.openSource||null}));
+  const signature=JSON.stringify(states.map(x=>[x.code,x.error,x.openVerified,x.openSource]));
+  if(signature!==LAST_BUY_MODEL_HEALTH_KEY){
+   LAST_BUY_MODEL_HEALTH_KEY=signature;
+   console.log('[ETF-MODEL-HEALTH]',JSON.stringify({day:ymdTaipei(),states,quoteErrors:(bm?.etfQuoteErrors||[]).slice(0,6),refreshErrors:errors.slice(0,4)}));
+  }
+ }finally{RUNTIME.errors=errors;RUNTIME.lastRefresh=new Date().toISOString();RUNTIME.refreshing=false}
+}
 function V(status,evidence,detail='',updatedAt=new Date().toISOString()){return{status,evidence,detail,updatedAt}}
 async function validationReport(deep=false){
  const out={},errors=[...(RUNTIME.errors||[])],ld=RUNTIME.live,ctx=RUNTIME.ctx,nf=RUNTIME.nf,ovs=RUNTIME.ovs,bm=RUNTIME.bm;
