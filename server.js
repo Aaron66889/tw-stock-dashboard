@@ -398,7 +398,7 @@ function storeVerifiedEtfOpen(code,day,price,source){
 }
 const ETF_QUOTE_LAST_GOOD={};
 const MARKET_LAST_GOOD={data:null,at:0,day:null};
-function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||(Number(q?.open)>0&&q?.openVerified===true))}
+function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||(Number(q?.open)>0&&q?.openVerified===true))&&(!twMarketOpenNow()||etfQuoteTradingFresh(q,ymdTaipei()))}
 async function liveStable(extra=[]){
  let d=null,err=null;
  try{d=await live(extra)}catch(e){err=e}
