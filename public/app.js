@@ -367,7 +367,7 @@ function etfExchangeStamp(code){
  const q=lastLive?.quotes?.[code];
  if(!q)return'';
  const src=String(q.source||'');
- let base=src.includes('Anue')?'｜鉅亨即時':src.includes('TWSE')?'｜TWSE備援'+(q.time?('｜成交 '+q.time):''):(src?('｜'+src):'');
+ let base=q.unverifiedTradeTime||q.realtime===false?'｜⚠️交易時間未驗證（非即時）':src.includes('TWSE MIS exchange-timed')?'｜證交所成交 '+(q.time||'已驗證'):src.includes('Anue')?'｜鉅亨報價（時間未驗證）':src.includes('TWSE')?'｜TWSE備援'+(q.time?('｜成交 '+q.time):''):(src?('｜'+src):'');
  if(q.corporateActionAdjusted&&Number(q.effectivePrevClose)>0)base+=`｜${q.corporateAction?.type||'除權息'}基準 ${Number(q.effectivePrevClose).toFixed(2)}`;
  else if(q.corporateActionReferenceMissing)base+='｜⚠️除權息參考價待確認';
  return base;
@@ -445,7 +445,7 @@ async function loadEtfLive(){if(document.visibilityState==='hidden'&&!(window.Si
   const d=await get('/api/etf-live?_='+Date.now(),14500);
   if(!d?.quotes||!ETF.some(c=>Number(d.quotes[c]?.last)>0))
    throw Error(d?.error||'四檔ETF來源暫未回傳有效報價');
-  ETF_FETCH_AT=Date.now();ETF_FETCH_COUNT++;ETF_LIVE_LAST_ERROR=null;
+  ETF_FETCH_AT=Date.now();ETF_FETCH_COUNT++;ETF_LIVE_LAST_ERROR=twMarketOpenClient()&&ETF.some(c=>d.quotes[c]?.realtime===false||d.quotes[c]?.unverifiedTradeTime)?'部分ETF來源交易時間未驗證（不可作即時買入確認）':null;
   if(d?.quotes){
    lastLive=lastLive||{ok:true,quotes:{}};
    lastLive.quotes=lastLive.quotes||{};
