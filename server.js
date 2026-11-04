@@ -398,7 +398,7 @@ function storeVerifiedEtfOpen(code,day,price,source){
 }
 const ETF_QUOTE_LAST_GOOD={};
 const MARKET_LAST_GOOD={data:null,at:0,day:null};
-function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||(Number(q?.open)>0&&q?.openVerified===true))&&(!twMarketOpenNow()||etfQuoteTradingFresh(q,ymdTaipei()))}
+function etfQuoteComplete(q,openRequired=twAfterCashOpenNow()){return Number(q?.last)>0&&Number(q?.prevClose)>0&&(!openRequired||(Number(q?.open)>0&&q?.openVerified===true))}
 async function liveStable(extra=[]){
  let d=null,err=null;
  try{d=await live(extra)}catch(e){err=e}
@@ -432,32 +432,13 @@ async function liveEtf4(){
   }
  }catch(e){errors.push('Anue 鉅亨: '+(e.message||String(e)))}
 
-
-// Resolve MIS exchange-local trade timestamps; receiving a response is not proof of a new trade.
-function etfMisTradeInstant(q,day){
- const raw=String(q?.date||'').trim();
- const date=officialQuoteDay(raw);
- if(date!==day)return null;
- const t=String(q?.time||'').trim();
- const m=t.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
- if(!m)return null;
- const hh=Number(m[1]),mm=Number(m[2]),ss=Number(m[3]||0);
- if(hh>23||mm>59||ss>59)return null;
- return new Date(day+'T'+String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0')+':'+String(ss).padStart(2,'0')+'+08:00').toISOString();
-}
-function etfQuoteTradingFresh(q,day,maxAgeMs=120000){
- const stamp=Date.parse(q?.quoteTime||'');
- const age=Date.now()-stamp;
- return officialQuoteDay(q?.date)===day&&Number.isFinite(stamp)&&age>=-15000&&age<=maxAgeMs;
-}
-
  // Field-level TWSE MIS completion. Anue sometimes has last but omits prev/open/HLV.
  // Fill only missing fields; never overwrite a good Anue last price.
  // Session open is required from 09:00 through the rest of the Taiwan
  // trading day, including after 13:30. Without it the official first-layer
  // cap can silently disappear when Anue omits its opening-price field.
  const openRequiredToday=twAfterCashOpenNow();
- const needMis=ETF.slice(); // Always cross-check all four prices against the timestamped exchange feed.
+ const needMis=ETF.filter(c=>!(quotes[c]?.last>0)||!(quotes[c]?.prevClose>0)||(openRequiredToday&&!verifiedEtfOpen(c,today)));
  if(needMis.length){
   try{
    const ex=needMis.map(c=>'tse_'+c+'.tw').join('|'),rows=(await mis(ex)).msgArray||[],by={};
@@ -468,17 +449,6 @@ function etfQuoteTradingFresh(q,day,maxAgeMs=120000){
    }}
    for(const c of needMis){
     const q=by[c];if(!q)continue;
-    const tick=etfMisTradeInstant(q,today);
-    const officialFresh=q.hasTrade&&tick&&etfQuoteTradingFresh({...q,quoteTime:tick},today);
-    // MIS carries an actual exchange trade clock. Prefer it over Anue whose
-    // FORMAT payload has no verified trade timestamp (and can lag many ticks).
-    if(officialFresh){
-     const prior=quotes[c];
-     quotes[c]={...prior,...q,date:today,time:q.time,quoteTime:tick,
-      source:'TWSE MIS exchange-timed',realtime:true,serverFetchedAt:new Date().toISOString(),
-      openVerified:!!verifiedEtfOpen(c,today),openSource:verifiedEtfOpen(c,today)?.source||prior?.openSource||null};
-     continue;
-    }
     if(!quotes[c]&&q.last>0)quotes[c]={...q,source:'TWSE MIS fallback',realtime:true,serverFetchedAt:new Date().toISOString()};
     else if(quotes[c]){
      const z=quotes[c];
@@ -488,18 +458,6 @@ function etfQuoteTradingFresh(q,day,maxAgeMs=120000){
     }
    }
   }catch(e){errors.push('TWSE MIS field fill: '+(e.message||String(e)))}
- }
- // A successful HTTP fetch does not make an undated Anue price live.
- // Keep prices visible for reference, but never let an unverified quote drive
- // live confirmations or masquerade as exchange-timed data.
- if(twMarketOpenNow()){
-  for(const c of ETF){
-   const q=quotes[c];if(!q)continue;
-   if(!etfQuoteTradingFresh(q,today)){
-    q.realtime=false;q.unverifiedTradeTime=true;
-    q.source=(q.source||'ETF quote')+'｜交易時間未驗證';
-   }
-  }
  }
  // TWSE official open overrides an unverified Anue opening field.
  for(const c of ETF){const o=verifiedEtfOpen(c,today);if(o&&quotes[c]){
@@ -570,7 +528,7 @@ function etfQuoteTradingFresh(q,day,maxAgeMs=120000){
  }
  const incomplete=ETF.filter(c=>!etfQuoteComplete(quotes[c],openRequired));
  const corporateActions=Object.fromEntries(ETF.filter(c=>quotes[c]?.corporateActionAdjusted||quotes[c]?.corporateActionReferenceMissing).map(c=>[c,{adjusted:!!quotes[c]?.corporateActionAdjusted,reliable:quotes[c]?.referenceReliable!==false,rawPrevClose:quotes[c]?.rawPrevClose??null,effectivePrevClose:quotes[c]?.effectivePrevClose??null,referenceSource:quotes[c]?.referenceSource||null,event:quotes[c]?.corporateAction||null}]));
- return{ok:incomplete.length===0&&(!twMarketOpenNow()||ETF.every(c=>quotes[c]?.realtime!==false)),source:'TWSE MIS timestamp-verified primary + Anue unverified fallback + TWSE TWT49U effective reference + 90s last-good',fetchedAt:new Date().toISOString(),quotes,corporateActions,
+ return{ok:incomplete.length===0,source:'Anue 鉅亨 primary + TWSE field completion + TWSE TWT49U effective reference + 90s last-good',fetchedAt:new Date().toISOString(),quotes,corporateActions,
   missing:ETF.filter(c=>!quotes[c]?.last),incomplete,errors};
 }
 
