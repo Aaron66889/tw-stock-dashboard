@@ -426,20 +426,24 @@ let YAHOO_TW_API_CANARY_STARTED=false;
 async function probeYahooTaiwanQuoteApiOnce(){
  if(YAHOO_TW_API_CANARY_STARTED)return;
  YAHOO_TW_API_CANARY_STARTED=true;
- const syms=encodeURIComponent(JSON.stringify(['0050.TW']));
+ const syms=encodeURIComponent(JSON.stringify(ETF.map(c=>c+'.TW')));
  const url='https://tw.stock.yahoo.com/_td-stock/api/resource/FinanceChartService.ApacLibraCharts;symbols='+syms+
  ';type=tick?device=desktop&intl=tw&lang=zh-Hant-TW&region=TW&site=finance&tz=Asia%2FTaipei&returnMeta=true';
  try{
   const d=await getJSONQuick(url,{'Referer':'https://tw.stock.yahoo.com/quote/0050.TW','Cache-Control':'no-cache'},4500);
-  const rows=Array.isArray(d?.data)?d.data:[],r=rows[0]?.chart,
-   ts=Array.isArray(r?.timestamp)?r.timestamp:[],
-   closes=r?.indicators?.quote?.[0]?.close||[],
-   i=ts.length?ts.length-1:-1;
-  const sample=i>=0&&Number(ts[i])>0?new Date(Number(ts[i])*1000).toISOString():null,
-   p=i>=0?Number(closes[i]):null;
+  const rows=Array.isArray(d?.data)?d.data:[],
+   report=rows.map((v,i)=>{
+    const r=v?.chart,ts=Array.isArray(r?.timestamp)?r.timestamp:[],
+     closes=r?.indicators?.quote?.[0]?.close||[],
+     last=[...ts.keys()].reverse().find(j=>Number(closes[j])>0),
+     sample=Number.isInteger(last)?new Date(Number(ts[last])*1000).toISOString():null;
+    return{index:i,symbol:v?.symbol||r?.meta?.symbol||null,
+     rowKeys:Object.keys(v||{}).slice(0,6),timestamp:sample,
+     price:Number.isInteger(last)?Number(closes[last]):null,
+     day:sample?ymdTaipei(new Date(sample)):null};
+   });
   console.log('[YAHOO-TW-JSON-CANARY]',JSON.stringify({responseKeys:Object.keys(d||{}).slice(0,10),
-   rows:rows.length,timestamp:sample,price:Number.isFinite(p)?p:null,
-   day:sample?ymdTaipei(new Date(sample)):null}));
+   rows:rows.length,tickers:report}));
  }catch(e){console.log('[YAHOO-TW-JSON-CANARY]',JSON.stringify({status:'ERROR',
   message:String(e?.message||e).slice(0,200)}))}
 }
