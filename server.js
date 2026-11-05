@@ -425,16 +425,28 @@ async function liveStable(extra=[]){
 // Short per-ETF single-flight cache prevents multiple model/live requests
 // from hammering four independent quote pages at once.
 const YAHOO_TW_QUOTE_CACHE=new Map();
+const YAHOO_TW_QUOTE_DIAG=new Map();
+let ETF_PRICE_SOURCE_LOG_AT=0;
 async function yahooTwVerifiedCandidate(code,day,now=Date.now()){
  const old=YAHOO_TW_QUOTE_CACHE.get(code);
  if(old&&now-old.at<12000)return old.promise;
- const promise=deadline(yahooTwPageOne(code).catch(()=>null),3100,null);
+ const promise=deadline(yahooTwPageOne(code).catch(e=>{
+  YAHOO_TW_QUOTE_DIAG.set(code,'HTML取得或解析失敗：'+String(e.message||e).slice(0,100));return null;
+ }),3100,null);
  YAHOO_TW_QUOTE_CACHE.set(code,{at:now,promise});
  const q=await promise,ts=Date.parse(q?.time||'');
- if(!(q?.providerTimeVerified&&q.last>0&&Number.isFinite(ts)&&ymdTaipei(new Date(ts))===day))return null;
+ if(!(q?.providerTimeVerified&&q.last>0&&Number.isFinite(ts)&&ymdTaipei(new Date(ts))===day)){
+  if(q)YAHOO_TW_QUOTE_DIAG.set(code,'缺少有效當日成交時間戳');
+  else if(!YAHOO_TW_QUOTE_DIAG.has(code))YAHOO_TW_QUOTE_DIAG.set(code,'Yahoo回應超過3.1秒或無資料');
+  return null;
+ }
  // Market open requires recent vendor time. A dated closing quote is allowed
  // after the close, but must never masquerade as a live executable price.
- if(ts>Date.now()+30000||(twMarketOpenNow()&&Date.now()-ts>90000))return null;
+ if(ts>Date.now()+30000||(twMarketOpenNow()&&Date.now()-ts>90000)){
+  YAHOO_TW_QUOTE_DIAG.set(code,'Yahoo報價時間過期／異常：'+q.time);
+  return null;
+ }
+ YAHOO_TW_QUOTE_DIAG.delete(code);
  return {...q,serverFetchedAt:q.time,quoteTimeVerified:true,quoteAgeMs:Math.max(0,Date.now()-ts)};
 }
 function preferYahooTwEtfQuote(quotes,code,y,today){
@@ -589,6 +601,10 @@ async function liveEtf4(){
  }
  const incomplete=ETF.filter(c=>!etfQuoteComplete(quotes[c],openRequired));
  const corporateActions=Object.fromEntries(ETF.filter(c=>quotes[c]?.corporateActionAdjusted||quotes[c]?.corporateActionReferenceMissing).map(c=>[c,{adjusted:!!quotes[c]?.corporateActionAdjusted,reliable:quotes[c]?.referenceReliable!==false,rawPrevClose:quotes[c]?.rawPrevClose??null,effectivePrevClose:quotes[c]?.effectivePrevClose??null,referenceSource:quotes[c]?.referenceSource||null,event:quotes[c]?.corporateAction||null}]));
+ if(now-ETF_PRICE_SOURCE_LOG_AT>60000){
+  ETF_PRICE_SOURCE_LOG_AT=now;
+  console.log('[ETF-QUOTE-SOURCES]',JSON.stringify({date:today,quotes:ETF.map(code=>({code,source:quotes[code]?.source||'MISSING',last:quotes[code]?.last??null,providerTime:quotes[code]?.time||null,ageMs:quotes[code]?.quoteAgeMs??null,yahooStatus:YAHOO_TW_QUOTE_DIAG.get(code)||'candidate_valid_or_unchecked'})),incomplete,errors:errors.slice(0,4)}));
+ }
  return{ok:incomplete.length===0,source:'Yahoo台灣股市有效時間優先 + Anue備援 + TWSE欄位／除息參考價 + 90s last-good',fetchedAt:new Date().toISOString(),quotes,corporateActions,
   missing:ETF.filter(c=>!quotes[c]?.last),incomplete,errors};
 }
