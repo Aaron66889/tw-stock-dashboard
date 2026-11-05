@@ -309,7 +309,7 @@ function yahooHtmlTotalVolume(html){
  return null;
 }
 async function yahooTwPageOne(code){
- const url='https://tw.stock.yahoo.com/quote/'+code+'?_='+Date.now();
+ const url='https://tw.stock.yahoo.com/quote/'+code+'.TW?_='+Date.now();
  const html=await getText(url,{
   'Cache-Control':'no-cache',
   'Pragma':'no-cache',
