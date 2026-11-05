@@ -107,7 +107,7 @@ function deadline(p,ms,fallback){return Promise.race([p,new Promise(resolve=>set
 function twMarketOpenNow(){const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Taipei',weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date()).map(x=>[x.type,x.value]));const wd=parts.weekday,m=Number(parts.hour)*60+Number(parts.minute);return ['Mon','Tue','Wed','Thu','Fri'].includes(wd)&&m>=540&&m<=810}
 function twAfterCashOpenNow(){const t=taipeiClock(),m=t.h*60+t.m;return ['Mon','Tue','Wed','Thu','Fri'].includes(t.weekday)&&m>=540}
 
-async function getText(url,headers={},tries=2){let e;for(let i=0;i<tries;i++){try{const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html,application/xhtml+xml,*/*','Accept-Language':'zh-TW,zh;q=0.9',...headers}},9000);if(!r.ok)throw Error('HTTP '+r.status);return await r.text()}catch(x){e=x;if(i+1<tries)await sleep(250*(i+1))}}throw e}
+async function getText(url,headers={},tries=2,timeoutMs=9000){let e;for(let i=0;i<tries;i++){try{const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'text/html,application/xhtml+xml,*/*','Accept-Language':'zh-TW,zh;q=0.9',...headers}},timeoutMs);if(!r.ok)throw Error('HTTP '+r.status);return await r.text()}catch(x){e=x;if(i+1<tries)await sleep(250*(i+1))}}throw e}
 async function postText(url,headers={},ms=15000){const r=await fetchTimeout(url,{method:'POST',headers:{'User-Agent':'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0)','Accept':'text/html,application/xhtml+xml,*/*','Accept-Language':'zh-TW,zh;q=0.9','Content-Type':'application/x-www-form-urlencoded','Cache-Control':'no-cache','Pragma':'no-cache','If-Modified-Since':'Sat, 1 Jan 2000 00:00:00 GMT',...headers},body:''},ms);if(!r.ok)throw Error('HTTP '+r.status);return await r.text()}
 async function getBuffer(url,headers={}){const r=await fetchTimeout(url,{headers:{'User-Agent':'Mozilla/5.0','Accept':'*/*',...headers}},12000);if(!r.ok)throw Error('HTTP '+r.status);return Buffer.from(await r.arrayBuffer())}
 async function cached(key,ttl,fn){const c=cache.get(key),now=Date.now();if(c&&now-c.at<ttl)return {...c.v,cached:true};const v=await fn();cache.set(key,{at:now,v});return {...v,cached:false}}
@@ -314,7 +314,7 @@ async function yahooTwPageOne(code){
   'Cache-Control':'no-cache',
   'Pragma':'no-cache',
   'Referer':'https://tw.stock.yahoo.com/'
- },1);
+ },1,2800);
 
  // Yahoo台股報價頁本身的現價欄位。
  let m=html.match(/data-field=["']regularMarketPrice["'][^>]*>\s*([^<]+?)\s*</i);
@@ -327,6 +327,9 @@ async function yahooTwPageOne(code){
  const volume=yahooHtmlTotalVolume(html),prevClose=yahooHtmlMarketNumber(html,'regularMarketPreviousClose')??yahooHtmlMarketNumber(html,'previousClose'),
        open=yahooHtmlMarketNumber(html,'regularMarketOpen'),high=yahooHtmlMarketNumber(html,'regularMarketDayHigh'),low=yahooHtmlMarketNumber(html,'regularMarketDayLow');
 
+ // Never manufacture a quote timestamp from the HTTP request time.
+ // Extract the provider's own regularMarketTime or the timestamp printed
+ // alongside the Yahoo TW stock quotation.
  let tm=null;
  const mt=html.match(/["']regularMarketTime["']\s*:\s*([0-9]{10,13})/i);
  if(mt){
@@ -334,7 +337,13 @@ async function yahooTwPageOne(code){
   if(epoch>1e12)epoch=Math.floor(epoch/1000);
   if(epoch>1e9)tm=new Date(epoch*1000).toISOString();
  }
-
+ if(!tm){
+  const display=html.match(/(?:資料時間\s*[:：]\s*|(?:成交|開盤|收盤|盤中)\s*[|｜]\s*)(20\d{2})[\/\-](\d{1,2})[\/\-](\d{1,2})\s*(\d{1,2}):(\d{2})\s*(?:更新)?/);
+  if(display){
+   const [,y,mo,day,h,mi]=display,iso=`${y}-${mo.padStart(2,'0')}-${day.padStart(2,'0')}T${h.padStart(2,'0')}:${mi}:00+08:00`;
+   const parsed=Date.parse(iso);if(Number.isFinite(parsed))tm=new Date(parsed).toISOString();
+  }
+ }
  return{
   ticker:code,
   name:META[code]?.name||code,
@@ -342,10 +351,10 @@ async function yahooTwPageOne(code){
   prevClose:prevClose>0?prevClose:null,
   open:open>0?open:null,high:high>0?high:null,low:low>0?low:null,volume:volume>0?volume:null,
   volumeSource:volume>0?'Yahoo台股報價頁總量':null,
-  time:tm||new Date().toISOString(),
-  date:ymdTaipei(),
-  source:'Yahoo台股報價頁 '+code,
-  realtime:true
+  time:tm,date:tm?ymdTaipei(new Date(tm)):null,
+  source:'Yahoo台灣股市 '+code,
+  providerTimeVerified:!!tm,
+  realtime:!!tm
  };
 }
 async function yahooTwOne(code,isIndex=false){
@@ -411,8 +420,54 @@ async function liveStable(extra=[]){
  if(d)return d;
  throw err||Error('market live unavailable');
 }
+// Yahoo Taiwan, NOT the international delayed Yahoo Finance chart, is the
+// preferred source when it supplies a verified, timely provider timestamp.
+// Short per-ETF single-flight cache prevents multiple model/live requests
+// from hammering four independent quote pages at once.
+const YAHOO_TW_QUOTE_CACHE=new Map();
+async function yahooTwVerifiedCandidate(code,day,now=Date.now()){
+ const old=YAHOO_TW_QUOTE_CACHE.get(code);
+ if(old&&now-old.at<12000)return old.promise;
+ const promise=deadline(yahooTwPageOne(code).catch(()=>null),3100,null);
+ YAHOO_TW_QUOTE_CACHE.set(code,{at:now,promise});
+ const q=await promise,ts=Date.parse(q?.time||'');
+ if(!(q?.providerTimeVerified&&q.last>0&&Number.isFinite(ts)&&ymdTaipei(new Date(ts))===day))return null;
+ // Market open requires recent vendor time. A dated closing quote is allowed
+ // after the close, but must never masquerade as a live executable price.
+ if(ts>Date.now()+30000||(twMarketOpenNow()&&Date.now()-ts>90000))return null;
+ return {...q,serverFetchedAt:q.time,quoteTimeVerified:true,quoteAgeMs:Math.max(0,Date.now()-ts)};
+}
+function preferYahooTwEtfQuote(quotes,code,y,today){
+ if(!y||y.date!==today||!y.quoteTimeVerified)return false;
+ const base=quotes[code]||{},oldLast=Number(base.last),last=Number(y.last);
+ if(!(last>0))return false;
+ // A material discrepancy is a data incident, not an automatic trigger to
+ // drive the official buy model from an unverified symbol or stale page.
+ if(oldLast>0&&Math.abs(last/oldLast-1)>.08)return false;
+ const prior=Number(base.prevClose)>0?Number(base.prevClose):Number(y.prevClose)>0?Number(y.prevClose):null;
+ // Preserve the original provider's implied reference if available, so that
+ // ex-dividend divergence detection still operates independently of the last.
+ const anueRef=oldLast>0&&Number.isFinite(Number(base.change))
+  ?oldLast-Number(base.change):null;
+ const change=anueRef>0?last-anueRef:prior>0?last-prior:null;
+ quotes[code]={...base,...y,
+  ticker:code,name:base.name||y.name,
+  prevClose:prior,change,changePct:anueRef>0?change/anueRef*100:prior>0?(last-prior)/prior*100:null,
+  open:Number(base.open)>0?base.open:y.open,
+  high:Number(y.high)>0?y.high:base.high,
+  low:Number(y.low)>0?y.low:base.low,
+  volume:Number(y.volume)>0?y.volume:base.volume,
+  source:'Yahoo台灣股市（報價時間驗證）',realtime:true,
+  serverFetchedAt:y.time,
+  quoteTimeVerified:true,quoteAgeMs:y.quoteAgeMs
+ };
+ return true;
+}
 async function liveEtf4(){
  const quotes={},errors=[],today=ymdTaipei();
+ // Yahoo and Anue are fetched in parallel; a failed Yahoo quote never blocks
+ // the existing live/multiple-source fallback chain.
+ const yahooPromises=ETF.map(async c=>[c,await yahooTwVerifiedCandidate(c,today).catch(()=>null)]);
  // Fetch the official ex-right/ex-dividend reference in parallel with live quotes so the first request does not add serial latency.
  const corpRefPromise=deadline(twseExRightReferences(today).catch(e=>({ok:false,day:today,map:{},source:'TWSE TWT49U',error:e.message})),4200,null);
  // Primary: Anue. Keep its live last price when available.
@@ -431,6 +486,12 @@ async function liveEtf4(){
     open:n(x?.['200032']),high:n(x?.['200033']),low:n(x?.['200034']),volume:n(x?.['200036']),time:null,date:ymdTaipei(),source:'Anue 鉅亨',realtime:true,serverFetchedAt:new Date().toISOString()};
   }
  }catch(e){errors.push('Anue 鉅亨: '+(e.message||String(e)))}
+ const yahooCandidates=await Promise.all(yahooPromises);
+ for(const [code,y] of yahooCandidates){
+  if(!y)continue;
+  if(preferYahooTwEtfQuote(quotes,code,y,today)&&twAfterCashOpenNow()&&y.open>0)
+   storeVerifiedEtfOpen(code,today,y.open,'Yahoo台灣股市（有效成交日期核對）');
+ }
 
  // Field-level TWSE MIS completion. Anue sometimes has last but omits prev/open/HLV.
  // Fill only missing fields; never overwrite a good Anue last price.
@@ -528,7 +589,7 @@ async function liveEtf4(){
  }
  const incomplete=ETF.filter(c=>!etfQuoteComplete(quotes[c],openRequired));
  const corporateActions=Object.fromEntries(ETF.filter(c=>quotes[c]?.corporateActionAdjusted||quotes[c]?.corporateActionReferenceMissing).map(c=>[c,{adjusted:!!quotes[c]?.corporateActionAdjusted,reliable:quotes[c]?.referenceReliable!==false,rawPrevClose:quotes[c]?.rawPrevClose??null,effectivePrevClose:quotes[c]?.effectivePrevClose??null,referenceSource:quotes[c]?.referenceSource||null,event:quotes[c]?.corporateAction||null}]));
- return{ok:incomplete.length===0,source:'Anue 鉅亨 primary + TWSE field completion + TWSE TWT49U effective reference + 90s last-good',fetchedAt:new Date().toISOString(),quotes,corporateActions,
+ return{ok:incomplete.length===0,source:'Yahoo台灣股市有效時間優先 + Anue備援 + TWSE欄位／除息參考價 + 90s last-good',fetchedAt:new Date().toISOString(),quotes,corporateActions,
   missing:ETF.filter(c=>!quotes[c]?.last),incomplete,errors};
 }
 
