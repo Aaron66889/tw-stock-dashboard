@@ -66,9 +66,13 @@ function localDividendForecast(source,shares){
 }
 function dividendStats(code,holding){
  const auto=DIVIDEND_AUTO?.byCode?.[code];
+ const currentShares=Number(holding?.s);
+ const publicForecast=localDividendForecast(DIVIDEND_PUBLIC?.byCode?.[code],currentShares);
  if(auto&&Number.isFinite(Number(auto.received))){
   const shares=Number(holding?.s),currentShares=Number.isSafeInteger(shares)&&shares>=0?shares:null;
-  return{received:Number(auto.received)||0,pending:Number(auto.pending)||0,items:auto.locks||[],lastPaid:auto.lastPaid||null,nextPending:auto.nextPending||null,upcoming:localDividendForecast(auto.upcoming,currentShares),estimatedUpcoming:localDividendForecast(auto.estimatedUpcoming,currentShares),nextForecast:localDividendForecast(auto.nextForecast,currentShares),forecastSharesAsOf:auto.forecastSharesAsOf||null,version:auto.version||'div-auto-v2',asOf:auto.lastPaid?.payDate||auto.baseAsOf||DIVIDEND_SEED_ASOF,automatic:true,snapshotDay:auto.snapshotDay||DIVIDEND_AUTO.snapshotDay||null};
+  const internal=localDividendForecast(auto.nextForecast,currentShares);
+  const forecast=publicForecast&&(!internal||publicForecast.exDate<=internal.exDate)?publicForecast:internal;
+  return{received:Number(auto.received)||0,pending:Number(auto.pending)||0,items:auto.locks||[],lastPaid:auto.lastPaid||null,nextPending:auto.nextPending||null,upcoming:localDividendForecast(auto.upcoming,currentShares),estimatedUpcoming:publicForecast||localDividendForecast(auto.estimatedUpcoming,currentShares),nextForecast:forecast,forecastSharesAsOf:auto.forecastSharesAsOf||null,version:auto.version||'div-auto-v2',asOf:auto.lastPaid?.payDate||auto.baseAsOf||DIVIDEND_SEED_ASOF,automatic:true,snapshotDay:auto.snapshotDay||DIVIDEND_AUTO.snapshotDay||null};
  }
  // Safe fallback while cloud/TWSE is loading: reconstructed seed + the one pre-auto 00919 entitlement.
  const today=dayKey(),seed=Number(DIVIDEND_SEED[code])||0,h=holding||H?.find?.(x=>x.t===code),raw=Number(h?.dividendReceived);
@@ -78,7 +82,7 @@ function dividendStats(code,holding){
  let effectiveAsOf=asOf;
  for(const e of items)if(e.received&&(!asOf||e.payDate>asOf)){received+=Number(e.cash)||0;if(!effectiveAsOf||e.payDate>effectiveAsOf)effectiveAsOf=e.payDate}
  const pending=items.filter(e=>e.pending&&(!asOf||e.payDate>asOf)).reduce((sum,e)=>sum+(Number(e.cash)||0),0);
- return{received,pending,items,lastPaid:null,nextPending:items.find(e=>e.pending&&(!asOf||e.payDate>asOf))||null,upcoming:null,estimatedUpcoming:null,version:DIVIDEND_LEDGER_VERSION,asOf:effectiveAsOf,automatic:false};
+ return{received,pending,items,lastPaid:null,nextPending:items.find(e=>e.pending&&(!asOf||e.payDate>asOf))||null,upcoming:null,estimatedUpcoming:publicForecast,nextForecast:publicForecast,version:DIVIDEND_LEDGER_VERSION,asOf:effectiveAsOf,automatic:false};
 }
 
 function money0(n){return hasNumber(n)?Math.round(Number(n)).toLocaleString():'—'}
@@ -97,6 +101,11 @@ let HOLDINGS_MANUAL_DIRTY=!!loadJSON(HOLDINGS_MANUAL_DIRTY_KEY,false);
 let HOLDINGS_LOCAL_REV=0,HOLDINGS_REMOTE_REV=0,HOLDINGS_PUSH_BUSY=false,HOLDINGS_OP_BUSY=false;
 let HOLDINGS_SYNC={busy:false,ready:false,lastAt:null,cloudUpdatedAt:null,message:'持股雲端同步檢查中'};
 let DIVIDEND_AUTO={busy:false,ready:false,lastAt:null,message:'股息自動同步檢查中',byCode:{},snapshotDay:null,source:null};
+// Public TWSE future announcements are independent of private cloud trade sync.
+// Cache contains NO personal holdings. Always recalculate future cash using
+// currently displayed shares; never treat an announcement as received income.
+let DIVIDEND_PUBLIC={busy:false,ready:false,lastAt:null,message:'正式配息公告核對中',
+ byCode:loadJSON('v124_public_dividend_announcements',{})||{},source:null};
 let MODEL_PENDING_DELETES=loadJSON('v124_model_trade_pending_deletes',[]);
 let MODEL_TRADE_FILTER='all',MODEL_TRADE_LIMIT=10,MODEL_TRADE_EXPANDED=null;
 
@@ -959,7 +968,7 @@ function renderHoldings(){
   const withDivPnl=p!=null?p+ds.received:null,withDivRet=withDivPnl!=null&&c?withDivPnl/c*100:null;
   cost+=c;if(v!=null)val+=v;dividendTotal+=ds.received;pendingDividendTotal+=ds.pending;estimatedDividendTotal+=Number(ds.nextForecast?.cashEstimate)||0;
   const est=ds.estimatedUpcoming;
-  const divNote=ds.automatic?(ds.pending>0?`全自動｜已鎖定待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:ds.upcoming?`全自動｜正式配息 ${fmt(ds.upcoming.amount)}/股｜${String(ds.upcoming.exDate||'').replaceAll('-','/')} 除息｜目前股數估 ${money0(ds.upcoming.cashEstimate)}`:est?`${est.status==='actual'?'正式公告':'預估公告'}｜${fmt(est.amount)}/股｜${String(est.exDate||'').replaceAll('-','/')} 除息｜目前股數估 ${money0(est.cashEstimate)}${est.confirmDate?'｜'+String(est.confirmDate).replaceAll('-','/')+' 確認':''}`:`全自動｜TWSE配息＋持股快照 ${String(ds.snapshotDay||DIVIDEND_AUTO.snapshotDay||'').replaceAll('-','/')}`):(ds.pending>0?`自動資料載入中｜待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:`自動資料載入中｜基準截至 ${String(ds.asOf||DIVIDEND_SEED_ASOF).replaceAll('-','/')}`);
+  const divNote=ds.automatic?(ds.pending>0?`全自動｜已鎖定待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:ds.upcoming?`全自動｜正式配息 ${fmt(ds.upcoming.amount)}/股｜${String(ds.upcoming.exDate||'').replaceAll('-','/')} 除息｜目前股數估 ${money0(ds.upcoming.cashEstimate)}`:est?`${est.status==='actual'?'正式公告':'預估公告'}｜${fmt(est.amount)}/股｜${String(est.exDate||'').replaceAll('-','/')} 除息｜目前股數估 ${money0(est.cashEstimate)}${est.confirmDate?'｜'+String(est.confirmDate).replaceAll('-','/')+' 確認':''}`:`全自動｜TWSE配息＋持股快照 ${String(ds.snapshotDay||DIVIDEND_AUTO.snapshotDay||'').replaceAll('-','/')}`):(ds.nextForecast?`正式配息公告｜${fmt(ds.nextForecast.amount)}元／股｜${ds.nextForecast.exDate.replaceAll('-','/')} 除息｜目前股數估 ${money0(ds.nextForecast.cashEstimate)}元`:(ds.pending>0?`自動資料載入中｜待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:`自動資料載入中｜基準截至 ${String(ds.asOf||DIVIDEND_SEED_ASOF).replaceAll('-','/')}`));
   cards+=`<div class="card"><div class="row"><b>${h.t}</b><b class="${cls(withDivRet)}">含息 ${pct(withDivRet)}</b></div><div class="grid6"><div class="box"><span class="k">持有</span><b>${Number(h.s).toLocaleString()}股</b></div><div class="box"><span class="k">平均成本</span><b>${fmt(h.c)}</b></div><div class="box"><span class="k">現價</span><b class="${etfPriceClass(h.t,px)}">${fmt(px)}${ETF.includes(h.t)?` <span class="etf-daily-pct">${etfDailyChangeText(h.t,px)}</span>`:''}</b></div><div class="box"><span class="k">未實現</span><b class="${cls(p)}">${p==null?'—':money0(p)}</b><small>${pct(r)}</small></div><div class="box"><span class="k">累積已領股息</span><b class="upc">${money0(ds.received)}</b><small>${divNote}</small></div><div class="box"><span class="k">含息總報酬</span><b class="${cls(withDivPnl)}">${withDivPnl==null?'—':money0(withDivPnl)}</b><small>${pct(withDivRet)}</small></div></div>${dividendTimelineMarkup(h.t,ds)}</div>`;
  }
  $('holdings').innerHTML=cards;
@@ -1205,6 +1214,34 @@ async function modelSyncFetch(url,opts={}){
   }
   return d;
  }catch(e){if(e?.name==='AbortError')throw Error('API回應逾時｜'+url);throw e}finally{clearTimeout(tm)}
+}
+
+// Read-only public endpoint: not gated by MODEL_SYNC, no holdings upload,
+// no changes to paid/pending entitlements. Continues to work on mobile while
+// a different device still has a trade-sync queue.
+async function loadPublicDividendAnnouncements(force=false){
+ if(DIVIDEND_PUBLIC.busy)return;
+ if(!force&&DIVIDEND_PUBLIC.lastAt&&Date.now()-Date.parse(DIVIDEND_PUBLIC.lastAt)<10*60*1000)return;
+ DIVIDEND_PUBLIC.busy=true;
+ try{
+  const d=await get('/api/dividend-upcoming',20000);
+  if(!d?.ok)throw Error(d?.error||'證交所公告查詢未完成');
+  if(!d.byCode||!ETF.every(code=>Object.hasOwn(d.byCode,code)))throw Error('官方配息公告資料格式不完整');
+  const fresh={};
+  for(const code of ETF){
+   const a=d.byCode[code];
+   fresh[code]=a&&Number(a.amount)>0&&/^\d{4}-\d{2}-\d{2}$/.test(String(a.exDate||''))?a:null;
+  }
+  DIVIDEND_PUBLIC.byCode=fresh;DIVIDEND_PUBLIC.ready=true;
+  DIVIDEND_PUBLIC.lastAt=d.fetchedAt||new Date().toISOString();
+  DIVIDEND_PUBLIC.source=d.source||null;
+  DIVIDEND_PUBLIC.message='正式配息公告自動更新'+(d.sourceOk?'完成':'｜部分來源尚待核對');
+  saveJSON('v124_public_dividend_announcements',fresh);
+  renderHoldings();
+ }catch(e){
+  DIVIDEND_PUBLIC.ready=false;
+  DIVIDEND_PUBLIC.message='配息公告更新失敗；保留未過期的已核對資料：'+(e.message||String(e));
+ }finally{DIVIDEND_PUBLIC.busy=false}
 }
 
 async function loadDividendAuto(force=false){
@@ -1844,9 +1881,9 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();renderDetailTabs();renderBacktestTabs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(()=>{if(document.visibilityState!=='hidden')loadHistoryStatus()},60000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if(window.SignalAlerts?.monitoring())setTimeout(()=>loadTrendBuy(false),4000);setInterval(()=>{if(window.SignalAlerts?.monitoring()&&twMarketOpenClient())loadTrendBuy(false)},60000)}
+function boot(){setMode();renderHoldings();setTimeout(()=>loadPublicDividendAnnouncements(false),350);setInterval(()=>{if(document.visibilityState!=='hidden')loadPublicDividendAnnouncements(false)},10*60*1000);renderDetailTabs();renderBacktestTabs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(()=>{if(document.visibilityState!=='hidden')loadHistoryStatus()},60000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if(window.SignalAlerts?.monitoring())setTimeout(()=>loadTrendBuy(false),4000);setInterval(()=>{if(window.SignalAlerts?.monitoring()&&twMarketOpenClient())loadTrendBuy(false)},60000)}
 migrate1689Existing0050Trade();
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if($('trendBuyPage')?.classList.contains('on')||window.SignalAlerts?.monitoring())loadTrendBuy(false);if($('commentaryPage')?.classList.contains('on'))loadCommentary(false);if($('constituentPage')?.classList.contains('on'))loadConstituentPage(false);syncAllCloud(false)}})
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();loadPublicDividendAnnouncements(false);if($('trendBuyPage')?.classList.contains('on')||window.SignalAlerts?.monitoring())loadTrendBuy(false);if($('commentaryPage')?.classList.contains('on'))loadCommentary(false);if($('constituentPage')?.classList.contains('on'))loadConstituentPage(false);syncAllCloud(false)}})
 setInterval(()=>{
  const p=document.getElementById('constituentPage');
  if(p?.classList.contains('on'))loadConstituentPage(false);
@@ -1869,6 +1906,7 @@ syncModelTrades=apiSingleFlight(syncModelTrades);
 syncHoldingsCloud=apiSingleFlight(syncHoldingsCloud);
 flushPendingHoldingsTrades=apiSingleFlight(flushPendingHoldingsTrades);
 loadDividendAuto=apiSingleFlight(loadDividendAuto);
+loadPublicDividendAnnouncements=apiSingleFlight(loadPublicDividendAnnouncements);
 loadTrendBuy=apiSingleFlight(loadTrendBuy);
 loadCommentary=apiSingleFlight(loadCommentary);
 setInterval(setMode,30000);boot();
