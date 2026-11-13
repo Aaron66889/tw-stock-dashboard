@@ -3607,16 +3607,70 @@ function parseTwseUpcomingDividendSchedule(code,html,today=ymdTaipei()){
  }
  return found.sort((a,b)=>a.exDate.localeCompare(b.exDate));
 }
-async function twseOfficialUpcomingCashMap(){
- return cachedSingleFlight('div:twse-upcoming-cash-v1',30*60*1000,async()=>{
+// Official future dividends are public reference data, not user entitlements.
+// Never erase a confirmed announcement when TWSE times out, returns HTML, or
+// Render restarts. Preserve independently from the private holdings ledger.
+const UPCOMING_CASH_META_ID='__ETF_UPCOMING_OFFICIAL__';
+const UPCOMING_CASH_DISK='official_etf_upcoming_cash.json';
+const UPCOMING_CASH_EMPTY=()=>Object.fromEntries(ETF.map(c=>[c,null]));
+let UPCOMING_CASH_MEMORY=null,UPCOMING_CASH_LOAD=null;
+let UPCOMING_CASH_REFRESH=null,UPCOMING_CASH_LAST_ATTEMPT=0,UPCOMING_CASH_LAST_FAILURE=null;
+function confirmedUpcomingEntry(entry,code,today=ymdTaipei()){
+ if(!entry||String(entry.code)!==code||entry.status!=='actual'||
+  entry.estimated===true||!(Number(entry.amount)>0)||
+  !/^20\d{2}-\d{2}-\d{2}$/.test(String(entry.exDate||''))||
+  entry.exDate<=today)return null;
+ const days=(Date.parse(entry.exDate)-Date.parse(today))/86400000;
+ if(!(days>0&&days<=185))return null;
+ return{...entry,code,amount:Number(entry.amount),estimated:false,status:'actual'};
+}
+function mergeConfirmedUpcoming(previous,current,today=ymdTaipei()){
+ const result=UPCOMING_CASH_EMPTY();
+ for(const code of ETF){
+  const old=confirmedUpcomingEntry(previous?.[code],code,today);
+  const newer=confirmedUpcomingEntry(current?.[code],code,today);
+  // Newer TWSE correction takes precedence on same ex-date; an older
+  // nearer ex-date stays visible until its own entitlement day.
+  result[code]=!old?newer:!newer?old:
+   newer.exDate<old.exDate?newer:old.exDate<newer.exDate?old:
+   {...old,...newer,recordDate:newer.recordDate||old.recordDate,
+    payDate:newer.payDate||old.payDate};
+ }
+ return result;
+}
+function hasConfirmedUpcoming(map){
+ return ETF.some(code=>!!map?.[code]);
+}
+async function loadConfirmedUpcomingCache(){
+ if(UPCOMING_CASH_MEMORY)return UPCOMING_CASH_MEMORY;
+ if(UPCOMING_CASH_LOAD)return UPCOMING_CASH_LOAD;
+ UPCOMING_CASH_LOAD=(async()=>{
+  const local=diskRead(UPCOMING_CASH_DISK);
+  let merged=mergeConfirmedUpcoming({},local?.byCode||{},ymdTaipei());
+  try{
+   const cloud=await operationalMetaCloudPayload(UPCOMING_CASH_META_ID);
+   merged=mergeConfirmedUpcoming(merged,cloud?.byCode||{},ymdTaipei());
+  }catch(e){
+   console.warn('[DIVIDEND-CACHE-READ]',String(e.message||e).slice(0,120));
+  }
+  UPCOMING_CASH_MEMORY=merged;
+  if(hasConfirmedUpcoming(merged))diskWrite(UPCOMING_CASH_DISK,{byCode:merged});
+  return merged;
+ })().finally(()=>{UPCOMING_CASH_LOAD=null});
+ return UPCOMING_CASH_LOAD;
+}
+async function refreshConfirmedUpcomingCash(){
+ if(UPCOMING_CASH_REFRESH)return UPCOMING_CASH_REFRESH;
+ UPCOMING_CASH_LAST_ATTEMPT=Date.now();
+ UPCOMING_CASH_REFRESH=(async()=>{
   const today=ymdTaipei(),errors=[];
-  let parsed=Object.fromEntries(ETF.map(c=>[c,null]));
+  let parsed=UPCOMING_CASH_EMPTY();
   for(const host of ['https://www.twse.com.tw','https://wwwc.twse.com.tw']){
    try{
     const raw=await deadline(getJSONQuick(host+'/exchangeReport/TWT48U?response=json&_='+Date.now(),{},5200),5500,null);
     if(!raw)throw Error('timeout');
     const candidate=parseTwseUpcomingCashTable(raw,today);
-    if(ETF.some(c=>candidate[c])){parsed=candidate;break}
+    if(hasConfirmedUpcoming(candidate)){parsed=candidate;break}
     errors.push(host+': 無有效未來現金股利');
    }catch(e){errors.push(host+': '+String(e.message||e))}
   }
@@ -3627,17 +3681,60 @@ async function twseOfficialUpcomingCashMap(){
      const url='https://www.twse.com.tw/zh/ETFortune/dividendList?startDate='+
       today.slice(0,4)+'&endDate='+today.slice(0,4)+'&stkNo='+code;
      const html=await deadline(getText(url,{},1),6500,null);
-     if(!html){errors.push(code+': 配息日期表逾時，正式金額仍可用');return}
-     const matching=parseTwseUpcomingDividendSchedule(code,html,today);
-     const schedule=matching.find(x=>x.exDate===parsed[code].exDate);
-     if(schedule)parsed[code]={...parsed[code],...schedule};
-     else errors.push(code+': 配息日期表缺少相同除息日（可讀字數'+stripTags(html).length+'，匹配'+matching.length+'筆）');
-    }catch(e){errors.push(code+' schedule: '+String(e.message||e))}
+     if(!html){errors.push(code+': 日期表逾時；正式配息金額仍保留');return}
+     const row=parseTwseUpcomingDividendSchedule(code,html,today)
+      .find(x=>x.exDate===parsed[code].exDate);
+     if(row)parsed[code]={...parsed[code],...row};
+     else errors.push(code+': 日期表未匹配除息日');
+    }catch(e){errors.push(code+': '+String(e.message||e))}
+   }));
+   const merged=mergeConfirmedUpcoming(await loadConfirmedUpcomingCache(),parsed,today);
+   UPCOMING_CASH_MEMORY=merged;
+   diskWrite(UPCOMING_CASH_DISK,{byCode:merged,verifiedAt:new Date().toISOString()});
+   try{
+    await persistOperationalMetaCloud(UPCOMING_CASH_META_ID,UPCOMING_CASH_META_ID,{
+     byCode:merged,source:'TWSE TWT48U 實際現金股利',
+     verifiedAt:new Date().toISOString()
+    });
+   }catch(e){errors.push('雲端備援保存失敗：'+String(e.message||e))}
+   console.log('[DIVIDEND-VERIFIED-SAVED]',JSON.stringify({
+    day:today,codes:ETF.filter(c=>merged[c]),errors:errors.slice(0,3)
+   }));
+   UPCOMING_CASH_LAST_FAILURE=null;
+  }else{
+   UPCOMING_CASH_LAST_FAILURE=errors.slice(0,4);
+   console.warn('[DIVIDEND-SOURCE-FALLBACK]',JSON.stringify({
+    day:today,existing:ETF.filter(c=>UPCOMING_CASH_MEMORY?.[c]),errors:errors.slice(0,3)
    }));
   }
-  return{ok:candidates.length>0,byCode:parsed,errors:errors.slice(0,6),
-   source:'TWSE TWT48U 未來現金股利＋ETF e添富日期表',fetchedAt:new Date().toISOString()};
- });
+  const byCode=mergeConfirmedUpcoming({},UPCOMING_CASH_MEMORY||{},today);
+  return{ok:hasConfirmedUpcoming(byCode),byCode,errors:errors.slice(0,6),
+   source:candidates.length?'TWSE TWT48U＋雲端持久快照':'已核對TWSE正式公告（雲端備援）',
+   fetchedAt:new Date().toISOString(),backedUp:!candidates.length};
+ })().finally(()=>{UPCOMING_CASH_REFRESH=null});
+ return UPCOMING_CASH_REFRESH;
+}
+async function twseOfficialUpcomingCashMap(){
+ const saved=await loadConfirmedUpcomingCache(),today=ymdTaipei(),now=Date.now();
+ const available=mergeConfirmedUpcoming({},saved,today),haveConfirmed=hasConfirmedUpcoming(available);
+ if(haveConfirmed){
+  // Return immediately: the public holdings page must never wait on two
+  // unstable TWSE hosts. Update confirmed cash amounts in the background.
+  if(!UPCOMING_CASH_REFRESH&&now-UPCOMING_CASH_LAST_ATTEMPT>=5*60*1000)
+   void refreshConfirmedUpcomingCash().catch(e=>
+    console.warn('[DIVIDEND-REFRESH]',String(e.message||e).slice(0,150)));
+  return{ok:true,byCode:available,errors:UPCOMING_CASH_LAST_FAILURE||[],
+   source:'已核對TWSE正式公告（雲端備援；定期複核）',
+   fetchedAt:new Date().toISOString(),backedUp:true};
+ }
+ // No known confirmed future dividend yet. Query the official source now,
+ // retrying quickly after failures rather than caching an empty answer for 30m.
+ if(UPCOMING_CASH_REFRESH)return UPCOMING_CASH_REFRESH;
+ if(now-UPCOMING_CASH_LAST_ATTEMPT<60000)
+  return{ok:false,byCode:UPCOMING_CASH_EMPTY(),
+   source:'TWSE來源暫時無法取得，稍後自動重試',
+   errors:UPCOMING_CASH_LAST_FAILURE||[],fetchedAt:new Date().toISOString()};
+ return refreshConfirmedUpcomingCash();
 }
 
 function dividendNextForecast(code,events,announcement,shares,today=ymdTaipei()){
