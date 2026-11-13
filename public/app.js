@@ -1232,15 +1232,22 @@ async function loadPublicDividendAnnouncements(force=false){
    const a=d.byCode[code];
    fresh[code]=a&&Number(a.amount)>0&&/^\d{4}-\d{2}-\d{2}$/.test(String(a.exDate||''))?a:null;
   }
+  // Do not cache an upstream outage as "there is no upcoming dividend".
+  // Persist only confirmed data; retry a failed/unconfirmed public fetch
+  // without waiting for the 10-minute positive-data refresh interval.
+  if(d.sourceOk===false&&!ETF.some(code=>fresh[code]))
+   throw Error('官方配息資料來源暫時失敗，保留已確認公告並自動重試');
   DIVIDEND_PUBLIC.byCode=fresh;DIVIDEND_PUBLIC.ready=true;
-  DIVIDEND_PUBLIC.lastAt=d.fetchedAt||new Date().toISOString();
+  DIVIDEND_PUBLIC.lastAt=new Date().toISOString();
   DIVIDEND_PUBLIC.source=d.source||null;
   DIVIDEND_PUBLIC.message='正式配息公告自動更新'+(d.sourceOk?'完成':'｜部分來源尚待核對');
   saveJSON('v124_public_dividend_announcements',fresh);
   renderHoldings();
  }catch(e){
   DIVIDEND_PUBLIC.ready=false;
-  DIVIDEND_PUBLIC.message='配息公告更新失敗；保留未過期的已核對資料：'+(e.message||String(e));
+  // No success timestamp: next one-minute poll retries failed reads.
+  DIVIDEND_PUBLIC.lastAt=null;
+  DIVIDEND_PUBLIC.message='配息公告更新失敗；保留未過期的已核對資料，1分鐘後重試：'+(e.message||String(e));
  }finally{DIVIDEND_PUBLIC.busy=false}
 }
 
@@ -1881,7 +1888,7 @@ function qaAnswer(q){const c=ETF.find(x=>q.includes(x));if(q.includes('四檔')|
 function addChat(t,who='sys'){const d=document.createElement('div');d.className='msg '+who;d.textContent=t;$('chat').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'})}
 function quickAsk(q){addChat(q,'user');setTimeout(()=>addChat(qaAnswer(q),'sys'),80)}function sendAsk(){const q=$('question').value.trim();if(!q)return;$('question').value='';quickAsk(q)}
 
-function boot(){setMode();renderHoldings();setTimeout(()=>loadPublicDividendAnnouncements(false),350);setInterval(()=>{if(document.visibilityState!=='hidden')loadPublicDividendAnnouncements(false)},10*60*1000);renderDetailTabs();renderBacktestTabs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(()=>{if(document.visibilityState!=='hidden')loadHistoryStatus()},60000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if(window.SignalAlerts?.monitoring())setTimeout(()=>loadTrendBuy(false),4000);setInterval(()=>{if(window.SignalAlerts?.monitoring()&&twMarketOpenClient())loadTrendBuy(false)},60000)}
+function boot(){setMode();renderHoldings();setTimeout(()=>loadPublicDividendAnnouncements(false),350);setInterval(()=>{if(document.visibilityState!=='hidden')loadPublicDividendAnnouncements(false)},60*1000);renderDetailTabs();renderBacktestTabs();renderEvents();renderModelTrades();loadHistoryStatus();setInterval(()=>{if(document.visibilityState!=='hidden')loadHistoryStatus()},60000);setTimeout(refreshModelTradePerformance,2500);setInterval(refreshModelTradePerformance,60000);setTimeout(()=>syncAllCloud(false),1200);setInterval(()=>syncAllCloud(false),60000);addChat('V12.4免費戰情問答已啟動。','sys');loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();if(window.SignalAlerts?.monitoring())setTimeout(()=>loadTrendBuy(false),4000);setInterval(()=>{if(window.SignalAlerts?.monitoring()&&twMarketOpenClient())loadTrendBuy(false)},60000)}
 migrate1689Existing0050Trade();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){clearTimeout(etfLiveTimer);clearTimeout(marketTimer);clearTimeout(slowTimer);clearTimeout(nightTimer);clearTimeout(buyTimer);clearTimeout(trendBuyTimer);$('freshPill').textContent='● 重新連線中';$('freshPill').className='pill warn';loadEtfLive();loadMarket();loadSlow();loadNight();loadServerPreopen();loadBuy();loadPublicDividendAnnouncements(false);if($('trendBuyPage')?.classList.contains('on')||window.SignalAlerts?.monitoring())loadTrendBuy(false);if($('commentaryPage')?.classList.contains('on'))loadCommentary(false);if($('constituentPage')?.classList.contains('on'))loadConstituentPage(false);syncAllCloud(false)}})
 setInterval(()=>{
