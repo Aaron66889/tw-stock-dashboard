@@ -3554,6 +3554,91 @@ function latestDividendSnapshotBefore(snapshots,day){
 }
 function latestDividendSnapshot(snapshots){return (snapshots||[]).slice().sort((a,b)=>a.day.localeCompare(b.day)).at(-1)||null}
 
+// Read the *upcoming* official cash amount independently of the historic
+// ETF e添富 dividendList: its upcoming-amount column can remain empty even
+// after TWSE published the definitive amount in its TWT48U cash-dividend report.
+// A future amount is NOT an earned dividend until the ex-date is reached.
+function parseTwseUpcomingCashTable(payload,today=ymdTaipei()){
+ const tables=Array.isArray(payload?.tables)&&payload.tables.length?payload.tables:[payload];
+ const rows=[];
+ const dateOf=value=>{
+  const raw=String(value||'').trim();
+  const roc=rocSlashDate(raw);if(roc)return roc;
+  const iso=raw.match(/^(20\d{2})[\/.-](\d{1,2})[\/.-](\d{1,2})/);
+  return iso?iso[1]+'-'+iso[2].padStart(2,'0')+'-'+iso[3].padStart(2,'0'):null;
+ };
+ for(const table of tables){
+  const fields=Array.isArray(table?.fields)?table.fields.map(x=>String(x).replace(/\s+/g,'')):[];
+  const data=Array.isArray(table?.data)?table.data:[];
+  const idx=rx=>fields.findIndex(x=>rx.test(x));
+  const iCode=idx(/(?:股票|證券)代號|^代號$/),
+   iDate=idx(/除權息日期|除權除息日期/),
+   iAmount=idx(/^現金股利(?:金額)?$|^現金股息(?:金額)?$|^息值$/);
+  if(iCode<0||iDate<0||iAmount<0)continue;
+  for(const row of data){
+   if(!Array.isArray(row))continue;
+   const code=String(row[iCode]||'').trim(),exDate=dateOf(row[iDate]),
+    amount=n(String(row[iAmount]||'').replace(/,/g,''));
+   if(!ETF.includes(code)||!exDate||exDate<=today||!(amount>0))continue;
+   // Reject out-of-range data due to accidental changes to the report layout.
+   if((Date.parse(exDate)-Date.parse(today))/86400000>185)continue;
+   rows.push({code,exDate,date:exDate,amount,estimated:false,status:'actual',
+    source:'TWSE 除權除息預告表 TWT48U（實際現金股利）'});
+  }
+ }
+ const out=Object.fromEntries(ETF.map(code=>[code,null]));
+ for(const entry of rows.sort((a,b)=>a.exDate.localeCompare(b.exDate)))
+  if(!out[entry.code])out[entry.code]=entry;
+ return out;
+}
+function parseTwseUpcomingDividendSchedule(code,html,today=ymdTaipei()){
+ // Each row is ETF code + name + three ROC dates. Do not require its
+ // distribution-amount cell; that cell is often blank before the ex-date.
+ const text=stripTags(html),rx=new RegExp('(?:^|\\s)'+code+'\\s+[^\\d]{0,100}?' +
+  '(\\d{3})年(\\d{1,2})月(\\d{1,2})日\\s+' +
+  '(\\d{3})年(\\d{1,2})月(\\d{1,2})日\\s+' +
+  '(\\d{3})年(\\d{1,2})月(\\d{1,2})日','g');
+ const found=[];let m;
+ while((m=rx.exec(text))){
+  const exDate=rocDividendDate(m[1],m[2],m[3]);
+  if(exDate<=today)continue;
+  found.push({code,exDate,recordDate:rocDividendDate(m[4],m[5],m[6]),
+   payDate:rocDividendDate(m[7],m[8],m[9])});
+ }
+ return found.sort((a,b)=>a.exDate.localeCompare(b.exDate));
+}
+async function twseOfficialUpcomingCashMap(){
+ return cachedSingleFlight('div:twse-upcoming-cash-v1',30*60*1000,async()=>{
+  const today=ymdTaipei(),errors=[];
+  let parsed=Object.fromEntries(ETF.map(c=>[c,null]));
+  for(const host of ['https://www.twse.com.tw','https://wwwc.twse.com.tw']){
+   try{
+    const raw=await deadline(getJSONQuick(host+'/exchangeReport/TWT48U?response=json&_='+Date.now(),{},5200),5500,null);
+    if(!raw)throw Error('timeout');
+    const candidate=parseTwseUpcomingCashTable(raw,today);
+    if(ETF.some(c=>candidate[c])){parsed=candidate;break}
+    errors.push(host+': 無有效未來現金股利');
+   }catch(e){errors.push(host+': '+String(e.message||e))}
+  }
+  const candidates=ETF.filter(c=>parsed[c]);
+  if(candidates.length){
+   await Promise.all(candidates.map(async code=>{
+    try{
+     const url='https://www.twse.com.tw/zh/ETFortune/dividendList?startDate='+
+      today.slice(0,4)+'&endDate='+today.slice(0,4)+'&stkNo='+code;
+     const html=await deadline(getText(url,{},1),4200,null);
+     if(!html)return;
+     const schedule=parseTwseUpcomingDividendSchedule(code,html,today)
+      .find(x=>x.exDate===parsed[code].exDate);
+     if(schedule)parsed[code]={...parsed[code],...schedule};
+    }catch(e){errors.push(code+' schedule: '+String(e.message||e))}
+   }));
+  }
+  return{ok:candidates.length>0,byCode:parsed,errors:errors.slice(0,6),
+   source:'TWSE TWT48U 未來現金股利＋ETF e添富日期表',fetchedAt:new Date().toISOString()};
+ });
+}
+
 function dividendNextForecast(code,events,announcement,shares,today=ymdTaipei()){
  const candidates=(Array.isArray(events)?events:[]).filter(x=>x&&x.exDate>today&&Number(x.amount)>0)
   .map(x=>({...x,status:'actual',estimated:false,source:x.source||'TWSE ETF e添富配息清單'}));
@@ -3587,7 +3672,7 @@ async function dividendAutoReport(){
  }
  // One migrated entitlement that occurred before the automatic snapshot start but pays after it.
  for(const [key,v] of Object.entries(DIVIDEND_BOOTSTRAP_LOCKS)){const cur=state.locked[key];const needsCorrection=!cur||Number(cur.shares)!==Number(v.shares)||Number(cur.cash)!==Number(v.cash)||Number(cur.amount)!==Number(v.amount)||String(cur.payDate||'')!==String(v.payDate||'');if(needsCorrection){state.locked[key]={...v,key,lockedAt:cur?.lockedAt||new Date().toISOString(),correctedAt:new Date().toISOString(),snapshotDay:'migration'};dirty=true}}
- const [fetched,announcementReport]=await Promise.all([Promise.all(ETF.map(async code=>{try{return[code,await twseDividendEvents(code)]}catch(e){return[code,{ok:false,events:[],errors:[e.message],source:'TWSE ETF e添富'}]}})),deadline(twseDistributionAnnouncementMap().catch(e=>({ok:false,byCode:{},errors:[e.message],source:'TWSE ETF e添富收益分配公告'})),10000,{ok:false,byCode:{},errors:['收益分配公告查詢超過10秒；本次使用已確認配息資料'],source:'TWSE ETF e添富收益分配公告'})]);
+ const [fetched,announcementReport,upcomingCash]=await Promise.all([Promise.all(ETF.map(async code=>{try{return[code,await twseDividendEvents(code)]}catch(e){return[code,{ok:false,events:[],errors:[e.message],source:'TWSE ETF e添富'}]}})),deadline(twseDistributionAnnouncementMap().catch(e=>({ok:false,byCode:{},errors:[e.message],source:'TWSE ETF e添富收益分配公告'})),10000,{ok:false,byCode:{},errors:['收益分配公告查詢超過10秒；本次使用已確認配息資料'],source:'TWSE ETF e添富收益分配公告'}),deadline(twseOfficialUpcomingCashMap().catch(e=>({ok:false,byCode:{},errors:[String(e.message||e)]})),14000,{ok:false,byCode:{},errors:['TWT48U查詢逾時']})]);
  const sourceByCode=Object.fromEntries(fetched),announcementByCode=announcementReport?.byCode||{},allEvents={};
  for(const [code,d] of fetched){
   const events=(d?.events||[]).map(e=>({...e,code,exDate:e.exDate||e.date})).filter(e=>e.exDate&&e.payDate&&Number(e.amount)>0).sort((a,b)=>a.exDate.localeCompare(b.exDate));
@@ -3609,11 +3694,17 @@ async function dividendAutoReport(){
   const paidLocks=locks.filter(x=>x.payDate&&x.payDate<=today),pendingLocks=locks.filter(x=>x.exDate<=today&&x.payDate>today);
   const autoPaid=paidLocks.reduce((sum,x)=>sum+(Number(x.cash)||0),0),pending=pendingLocks.reduce((sum,x)=>sum+(Number(x.cash)||0),0),received=(Number(DIVIDEND_BASE[code])||0)+autoPaid;
   const upcoming=(allEvents[code]||[]).filter(e=>e.exDate>today).map(e=>{const shares=Math.max(0,Number(currentHoldings?.[code])||0);return{...e,sharesEstimate:shares,cashEstimate:Math.max(0,Math.round(shares*Number(e.amount)))}})[0]||null;
-  const ann=announcementByCode[code]||null,sharesEstimate=Math.max(0,Number(currentHoldings?.[code])||0);
+  const listed=upcomingCash?.byCode?.[code]||null;
+  const announced=announcementByCode[code]||null;
+  // The numeric TWSE cash-dividend report wins over an earlier preliminary
+  // estimate for the same ex-date, never over a different, earlier ex-date.
+  const ann=listed&&(!announced||listed.exDate<=announced.exDate||announced.estimated)
+   ?listed:announced;
+  const sharesEstimate=Math.max(0,Number(currentHoldings?.[code])||0);
   const estimatedUpcoming=ann&&ann.exDate>=today&&(!upcoming||upcoming.exDate!==ann.exDate)?{...ann,sharesEstimate,cashEstimate:Math.max(0,Math.round(sharesEstimate*Number(ann.amount)))}:null;
   const nextForecast=dividendNextForecast(code,allEvents[code]||[],ann,currentHoldings?.[code],today);
   const nextPending=pendingLocks[0]||null,lastPaid=paidLocks.at(-1)||null;
-  byCode[code]={code,base:Number(DIVIDEND_BASE[code])||0,baseAsOf:DIVIDEND_BASE_ASOF,autoPaid,received,pending,nextPending,lastPaid,upcoming,estimatedUpcoming,nextForecast,forecastSharesAsOf:latestCloud.updatedAt||latestSnap?.recordedAt||null,locks:locks.slice(-12),snapshotDay:latestSnap?.day||null,source:sourceByCode[code]?.source||'TWSE ETF e添富',sourceOk:!!sourceByCode[code]?.ok,sourceErrors:[...(sourceByCode[code]?.errors||[]),...(announcementReport?.errors||[])].slice(0,8),version:'div-auto-v2'};
+  byCode[code]={code,base:Number(DIVIDEND_BASE[code])||0,baseAsOf:DIVIDEND_BASE_ASOF,autoPaid,received,pending,nextPending,lastPaid,upcoming,estimatedUpcoming,nextForecast,forecastSharesAsOf:latestCloud.updatedAt||latestSnap?.recordedAt||null,locks:locks.slice(-12),snapshotDay:latestSnap?.day||null,source:sourceByCode[code]?.source||'TWSE ETF e添富',sourceOk:!!sourceByCode[code]?.ok,sourceErrors:[...(sourceByCode[code]?.errors||[]),...(announcementReport?.errors||[]),...(upcomingCash?.errors||[])].slice(0,8),upcomingOfficialSource:listed?.source||null,version:'div-auto-v2'};
  }
  return{ok:true,build:BUILD,version:'div-auto-v2-announcement',automatic:true,startDate:DIVIDEND_AUTO_START,baseAsOf:DIVIDEND_BASE_ASOF,today,snapshotDay:latestSnap?.day||null,byCode,source:'TWSE ETF e添富配息清單＋收益分配公告＋雲端持股日快照',announcementSource:announcementReport?.source||null,updatedAt:state.updatedAt||cloud.updatedAt||null,fetchedAt:new Date().toISOString()};
 }
