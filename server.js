@@ -4130,6 +4130,15 @@ server.listen(PORT,'0.0.0.0',()=>{
  setTimeout(()=>ensureOperationalMetaRestored().catch(()=>{}),0);
  // Stability-only scheduling: do not start full-history warming while the first live/model refresh is still opening external connections.
  setTimeout(refreshRuntime,5000);
+ // One read-only source acceptance probe after startup. It logs public
+ // dividends only, never mutates holdings, entitlements, or model trading.
+ setTimeout(()=>twseOfficialUpcomingCashMap().then(r=>{
+  console.log('[DIVIDEND-OFFICIAL-CHECK]',JSON.stringify({
+   day:ymdTaipei(),ok:r.ok,
+   upcoming:Object.fromEntries(ETF.map(c=>[c,r.byCode?.[c]||null])),
+   errors:r.errors||[]
+  }));
+ }).catch(e=>console.warn('[DIVIDEND-OFFICIAL-CHECK]',String(e.message||e))),12500);
  setInterval(refreshRuntime,120000);
  // A/B forward signal sampling: cloud lease makes exactly one Render instance the scanner per cycle.
  setTimeout(()=>trendLedgerScan().catch(()=>{}),30000);
