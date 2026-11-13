@@ -61,7 +61,7 @@ function normalizeHoldingRecord(x){
 function localDividendForecast(source,shares){
  if(!source||!Number.isSafeInteger(Number(shares))||Number(shares)<0)return source||null;
  const perShare=Number(source.amount),exDate=String(source.exDate||'');
- if(!(perShare>0)||!Number.isFinite(perShare)||!/^\\d{4}-\\d{2}-\\d{2}$/.test(exDate)||exDate<=dayKey())return null;
+ if(!(perShare>0)||!Number.isFinite(perShare)||!/^\d{4}-\d{2}-\d{2}$/.test(exDate)||exDate<=dayKey())return null;
  return{...source,sharesEstimate:Number(shares),cashEstimate:Math.round(Number(shares)*perShare),sharesBasis:'displayed-holdings'};
 }
 function dividendStats(code,holding){
