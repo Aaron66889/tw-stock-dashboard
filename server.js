@@ -3626,11 +3626,12 @@ async function twseOfficialUpcomingCashMap(){
     try{
      const url='https://www.twse.com.tw/zh/ETFortune/dividendList?startDate='+
       today.slice(0,4)+'&endDate='+today.slice(0,4)+'&stkNo='+code;
-     const html=await deadline(getText(url,{},1),4200,null);
-     if(!html)return;
-     const schedule=parseTwseUpcomingDividendSchedule(code,html,today)
-      .find(x=>x.exDate===parsed[code].exDate);
+     const html=await deadline(getText(url,{},1),6500,null);
+     if(!html){errors.push(code+': 配息日期表逾時，正式金額仍可用');return}
+     const matching=parseTwseUpcomingDividendSchedule(code,html,today);
+     const schedule=matching.find(x=>x.exDate===parsed[code].exDate);
      if(schedule)parsed[code]={...parsed[code],...schedule};
+     else errors.push(code+': 配息日期表缺少相同除息日（可讀字數'+stripTags(html).length+'，匹配'+matching.length+'筆）');
     }catch(e){errors.push(code+' schedule: '+String(e.message||e))}
    }));
   }
