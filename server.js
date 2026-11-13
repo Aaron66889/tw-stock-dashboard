@@ -3969,6 +3969,19 @@ const server=http.createServer(async(req,res)=>{
    try{const body=await readJSONBody(req);return send(res,200,await cloudUpsertHoldings(body.holdings,body.expectedUpdatedAt,body.includedTradeIds))}catch(e){return send(res,400,{ok:false,error:e.message})}
   }
  }
+ // Public, read-only cash-distribution announcements. No MODEL_SYNC login,
+ // historical dividend fetch, holdings read or trading-state mutation.
+ // The holdings page must be able to show officially announced FUTURE cash
+ // distributions even when the private portfolio sync is locked or delayed.
+ if(u.pathname==='/api/dividend-upcoming'&&req.method==='GET')
+  return safeApi(res,'dividend-upcoming',async()=>{
+   const official=await deadline(twseOfficialUpcomingCashMap(),16000,null);
+   if(!official)throw Error('TWSE未來配息資料查詢逾時，保留本機最近成功公告');
+   return{ok:true,build:BUILD,asOf:ymdTaipei(),fetchedAt:new Date().toISOString(),
+    byCode:Object.fromEntries(ETF.map(c=>[c,official.byCode?.[c]||null])),
+    source:official.source||'TWSE 除權除息預告表',
+    sourceOk:!!official.ok,errors:official.errors||[]};
+  });
  if(u.pathname==='/api/dividend-auto'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'股息自動同步尚未完成後端設定'});
   if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'股息自動同步尚未解鎖'});
