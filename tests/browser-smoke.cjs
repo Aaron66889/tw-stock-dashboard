@@ -191,6 +191,63 @@ const server=http.createServer((req,res)=>{
     'both model and quote freshness must recover model buy '+view);
    assert.match(recovery.bothRecovered[view].text,/允許記錄正式模型買入/);
   }
+  // Isolated holdings-cloud failure-path browser integration. Only synthetic
+  // test holdings are used; no provider network, accounts or production writes.
+  const cloudSafety=await page.evaluate(async()=>{
+   MODEL_SYNC.ready=true;
+   MODEL_SYNC.status='ready';
+   HOLDINGS_PUSH_BUSY=false;
+   HOLDINGS_SYNC.busy=false;
+   HOLDINGS_MANUAL_DIRTY=false;
+   HOLDINGS_PENDING_TRADES=[];
+   const initial=[{t:'0050',n:'synthetic',s:123,c:80,dividendReceived:0}];
+   H=JSON.parse(JSON.stringify(initial));
+   localStorage.setItem('twStockHoldingsV12',JSON.stringify(H));
+   const before=localStorage.getItem('twStockHoldingsV12');
+   flushPendingHoldingsTrades=async()=>{};
+   let calls=0;
+   modelSyncFetch=async url=>{
+    if(url!=='/api/holdings-sync')throw Error('UNEXPECTED_CLOUD_ENDPOINT');
+    calls++;
+    throw Object.assign(new Error('SYNTHETIC_CLOUD_OFFLINE'),{status:503});
+   };
+   await syncHoldingsCloud(false);
+   const offline={same:JSON.stringify(H)===JSON.stringify(initial),
+    storageSame:localStorage.getItem('twStockHoldingsV12')===before,ready:HOLDINGS_SYNC.ready,message:HOLDINGS_SYNC.message};
+   HOLDINGS_SYNC.busy=false;
+   modelSyncFetch=async()=>({ok:true,initialized:true,holdings:null,updatedAt:'test'});
+   await syncHoldingsCloud(false);
+   const malformed={same:JSON.stringify(H)===JSON.stringify(initial),
+    storageSame:localStorage.getItem('twStockHoldingsV12')===before,ready:HOLDINGS_SYNC.ready,message:HOLDINGS_SYNC.message};
+   HOLDINGS_SYNC.busy=false;
+   HOLDINGS_PENDING_TRADES=[{id:'synthetic-pending',code:'0050',shares:10,entryPrice:99}];
+   let readWhilePending=false;
+   modelSyncFetch=async()=>{readWhilePending=true;return {ok:true,initialized:true,holdings:[]}};
+   await syncHoldingsCloud(false);
+   const pending={same:JSON.stringify(H)===JSON.stringify(initial),
+    storageSame:localStorage.getItem('twStockHoldingsV12')===before,
+    cloudCalled:readWhilePending,ready:HOLDINGS_SYNC.ready};
+   HOLDINGS_PENDING_TRADES=[];
+   HOLDINGS_SYNC.busy=false;
+   modelSyncFetch=async()=>{
+    HOLDINGS_LOCAL_REV++;
+    return {ok:true,initialized:true,holdings:[{t:'0050',s:1,c:1}],updatedAt:'test'};
+   };
+   await syncHoldingsCloud(false);
+   const concurrentEdit={same:JSON.stringify(H)===JSON.stringify(initial),
+    storageSame:localStorage.getItem('twStockHoldingsV12')===before,ready:HOLDINGS_SYNC.ready};
+   MODEL_SYNC.ready=false;
+   return {offline,malformed,pending,concurrentEdit,calls};
+  });
+  assert.equal(cloudSafety.calls,1);
+  for(const scenario of ['offline','malformed','pending','concurrentEdit']){
+   assert.equal(cloudSafety[scenario].same,true,'must preserve local holdings on '+scenario);
+   assert.equal(cloudSafety[scenario].storageSame,true,'must preserve local storage on '+scenario);
+   assert.equal(cloudSafety[scenario].ready,false,'must not claim sync success on '+scenario);
+  }
+  assert.equal(cloudSafety.pending.cloudCalled,false,'pending transactions block cloud holdings downloads');
+  assert.match(cloudSafety.offline.message,/SYNTHETIC_CLOUD_OFFLINE/);
+  assert.match(cloudSafety.malformed.message,/格式不完整/);
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
