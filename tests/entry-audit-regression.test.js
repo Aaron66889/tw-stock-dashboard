@@ -290,3 +290,28 @@ test('entry trace transition report isolates ETFs and counts only observed confi
  assert.equal(a.byETF['0056'].confirmedToNonConfirmed,0);
  assert.equal(a.method,'observed-consecutive-snapshots-only');
 });
+
+test('corrupted browser research entries are ignored without stopping diagnostic export',()=>{
+ const ctx=loadFunction('function classifyEntryTraceExit(', 'function updateState(){',{
+  ETF:['0050','0056'],loadJSON:()=>[
+   null,{code:'0050',day:'2026-11-16',at:'not-a-time',layers:[]},
+   {code:'0050',day:'2026-11-16',at:'2026-11-16T02:00:00Z',layers:{}},
+   {code:'0050',day:'2026-11-16',at:'2026-11-16T02:01:00Z',fresh:false,
+    layers:[null,{layer:2,status:'CONFIRMED_BELOW'}]}]
+ });
+ const report=ctx.entryTraceEvidenceSummary();
+ assert.equal(report.status,'PARTIAL_LIVE_EVIDENCE_ONLY');
+ assert.equal(report.invalidRecords,3);
+ assert.equal(report.byETF['0050'].observations,1);
+ assert.equal(report.byETF['0050'].confirmedBelow,1);
+ assert.equal(report.transitions.byETF['0050'].confirmedToNonConfirmed,0);
+ assert.equal(report.byETF['0056'].observations,0);
+});
+test('unexpected local browser storage exception degrades to diagnostic unavailable only',()=>{
+ const ctx=loadFunction('function classifyEntryTraceExit(', 'function updateState(){',{
+  ETF:['0050'],loadJSON:()=>{throw Error('storage blocked')}
+ });
+ const report=ctx.entryTraceEvidenceSummary();
+ assert.equal(report.mode,'READ_ONLY');
+ assert.equal(report.status,'DIAGNOSTIC_UNAVAILABLE');
+});
