@@ -75,8 +75,8 @@ const server=http.createServer((req,res)=>{
     const home=[...document.querySelectorAll('#homeBuyRanking .buycard')];
     const details=[...document.querySelectorAll('#buyCards .buycard')];
     return {
-     home:home.map(n=>({text:n.innerText,disabled:n.querySelector('button[onclick*="openModelTrade"]')?.disabled})),
-     details:details.map(n=>({text:n.innerText,disabled:n.querySelector('button[onclick*="openModelTrade"]')?.disabled}))
+     home:home.map(n=>({code:n.querySelector('.ticker')?.textContent?.trim().slice(0,5),text:n.innerText,disabled:n.querySelector('button[onclick*="openModelTrade"]')?.disabled})),
+     details:details.map(n=>({code:n.querySelector('.ticker')?.textContent?.trim().slice(0,5),text:n.innerText,disabled:n.querySelector('button[onclick*="openModelTrade"]')?.disabled}))
     };
    };
    const eligible=snap();
@@ -94,18 +94,20 @@ const server=http.createServer((req,res)=>{
    assert.equal(cases[scenario].home.length,4,scenario+' home cards');
    assert.equal(cases[scenario].details.length,4,scenario+' detailed buy cards');
   }
-  assert.equal(cases.eligible.home[0].disabled,false,'fresh eligible quote must enable model buy in home');
-  assert.equal(cases.eligible.details[0].disabled,false,'fresh eligible quote must enable model buy in detail');
-  assert.equal(cases.backup.home[0].disabled,true,'last-good fallback must disable model buy');
-  assert.equal(cases.backup.details[0].disabled,true);
-  assert.match(cases.backup.home[0].text,/最後有效報價/);
-  assert.match(cases.backup.details[0].text,/最後有效報價/);
-  assert.equal(cases.veto.home[0].disabled,true,'hard Gate must disable model buy');
-  assert.equal(cases.veto.details[0].disabled,true);
-  assert.match(cases.veto.home[0].text,/synthetic Gate/);
-  assert.equal(cases.below.home[0].disabled,true,'below frozen execution band cannot be model buy');
-  assert.equal(cases.below.details[0].disabled,true);
-  assert.match(cases.below.home[0].text,/低於首次確認執行下限/);
+  const find=(scenario,view,code)=>{const card=cases[scenario][view].find(x=>x.code===code);assert.ok(card,scenario+' '+view+' '+code);return card};
+  for(const view of ['home','details']){
+   assert.equal(find('eligible',view,'0050').disabled,false,'eligible quote must enable 0050 model buy '+view);
+   assert.equal(find('backup',view,'0050').disabled,true,'last-good fallback must disable 0050 model buy '+view);
+   assert.match(find('backup',view,'0050').text,/最後有效報價/);
+   assert.equal(find('veto',view,'0050').disabled,true,'hard Gate must disable model buy '+view);
+   assert.match(find('veto',view,'0050').text,/synthetic Gate/);
+   assert.equal(find('below',view,'0050').disabled,true,'below frozen execution band must disable model buy '+view);
+   assert.match(find('below',view,'0050').text,/低於首次確認執行下限/);
+   for(const other of ['0056','00878','00919']){
+    assert.equal(find('eligible',view,other).disabled,false,'independent '+other+' signal remains eligible '+view);
+    assert.equal(find('below',view,other).disabled,false,'0050 dropping must not affect '+other+' '+view);
+   }
+  }
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
