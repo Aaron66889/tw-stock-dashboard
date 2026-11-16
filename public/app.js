@@ -707,9 +707,14 @@ let ENTRY_TRACE_LAST_KEYS={};
 function captureOfficialEntryTrace(code){
  try{
   const x=statusFor(code),q=lastLive?.quotes?.[code],r=x?.r,m=x?.m;
-  if(!x||r?.error||!q||!m||!Number.isFinite(Number(q.last))||Number(q.last)<=0)return false;
+  if(!x||r?.error||!m)return false;
   if(!cashSessionIsOpenForNewConfirmation())return false;
-  const today=dayKey(),now=Date.now(),key=liveObservationKey(code,r,x.px);
+  // Loss of the live quote is itself relevant evidence. Never treat the model's
+  // fallback r.price as a verified market observation.
+  const validQuote=!!q&&q.last!==null&&q.last!==undefined&&
+   Number.isFinite(Number(q.last))&&Number(q.last)>0;
+  const today=dayKey(),now=Date.now(),
+   key=validQuote?liveObservationKey(code,r,x.px):'MISSING_LIVE_QUOTE|'+code+'|'+today;
   if(!key)return false;
   const freshness=officialExecutionSnapshotReady(code);
   const layers=m.layers.map((L,i)=>({layer:i+1,status:layerView(L,x.px),confirmed:!!L.confirmed,
@@ -730,8 +735,8 @@ function captureOfficialEntryTrace(code){
   if(!transition&&now-prev.savedAt<180000)return false;
   const row={day:today,at:new Date(now).toISOString(),code,observationKey:key,
    event:transition?'STATE_CHANGE':'HEARTBEAT',
-   quoteAt:q.time||null,sourceAt:q.serverFetchedAt||null,receivedAt:q.fetchTime||null,
-   modelAt:lastBuy?.fetchedAt||null,px:Number(q.last),
+   quoteAt:q?.time||null,sourceAt:q?.serverFetchedAt||null,receivedAt:q?.fetchTime||null,
+   modelAt:lastBuy?.fetchedAt||null,px:validQuote?Number(q.last):null,
    atr:Number.isFinite(Number(r.history?.atr14))?Number(r.history.atr14):null,
    score:Number.isFinite(Number(r.score))?Number(r.score):null,healthScore:r.health?.score??null,
    hardVeto:!!r.hardVeto,noBuyToday:!!r.noBuyToday,fresh:freshness,
