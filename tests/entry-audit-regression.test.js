@@ -111,3 +111,28 @@ test('A/B shadow bands are monotone and never bypass stale quote, closed market,
   assert.equal(x.reason,'INSUFFICIENT_DATA');
  }
 });
+
+test('health-cohort research uses same ETF, legitimate mature horizons, and no live Gate changes',()=>{
+ const ctx=loadFunction('function modelEntryHealthAudit(', 'function performanceDiagnosticPayload(',{
+  ETF:['0050'],modelFamilyOf:t=>t.modelFamily,incidentModelTrade:()=>false,
+  tradeMaturedHorizon:(t,h)=>t.horizon?.[h]||null,
+  mean:a=>a.length?a.reduce((n,x)=>n+x,0)/a.length:null
+ });
+ const rows=[
+  {code:'0050',modelFamily:'reasonable',snapshot:{health:{score:25}},horizon:{5:{totalReturnPct:-5}}},
+  {code:'0050',modelFamily:'reasonable',snapshot:{health:{score:35}},horizon:{5:{totalReturnPct:1},20:{totalReturnPct:2}}},
+  {code:'0050',modelFamily:'reasonable',snapshot:{health:{score:54}},horizon:{5:{totalReturnPct:3}}},
+  {code:'0050',modelFamily:'reasonable',snapshot:{health:{score:75}},horizon:{}},
+  {code:'0050',modelFamily:'manual',snapshot:{health:{score:10}},horizon:{5:{totalReturnPct:-99}}},
+  {code:'0050',modelFamily:'reasonable',snapshot:{health:{score:null}},horizon:{5:{totalReturnPct:4}}}
+ ];
+ const a=ctx.modelEntryHealthAudit(rows);
+ assert.equal(a.mode,'READ_ONLY');
+ const b=a.byETF['0050'];
+ assert.equal(b.LOW_0_40.trades,2);
+ assert.equal(b.LOW_0_40.h5.meanPct,-2);
+ assert.equal(b.LOW_0_40.h20.n,1);
+ assert.equal(b.MID_41_60.h5.meanPct,3);
+ assert.equal(b.HIGH_61_100.h5.n,0);
+ assert.equal(b.UNKNOWN.trades,1);
+});
