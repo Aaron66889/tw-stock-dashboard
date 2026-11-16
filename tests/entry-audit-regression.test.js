@@ -186,3 +186,42 @@ test('new official purchase captures layer-specific prices, confirmation and ups
  assert.match(body,/x\.statuses\[layer-1\]!=='CONFIRMED_IN'/);
  assert.match(body,/executionAudit:manual\?null:/);
 });
+
+test('bounded official observation trace records one quote once and never mutates positions',()=>{
+ const start=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const end=source.indexOf('function updateState(){',start);
+ assert.ok(start>=0&&end>start);
+ const storage=new Map(),calls={saved:0};
+ const x={r:{history:{atr14:1},score:48,health:{score:30},hardVeto:false,noBuyToday:false},
+  m:{layers:[{zone:{low:101,high:102},confirmed:false},{zone:{low:99,high:100},confirmed:true,confirmedZone:{low:99},executionLow:99,executionHigh:100.1,gateBlocked:false},{zone:{low:97,high:98},confirmed:false}]},
+  px:98.9};
+ const ctx={ETF:['0050'],lastLive:{quotes:{'0050':{last:98.9,time:'10:03',serverFetchedAt:'2026-11-16T02:03:00Z',fetchTime:'2026-11-16T02:03:00Z'}}},
+  lastBuy:{fetchedAt:'2026-11-16T02:03:00Z'},statusFor:()=>x,dayKey:()=> '2026-11-16',
+  liveObservationKey:()=> 'tick-a',officialExecutionSnapshotReady:()=>true,
+  cashSessionIsOpenForNewConfirmation:()=>true,layerView:L=>L.confirmed?'CONFIRMED_BELOW':'WAIT',
+  loadJSON:(key,fallback)=>storage.has(key)?storage.get(key):fallback,
+  saveJSON:(key,val)=>{calls.saved++;storage.set(key,val)},Date};
+ const functions=vm.runInNewContext(source.slice(start,end)+'\n({captureOfficialEntryTrace,entryTraceEvidenceSummary})',ctx);
+ assert.equal(functions.captureOfficialEntryTrace('0050'),true);
+ assert.equal(functions.captureOfficialEntryTrace('0050'),false);
+ assert.equal(calls.saved,1);
+ const rows=storage.get('v124_entry_evidence_research_v1');
+ assert.equal(rows.length,1);
+ assert.equal(rows[0].layers[1].executionLow,99);
+ assert.equal(rows[0].layers[1].status,'CONFIRMED_BELOW');
+ assert.equal(functions.entryTraceEvidenceSummary().byETF['0050'].confirmedBelow,1);
+ assert.equal(x.m.layers[1].executionLow,99);
+});
+test('research trace fails closed on storage errors without disrupting official refresh',()=>{
+ const start=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const end=source.indexOf('function updateState(){',start);
+ const ctx={ETF:['0050'],lastLive:{quotes:{'0050':{last:98.9}}},
+  lastBuy:{},statusFor:()=>({r:{history:{atr14:1},score:50},m:{layers:[{zone:{low:99,high:100}}]},px:98.9}),
+  dayKey:()=> '2026-11-16',liveObservationKey:()=> 'tick-a',
+  cashSessionIsOpenForNewConfirmation:()=>true,officialExecutionSnapshotReady:()=>true,
+  layerView:()=> 'WAIT',loadJSON:()=>[],saveJSON:()=>{throw new Error('quota')},Date};
+ const fn=vm.runInNewContext(source.slice(start,end)+'\ncaptureOfficialEntryTrace',ctx);
+ assert.equal(fn('0050'),false);
+ assert.match(source,/if\(r&&!r\.error\)updateOne\(c,r\)/);
+ assert.match(source,/captureOfficialEntryTrace\(c\)/);
+});
