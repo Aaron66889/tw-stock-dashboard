@@ -457,3 +457,36 @@ test('model UI explains backup quote, missing supplier timestamp, stale model an
  assert.match(say(),/尚未符合正式買入要求/);
  assert.match(source,/if\(!officialExecutionSnapshotReady\(x\.r\.code\)\)return '禁止模型買入：'\+officialExecutionFreshnessExplanation/);
 });
+
+test('home and detailed model views share the exact official blocker explanation and buy-button gate',()=>{
+ const viewRefs=(source.match(/正式買入判定：<\/b>\$\{officialExecutionExplanation\(x\)\}/g)||[]).length;
+ assert.equal(viewRefs,2,'home and detailed model panel must both expose blocker reason');
+ const buttonGate="(!officialExecutionSnapshotReady(c)||x.r.hardVeto||x.r.noBuyToday||x.activeStatus!=='CONFIRMED_IN')";
+ const gates=source.split(buttonGate).length-1;
+ assert.equal(gates,2,'both model buy buttons must retain the same strict execution gate');
+ assert.match(source,/if\(!manual&&!trendMode\)\{const x=statusFor\(code\)/);
+ assert.match(source,/!officialExecutionSnapshotReady\(code\)\|\|x\.r\.hardVeto\|\|x\.r\.noBuyToday/);
+});
+test('home-facing execution explanation never grants buying on stale quote, hard Gate or unconfirmed layer',()=>{
+ const start=source.indexOf('function officialExecutionFreshnessExplanation(');
+ const end=source.indexOf('function noBuyWithoutTouch(',start);
+ const now=Date.parse('2026-11-16T03:30:30Z');
+ const iso=n=>new Date(now-n).toISOString();
+ const quote={date:'2026-11-16',last:99,realtime:true,fetchTime:iso(5000),serverFetchedAt:iso(7000)};
+ const context={lastBuy:{fetchedAt:iso(4000),modelFreshByCode:{'0050':true}},
+  lastLive:{quotes:{'0050':quote}},dayKey:()=> '2026-11-16',
+  incidentModelDay:()=>false,incidentModelNotice:()=>'',Date,
+  LAYER_CONFIRM_RULES:[{minScore:50}],fmt:n=>String(n),deepestTouchedLayer:()=>-1,
+  cashSessionIsOpenForNewConfirmation:()=>true};
+ const fn=vm.runInNewContext(source.slice(start,end)+'\n({officialExecutionSnapshotReady,officialExecutionExplanation})',context);
+ const x={activeLayer:0,activeStatus:'CONFIRMED_IN',px:99,r:{code:'0050',hardVeto:false,noBuyToday:false},
+  m:{layers:[{executionLow:98,executionHigh:101}]}};
+ assert.match(fn.officialExecutionExplanation(x),/允許記錄正式模型買入/);
+ context.lastLive.quotes['0050']={...quote,lastGoodFallback:true};
+ assert.match(fn.officialExecutionExplanation(x),/禁止模型買入：.*最後有效報價/);
+ context.lastLive.quotes['0050']={...quote};
+ x.r.hardVeto=true;x.r.hardVetoReason='test-hard-gate';
+ assert.match(fn.officialExecutionExplanation(x),/硬Gate.*test-hard-gate/);
+ x.r.hardVeto=false;x.activeStatus='WAIT';
+ assert.doesNotMatch(fn.officialExecutionExplanation(x),/允許記錄正式模型買入/);
+});
