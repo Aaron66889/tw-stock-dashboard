@@ -141,6 +141,56 @@ const server=http.createServer((req,res)=>{
   assert.equal(ingestion.detailDisabled,true);
   assert.match(ingestion.homeText,/最後有效報價/);
   assert.match(ingestion.detailText,/最後有效報價/);
+  // Simulate recovery using the actual ETF-live ingestion path while keeping
+  // the synthetic model state frozen (server-model updateOne is tested elsewhere).
+  // A fresh price alone must NEVER rescue stale model provenance.
+  const recovery=await page.evaluate(async()=>{
+   const now=new Date().toISOString(),day=dayKey(),code='0050';
+   // Isolated fixture deliberately lacks the full raw/historical updateOne payload.
+   // Suppress model recalculation, but retain real quote ingestion + render gates.
+   updateOne=()=>{};
+   const getCards=()=>{
+    const pick=selector=>{
+     const card=[...document.querySelectorAll(selector)]
+      .find(n=>n.querySelector('.ticker')?.textContent?.trim().startsWith(code));
+     return {disabled:card?.querySelector('button[onclick*="openModelTrade"]')?.disabled,
+      text:card?.innerText||''};
+    };
+    return {home:pick('#homeBuyRanking .buycard'),details:pick('#buyCards .buycard')};
+   };
+   const scenarios={};
+   lastBuy.modelFreshByCode[code]=false;
+   get=async url=>{
+    if(!String(url).startsWith('/api/etf-live'))throw Error('ISOLATED_API_NOT_ALLOWED');
+    return {ok:true,quotes:Object.fromEntries(ETF.map(c=>[c,{
+     last:c===code?100:lastLive.quotes[c].last,
+     date:day,prevClose:101,serverFetchedAt:now,
+     source:'Yahoo synthetic recovered',realtime:true,lastGoodFallback:false
+    }]))};
+   };
+   await loadEtfLive();
+   scenarios.priceRecoveredModelStale={...getCards(),
+    quoteRealtime:lastLive.quotes[code].realtime,
+    modelFresh:lastBuy.modelFreshByCode[code],
+    gate:officialExecutionSnapshotReady(code)};
+   lastBuy.modelFreshByCode[code]=true;
+   lastBuy.fetchedAt=new Date().toISOString();
+   renderHomeRanking();renderBuyCards();
+   scenarios.bothRecovered={...getCards(),gate:officialExecutionSnapshotReady(code)};
+   return scenarios;
+  });
+  assert.equal(recovery.priceRecoveredModelStale.quoteRealtime,true);
+  assert.equal(recovery.priceRecoveredModelStale.modelFresh,false);
+  assert.equal(recovery.priceRecoveredModelStale.gate,false);
+  assert.equal(recovery.bothRecovered.gate,true);
+  for(const view of ['home','details']){
+   assert.equal(recovery.priceRecoveredModelStale[view].disabled,true,
+    'quote recovery alone must never override stale model '+view);
+   assert.match(recovery.priceRecoveredModelStale[view].text,/模型資料尚未更新/);
+   assert.equal(recovery.bothRecovered[view].disabled,false,
+    'both model and quote freshness must recover model buy '+view);
+   assert.match(recovery.bothRecovered[view].text,/允許記錄正式模型買入/);
+  }
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
