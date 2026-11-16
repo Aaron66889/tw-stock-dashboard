@@ -625,3 +625,39 @@ test('missing live quote records loss without mistaking stale model price for an
  assert.match(rows[1].observationKey,/MISSING_LIVE_QUOTE/);
  assert.equal(ctx.entryTraceTransitionAudit(rows).byETF['0050'].byReason.STALE_QUOTE_OR_MODEL,1);
 });
+
+test('browser reload does not create false entry transition; real permission change is immediate',()=>{
+ const sourceStart=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const sourceEnd=source.indexOf('function classifyEntryTraceExit(',sourceStart);
+ const program=source.slice(sourceStart,sourceEnd)+'\ncaptureOfficialEntryTrace';
+ let now=Date.parse('2026-11-16T02:00:00Z'),fresh=true;
+ class Clock extends Date{constructor(...args){super(...(args.length?args:[now]))}static now(){return now}}
+ const store=new Map(),x={r:{score:60,history:{atr14:1},hardVeto:false,noBuyToday:false},
+  m:{layers:[{confirmed:true,gateBlocked:false,confirmedAt:'confirmed'}]},px:100};
+ const ctx={ETF:['0050'],lastLive:{quotes:{'0050':{last:100,time:'10:00:00'}}},lastBuy:{},
+  statusFor:()=>x,dayKey:()=> '2026-11-16',cashSessionIsOpenForNewConfirmation:()=>true,
+  liveObservationKey:()=> 'stable',officialExecutionSnapshotReady:()=>fresh,
+  layerView:()=> 'CONFIRMED_IN',LAYER_CONFIRM_RULES:[{minScore:50}],
+  loadJSON:(k,d)=>store.has(k)?store.get(k):d,saveJSON:(k,v)=>store.set(k,v),Date:Clock};
+ const getFreshTab=()=>vm.runInNewContext(program,{...ctx},{timeout:1000});
+ const tab1=getFreshTab();
+ assert.equal(tab1('0050'),true);
+ assert.equal(store.get('v124_entry_evidence_research_v1').length,1);
+ now+=30000;
+ const tab2=getFreshTab();
+ assert.equal(tab2('0050'),false,'reload with unchanged snapshot should not add a transition');
+ assert.equal(store.get('v124_entry_evidence_research_v1').length,1);
+ now+=5000;fresh=false;
+ assert.equal(tab2('0050'),true,'stale model should create an immediate transition after reload');
+ const rows=store.get('v124_entry_evidence_research_v1');
+ assert.equal(rows.length,2);
+ assert.equal(rows[1].layers[0].executionAllowed,false);
+ assert.equal(rows[1].event,'STATE_CHANGE');
+ now+=31000;
+ const tab3=getFreshTab();
+ assert.equal(tab3('0050'),false,'subsequent reload remains deduplicated');
+ assert.equal(store.get('v124_entry_evidence_research_v1').length,2);
+ now+=180000;
+ assert.equal(tab3('0050'),true,'after heartbeat interval, observation may be written');
+ assert.equal(store.get('v124_entry_evidence_research_v1').at(-1).event,'HEARTBEAT');
+});
