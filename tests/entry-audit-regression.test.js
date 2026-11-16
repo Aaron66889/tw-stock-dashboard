@@ -79,7 +79,7 @@ test('L2/L3 audit cannot imply permission without fresh Gate or a real price',()
  const x={r:{history:{atr14:1},score:50,hardVeto:false,noBuyToday:false},px:99.9,
    statuses:['WAIT','CONFIRMED_BELOW','WAIT'],
    m:{layers:[{}, {confirmed:true,confirmedZone:{low:100},executionLow:100,gateBlocked:false},{confirmed:false,confirmedZone:null,executionLow:null}]}};
- const ctx=loadFunction('function deepLayerBoundaryAudit(', 'function performanceDiagnosticPayload(',{
+ const ctx=loadFunction('function deepExecutionShadowCandidates(', 'function performanceDiagnosticPayload(',{
    ...context,statusFor:()=>x,officialExecutionSnapshotReady:()=>false,cashSessionIsOpenForNewConfirmation:()=>true
  });
  assert.equal(ctx.deepLayerBoundaryAudit().byETF['0050'][0].shadowWouldPermit,false);
