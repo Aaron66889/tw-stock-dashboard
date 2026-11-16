@@ -108,6 +108,39 @@ const server=http.createServer((req,res)=>{
     assert.equal(find('below',view,other).disabled,false,'0050 dropping must not affect '+other+' '+view);
    }
   }
+  // Exercise the real loadEtfLive() browser ingestion path, not just injected
+  // state. A synthetic provider fallback must be displayed but never executable.
+  const ingestion=await page.evaluate(async()=>{
+   const currentDay=dayKey(),at=new Date().toISOString();
+   get=async url=>{
+    if(!String(url).startsWith('/api/etf-live'))throw Error('ISOLATED_API_NOT_ALLOWED');
+    return {ok:true,quotes:Object.fromEntries(ETF.map(c=>[c,{
+     last:c==='0050'?96.5:lastLive.quotes[c].last,
+     prevClose:101,date:currentDay,serverFetchedAt:at,
+     source:'Anue synthetic fallback',realtime:false,lastGoodFallback:true
+    }]))};
+   };
+   await loadEtfLive();
+   const code='0050';
+   const home=[...document.querySelectorAll('#homeBuyRanking .buycard')].find(n=>n.querySelector('.ticker')?.textContent?.trim().startsWith(code));
+   const detail=[...document.querySelectorAll('#buyCards .buycard')].find(n=>n.querySelector('.ticker')?.textContent?.trim().startsWith(code));
+   return{
+    livePrice:lastLive.quotes[code].last,
+    fallback:lastLive.quotes[code].lastGoodFallback,
+    source:lastLive.quotes[code].source,
+    browserReceived:!!lastLive.quotes[code].fetchTime,
+    homeText:home?.innerText||'',detailText:detail?.innerText||'',
+    homeDisabled:home?.querySelector('button[onclick*="openModelTrade"]')?.disabled,
+    detailDisabled:detail?.querySelector('button[onclick*="openModelTrade"]')?.disabled
+   };
+  });
+  assert.equal(ingestion.livePrice,96.5,'API quote must reach actual browser quote store');
+  assert.equal(ingestion.fallback,true);
+  assert.equal(ingestion.browserReceived,true);
+  assert.equal(ingestion.homeDisabled,true);
+  assert.equal(ingestion.detailDisabled,true);
+  assert.match(ingestion.homeText,/最後有效報價/);
+  assert.match(ingestion.detailText,/最後有效報價/);
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
