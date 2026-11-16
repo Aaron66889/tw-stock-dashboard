@@ -431,3 +431,29 @@ test('Yahoo outage and backup quotes without provenance cannot become executable
  context.lastBuy.modelFreshByCode['0050']=true;
  assert.equal(ready(),true,'fresh source plus fresh model restores eligibility');
 });
+
+test('model UI explains backup quote, missing supplier timestamp, stale model and ex-dividend reference separately',()=>{
+ const begin=source.indexOf('function officialExecutionFreshnessExplanation(');
+ const end=source.indexOf('function officialExecutionExplanation(',begin);
+ assert.ok(begin>=0&&end>begin);
+ const at=Date.parse('2026-11-16T03:30:30Z'),tm=v=>new Date(at-v).toISOString();
+ const good={date:'2026-11-16',last:99,realtime:true,serverFetchedAt:tm(10000),fetchTime:tm(8000)};
+ const ctx={lastBuy:{fetchedAt:tm(10000),modelFreshByCode:{'0050':true}},
+  lastLive:{quotes:{'0050':{...good}}},incidentModelDay:()=>false,dayKey:()=> '2026-11-16',Date};
+ const explain=vm.runInNewContext(source.slice(begin,end)+'\nofficialExecutionFreshnessExplanation',ctx);
+ const say=()=>explain('0050',at);
+ ctx.lastLive.quotes['0050']={...good,serverFetchedAt:null};
+ assert.match(say(),/來源時間戳/);
+ ctx.lastLive.quotes['0050']={...good,lastGoodFallback:true};
+ assert.match(say(),/最後有效報價/);
+ ctx.lastLive.quotes['0050']={...good,corporateActionReferenceMissing:true};
+ assert.match(say(),/除權息參考價/);
+ ctx.lastLive.quotes['0050']={...good,fetchTime:tm(100000)};
+ assert.match(say(),/瀏覽器接收報價/);
+ ctx.lastLive.quotes['0050']={...good};
+ ctx.lastBuy.fetchedAt=tm(100000);
+ assert.match(say(),/模型更新時間/);
+ ctx.lastBuy.fetchedAt=tm(10000);
+ assert.match(say(),/尚未符合正式買入要求/);
+ assert.match(source,/if\(!officialExecutionSnapshotReady\(x\.r\.code\)\)return '禁止模型買入：'\+officialExecutionFreshnessExplanation/);
+});
