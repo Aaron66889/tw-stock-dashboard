@@ -579,3 +579,23 @@ test('do not infer recovery when tab was suspended, date crossed or source evide
  assert.equal(ctx.classifyEntryTraceRecovery(blocked,contradictory,0).reason,'RECOVERY_EVIDENCE_MISMATCH');
  assert.equal(ctx.classifyEntryTraceRecovery(blocked,row('2026-11-16T02:01:00Z',false),0),null);
 });
+
+test('unobserved after-sleep and next-day recoveries are not included in verified restoration totals',()=>{
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';",'function updateState(){',{ETF:['0050']});
+ const row=(at,day,allowed)=>({code:'0050',at,day,fresh:true,hardVeto:false,noBuyToday:false,
+  layers:[{layer:1,status:'CONFIRMED_IN',executionAllowed:allowed}]});
+ const asleep=ctx.entryTraceTransitionAudit([
+  row('2026-11-16T02:00:00Z','2026-11-16',false),
+  row('2026-11-16T02:31:00Z','2026-11-16',true)
+ ]).byETF['0050'];
+ assert.equal(asleep.restoredPermissions,0);
+ assert.equal(asleep.unverifiableRecoveries,1);
+ assert.equal(asleep.recentTransitions[0].eventType,'RECOVERY_UNVERIFIED');
+ assert.equal(asleep.byReason.RECOVERY_OBSERVATION_GAP,1);
+ const acrossDay=ctx.entryTraceTransitionAudit([
+  row('2026-11-16T05:25:00Z','2026-11-16',false),
+  row('2026-11-17T01:00:00Z','2026-11-17',true)
+ ]).byETF['0050'];
+ assert.equal(acrossDay.restoredPermissions,0);
+ assert.equal(acrossDay.unverifiableRecoveries,1);
+});
