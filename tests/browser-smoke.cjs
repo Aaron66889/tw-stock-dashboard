@@ -75,8 +75,8 @@ const server=http.createServer((req,res)=>{
     const home=[...document.querySelectorAll('#homeBuyRanking .buycard')];
     const details=[...document.querySelectorAll('#buyCards .buycard')];
     return {
-     home:home.map(n=>({code:n.querySelector('.ticker')?.textContent?.trim().split(/\\s+/)[0],text:n.innerText,disabled:n.querySelector('button[onclick*="openModelTrade"]')?.disabled})),
-     details:details.map(n=>({code:n.querySelector('.ticker')?.textContent?.trim().split(/\\s+/)[0],text:n.innerText,disabled:n.querySelector('button[onclick*="openModelTrade"]')?.disabled}))
+     home:home.map(n=>({code:n.querySelector('.ticker')?.textContent?.trim().split(/\s+/)[0],text:n.innerText,disabled:n.querySelector('button[onclick*="openModelTrade"]')?.disabled})),
+     details:details.map(n=>({code:n.querySelector('.ticker')?.textContent?.trim().split(/\s+/)[0],text:n.innerText,disabled:n.querySelector('button[onclick*="openModelTrade"]')?.disabled}))
     };
    };
    const eligible=snap();
