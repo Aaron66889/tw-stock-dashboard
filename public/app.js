@@ -731,11 +731,13 @@ function captureOfficialEntryTrace(code){
    Number.isFinite(Number(r.score))&&Number(r.score)>=LAYER_CONFIRM_RULES[i].minScore);
   const stateKey=JSON.stringify([today,!!r.hardVeto,!!r.noBuyToday,freshness,
    layers.map((L,i)=>[L.status,L.confirmed,L.gateBlocked,L.gateReason,L.confirmedAt,permission[i]])]);
-  const old=loadJSON(ENTRY_TRACE_KEY,[]),safe=Array.isArray(old)?old:[];
-  // Recover the previous state after reload so a page refresh alone cannot
-  // manufacture a signal transition. Legacy rows have no stateKey; keep them.
-  let prev=ENTRY_TRACE_LAST_KEYS[code];
+  // Skip JSON parsing on every 15-second watchdog tick. Only a new tab,
+  // real state transition or periodic heartbeat needs to read local history.
+  let prev=ENTRY_TRACE_LAST_KEYS[code],safe=null;
   if(!prev){
+   const old=loadJSON(ENTRY_TRACE_KEY,[]);
+   safe=Array.isArray(old)?old:[];
+   // Restore deduplication state on browser reload.
    for(let i=safe.length-1;i>=0;i--){
     const last=safe[i];
     if(last?.code!==code)continue;
@@ -745,9 +747,14 @@ function captureOfficialEntryTrace(code){
      prev={day:last.day,stateKey:last.stateKey,savedAt};
     break;
    }
+   if(prev)ENTRY_TRACE_LAST_KEYS[code]=prev;
   }
   const transition=!prev||prev.day!==today||prev.stateKey!==stateKey;
   if(!transition&&now-prev.savedAt<180000)return false;
+  if(!safe){
+   const old=loadJSON(ENTRY_TRACE_KEY,[]);
+   safe=Array.isArray(old)?old:[];
+  }
   const row={day:today,at:new Date(now).toISOString(),code,observationKey:key,
    event:transition?'STATE_CHANGE':'HEARTBEAT',
    quoteAt:q?.time||null,sourceAt:q?.serverFetchedAt||null,receivedAt:q?.fetchTime||null,
