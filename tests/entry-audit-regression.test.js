@@ -599,3 +599,29 @@ test('unobserved after-sleep and next-day recoveries are not included in verifie
  assert.equal(acrossDay.restoredPermissions,0);
  assert.equal(acrossDay.unverifiableRecoveries,1);
 });
+
+test('missing live quote records loss without mistaking stale model price for an executable quote',()=>{
+ const a=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const b=source.indexOf('function updateState(){',a);
+ let now=Date.parse('2026-11-16T02:00:00Z'),quotePresent=true;
+ class FakeDate extends Date{constructor(...args){super(...(args.length?args:[now]))}static now(){return now}}
+ const stored=new Map(),x={r:{score:60,price:99.5,history:{atr14:1},hardVeto:false,noBuyToday:false},
+  m:{layers:[{confirmed:true,gateBlocked:false,confirmedAt:'t'}]},px:99.5};
+ const ctx={ETF:['0050'],lastLive:{quotes:{'0050':{last:99.5}}},
+  lastBuy:{},statusFor:()=>x,dayKey:()=> '2026-11-16',
+  liveObservationKey:()=> 'live-tick',cashSessionIsOpenForNewConfirmation:()=>true,
+  officialExecutionSnapshotReady:()=>quotePresent,layerView:()=> 'CONFIRMED_IN',
+  LAYER_CONFIRM_RULES:[{minScore:50}],
+  loadJSON:(k,d)=>stored.has(k)?stored.get(k):d,saveJSON:(k,v)=>stored.set(k,v),Date:FakeDate};
+ const capture=vm.runInNewContext(source.slice(a,b)+'\ncaptureOfficialEntryTrace',ctx);
+ assert.equal(capture('0050'),true);
+ now+=15000;quotePresent=false;delete ctx.lastLive.quotes['0050'];
+ assert.equal(capture('0050'),true,'missing quote should not cause an early diagnostic return');
+ const rows=stored.get('v124_entry_evidence_research_v1');
+ assert.equal(rows.length,2);
+ assert.equal(rows[0].px,99.5);
+ assert.equal(rows[1].px,null,'fallback model price must not be recorded as a real quote');
+ assert.equal(rows[1].layers[0].executionAllowed,false);
+ assert.match(rows[1].observationKey,/MISSING_LIVE_QUOTE/);
+ assert.equal(ctx.entryTraceTransitionAudit(rows).byETF['0050'].byReason.STALE_QUOTE_OR_MODEL,1);
+});
