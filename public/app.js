@@ -690,29 +690,36 @@ let ENTRY_TRACE_LAST_KEYS={};
 function captureOfficialEntryTrace(code){
  try{
   const x=statusFor(code),q=lastLive?.quotes?.[code],r=x?.r,m=x?.m;
-  if(!x||!q||!m||!Number.isFinite(Number(q.last))||Number(q.last)<=0)return false;
-  const key=liveObservationKey(code,r,x.px),today=dayKey();
-  if(!key||ENTRY_TRACE_LAST_KEYS[code]===today+'|'+key)return false;
-  // Keep only normal cash-session observations; stale quotes are kept as evidence, not trade permission.
+  if(!x||r?.error||!q||!m||!Number.isFinite(Number(q.last))||Number(q.last)<=0)return false;
   if(!cashSessionIsOpenForNewConfirmation())return false;
-  const row={day:today,at:new Date().toISOString(),code,observationKey:key,
+  const today=dayKey(),now=Date.now(),key=liveObservationKey(code,r,x.px);
+  if(!key)return false;
+  const freshness=officialExecutionSnapshotReady(code);
+  const layers=m.layers.map((L,i)=>({layer:i+1,status:layerView(L,x.px),confirmed:!!L.confirmed,
+   zoneLow:L.zone?.low??null,zoneHigh:L.zone?.high??null,
+   confirmedLow:L.confirmedZone?.low??null,executionLow:L.executionLow??null,
+   executionHigh:L.executionHigh??null,confirmedAt:L.confirmedAt||null,
+   touchMin:L.touchMin??null,touchMinAt:L.touchMinAt||null,
+   gateBlocked:!!L.gateBlocked,gateReason:L.gateBlockedReason||null}));
+  // A new exchange tick alone is not a reason to rewrite localStorage every 5s.
+  // Prioritize state/Gate transitions and capture a 3-minute periodic heartbeat.
+  const stateKey=JSON.stringify([today,!!r.hardVeto,!!r.noBuyToday,freshness,
+   layers.map(L=>[L.status,L.confirmed,L.gateBlocked,L.gateReason,L.confirmedAt])]);
+  const prev=ENTRY_TRACE_LAST_KEYS[code],transition=!prev||prev.day!==today||prev.stateKey!==stateKey;
+  if(!transition&&now-prev.savedAt<180000)return false;
+  const row={day:today,at:new Date(now).toISOString(),code,observationKey:key,
+   event:transition?'STATE_CHANGE':'HEARTBEAT',
    quoteAt:q.time||null,sourceAt:q.serverFetchedAt||null,receivedAt:q.fetchTime||null,
-   modelAt:lastBuy?.fetchedAt||null,px:Number(q.last),atr:Number.isFinite(Number(r.history?.atr14))?Number(r.history.atr14):null,
+   modelAt:lastBuy?.fetchedAt||null,px:Number(q.last),
+   atr:Number.isFinite(Number(r.history?.atr14))?Number(r.history.atr14):null,
    score:Number.isFinite(Number(r.score))?Number(r.score):null,healthScore:r.health?.score??null,
-   hardVeto:!!r.hardVeto,noBuyToday:!!r.noBuyToday,fresh:officialExecutionSnapshotReady(code),
-   layers:m.layers.map((L,i)=>({layer:i+1,status:layerView(L,x.px),confirmed:!!L.confirmed,
-    zoneLow:L.zone?.low??null,zoneHigh:L.zone?.high??null,
-    confirmedLow:L.confirmedZone?.low??null,executionLow:L.executionLow??null,
-    executionHigh:L.executionHigh??null,confirmedAt:L.confirmedAt||null,
-    touchMin:L.touchMin??null,touchMinAt:L.touchMinAt||null,
-    gateBlocked:!!L.gateBlocked,gateReason:L.gateBlockedReason||null}))};
+   hardVeto:!!r.hardVeto,noBuyToday:!!r.noBuyToday,fresh:freshness,layers};
   const old=loadJSON(ENTRY_TRACE_KEY,[]),safe=Array.isArray(old)?old:[];
-  // Strict storage budget: 1200 observations across all four ETFs, no older than 7 days.
-  const minDate=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+  const minDate=new Date(now-7*86400000).toISOString().slice(0,10);
   const next=safe.filter(v=>v&&v.day>=minDate&&v.day<=today).slice(-1199);
   next.push(row);
-  // A full browser quota must not break official live-model refresh.
-  try{saveJSON(ENTRY_TRACE_KEY,next);ENTRY_TRACE_LAST_KEYS[code]=today+'|'+key;return true}catch(_){return false}
+  // A full browser quota must never break official live-model refresh.
+  try{saveJSON(ENTRY_TRACE_KEY,next);ENTRY_TRACE_LAST_KEYS[code]={day:today,stateKey,savedAt:now};return true}catch(_){return false}
  }catch(_){return false}
 }
 function entryTraceEvidenceSummary(){
@@ -726,7 +733,7 @@ function entryTraceEvidenceSummary(){
  return{mode:'READ_ONLY',status:'PARTIAL_LIVE_EVIDENCE_ONLY',retention:'7 calendar days / max 1200 total observations',
   note:'僅儲存在本瀏覽器。重複行情不記錄；沒有逐筆買賣成交或完整原始價格資料，不能視為全歷史績效回測。',byETF};
 }
-function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error)updateOne(c,r);captureOfficialEntryTrace(c);const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
+function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error){updateOne(c,r);captureOfficialEntryTrace(c)}const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
 function statusFor(c){const r=lastBuy?.models?.[c],m=STATE.models?.[c];if(!r||r.error||!m)return null;const px=Number(lastLive?.quotes?.[c]?.last??r.price),statuses=m.layers.map(L=>layerView(L,px));let activeLayer=statuses.lastIndexOf('CONFIRMED_IN');if(activeLayer<0){activeLayer=0;for(let i=statuses.length-1;i>=0;i--){if(statuses[i]!=='WAIT'&&statuses[i]!=='INVALID'){activeLayer=i;break}}}const activeStatus=statuses[activeLayer]||statuses[0];return{r,m,px,statuses,activeLayer,activeStatus,rank:rank(activeStatus)}}
 
 function renderPreopen(){const el=$('preopenSummary'),p=PREOPEN.day===dayKey()?(PREOPEN.locked||PREOPEN.draft):null,d=taipeiNow(),m=d.getHours()*60+d.getMinutes();$('preopenCard').style.border=m>=537&&m<540?'2px solid #d6a044':'';if(!p){el.innerHTML='今日尚未捕捉08:57盤前版本。08:45起會先累積台指期日盤走勢，盤中不會用事後價格冒充盤前預測。';return}const lead=p.txfLead,leadLine=lead?.available?`<br><b>08:45台指日盤先行：</b>${lead.sessionChangePct>=0?'+':''}${Number(lead.sessionChangePct).toFixed(2)}%｜3分 ${lead.d3?`${lead.d3.pct>=0?'+':''}${lead.d3.pct.toFixed(2)}%`:'累積中'}｜5分 ${lead.d5?`${lead.d5.pct>=0?'+':''}${lead.d5.pct.toFixed(2)}%`:'累積中'}｜${lead.source}${lead.confidence<.99?'（部分樣本）':''}`:(lead?.active?'<br><b>08:45台指日盤先行：</b>樣本累積中':'');el.innerHTML=`<b>${PREOPEN.locked?'🔒 已鎖定':'估算中'} ${new Date(p.at).toLocaleTimeString('zh-TW',{hour12:false})}</b>${leadLine}<br>`+ETF.filter(c=>p.models[c]).map(c=>`${c}　① ${ztxt(p.models[c].first)}　② ${ztxt(p.models[c].second)}　③ ${ztxt(p.models[c].third)}`).join('<br>')}
