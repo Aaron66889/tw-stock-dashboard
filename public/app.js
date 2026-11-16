@@ -800,9 +800,10 @@ function entryTraceTransitionAudit(rows){
     const recovery=classifyEntryTraceRecovery(prev,cur,li);
     if(result||recovery){
      const event=result||recovery;
+     const eventType=result?'PERMISSION_LOST':
+      recovery.reason==='EXECUTION_PERMISSION_RESTORED'?'PERMISSION_RESTORED':'RECOVERY_UNVERIFIED';
      transitions.push({layer:li+1,day:cur.day,at:cur.at,from:prev.layers[li].status,
-      to:cur.layers[li].status,reason:event.reason,detail:event.detail,
-      eventType:result?'PERMISSION_LOST':'PERMISSION_RESTORED'});
+      to:cur.layers[li].status,reason:event.reason,detail:event.detail,eventType});
     }
    }
   }
@@ -811,6 +812,7 @@ function entryTraceTransitionAudit(rows){
   byETF[code]={observations:data.length,
    confirmedToNonConfirmed:transitions.filter(t=>t.eventType==='PERMISSION_LOST').length,
    restoredPermissions:transitions.filter(t=>t.eventType==='PERMISSION_RESTORED').length,
+   unverifiableRecoveries:transitions.filter(t=>t.eventType==='RECOVERY_UNVERIFIED').length,
    byReason:counts,recentTransitions:transitions.slice(-30)};
  }
  return{mode:'READ_ONLY',method:'observed-consecutive-snapshots-only',
