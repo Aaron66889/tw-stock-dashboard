@@ -2037,9 +2037,9 @@ function entryReplayEvidenceAudit(trades,history,shadowLog){
   const perTrade=rows.map(t=>{
    const day=String(t.entryDate||''),stamp=Date.parse(t.entryAt||'');
    const hist=Array.isArray(h[code])?h[code]:[];
-   const windows=hist.filter(x=>String(x?.from||'').slice(0,10)===day||
-     (Number.isFinite(stamp)&&Date.parse(x?.from||'')<=stamp&&Date.parse(x?.to||'')>=stamp));
-   const observations=logs.filter(x=>x.code===code&&x.day===day&&Number.isFinite(Number(x.price))&&Number(x.price)>0);
+   const windows=hist.filter(x=>x&&(String(x.from||'').slice(0,10)===day||
+     (Number.isFinite(stamp)&&Date.parse(x.from||'')<=stamp&&Date.parse(x.to||'')>=stamp)));
+   const observations=logs.filter(x=>x&&x.code===code&&x.day===day&&x.price!==null&&x.price!==undefined&&Number.isFinite(Number(x.price))&&Number(x.price)>0);
    const usableTime=Number.isFinite(stamp);
    const before=usableTime&&observations.some(x=>Number.isFinite(Date.parse(x.at||''))&&Date.parse(x.at)<=stamp);
    const after=usableTime&&observations.some(x=>Number.isFinite(Date.parse(x.at||''))&&Date.parse(x.at)>=stamp);
