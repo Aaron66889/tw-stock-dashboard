@@ -96,6 +96,12 @@ test('A/B shadow bands are monotone and never bypass stale quote, closed market,
  assert.equal(result.reason,'VALID_RESEARCH_SNAPSHOT');
  assert.deepEqual(Array.from(result.candidates,c=>c.fraction),[0,.25,.5,1]);
  assert.deepEqual(Array.from(result.candidates,c=>c.shadowEligible),[false,false,false,true]);
+ const legacy={...base,confirmedLow:100,executionLow:100.08,px:100.02};
+ const baseline=ctx.deepExecutionShadowCandidates(legacy);
+ assert.equal(baseline.candidates[0].lowerBound,legacy.executionLow);
+ assert.equal(baseline.candidates[0].shadowEligible,false);
+ assert.ok(baseline.candidates.every((c,i,a)=>i===0||c.lowerBound<=a[i-1].lowerBound));
+ // Being below official execution is not enough: a candidate must still have Gate and fresh live sources.
  for(const patch of [{gateOk:false},{quoteFresh:false},{marketOpen:false},{confirmed:false}]){
   const x=ctx.deepExecutionShadowCandidates({...base,...patch});
   assert.ok(x.candidates.every(y=>!y.shadowEligible));
