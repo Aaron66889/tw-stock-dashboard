@@ -297,11 +297,28 @@ function officialExecutionSnapshotReady(code,nowMs=Date.now()){
   q?.lastGoodFallback!==true&&q?.corporateActionReferenceMissing!==true&&
   ageValid(receivedAt)&&ageValid(sourceAt));
 }
+// Explanation-only: never used to grant execution or override officialExecutionSnapshotReady.
+function officialExecutionFreshnessExplanation(code,nowMs=Date.now()){
+ const m=lastBuy,q=lastLive?.quotes?.[code],day=dayKey();
+ const ageValid=v=>{const t=Date.parse(v||'');return Number.isFinite(t)&&t<=nowMs+15000&&nowMs-t<=90000};
+ if(incidentModelDay())return '模型異常日停用正式買入';
+ if(!m||m.modelFreshByCode?.[code]!==true)return '模型資料尚未更新或不符合新鮮度條件';
+ if(!ageValid(m.fetchedAt))return '模型更新時間已逾90秒或時間戳無效';
+ if(!q)return '尚未取得即時報價';
+ if(q.date!==day)return '報價日期不是今日交易日';
+ if(!(Number(q.last)>0))return '即時報價缺少有效成交價';
+ if(q.corporateActionReferenceMissing===true)return '除權息參考價缺漏，避免誤判漲跌';
+ if(q.lastGoodFallback===true)return '目前使用最後有效報價（備援顯示），不可當作即時買入價';
+ if(q.realtime===false)return '目前不是經驗證的即時報價';
+ if(!ageValid(q.serverFetchedAt))return '行情來源時間戳缺失或已逾90秒；須等待供應商最新報價';
+ if(!ageValid(q.fetchTime))return '瀏覽器接收報價時間戳缺失或已逾90秒';
+ return '即時行情或模型狀態尚未符合正式買入要求';
+}
 function officialExecutionExplanation(x){
  if(incidentModelDay())return '禁止模型買入：'+incidentModelNotice();
  if(!x)return'模型資料尚未載入';
  const i=x.activeLayer,L=x.m?.layers?.[i],s=x.activeStatus,rule=LAYER_CONFIRM_RULES[i];
- if(!officialExecutionSnapshotReady(x.r.code))return '禁止模型買入：模型或即時報價逾時／日期不符，須等待最新有效行情重新確認';
+ if(!officialExecutionSnapshotReady(x.r.code))return '禁止模型買入：'+officialExecutionFreshnessExplanation(x.r.code)+'；須等待有效資料恢復';
  if(x.r.hardVeto)return '禁止模型買入：硬Gate｜'+(x.r.hardVetoReason||'未提供原因');
  if(x.r.noBuyToday)return '禁止模型買入：'+(x.r.noBuyReason||'本日風險條件未通過');
  if(s==='CONFIRMED_IN')return '允許記錄正式模型買入：第'+(i+1)+'層確認、價格及Gate均通過';
