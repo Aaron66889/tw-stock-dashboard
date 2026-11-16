@@ -720,8 +720,12 @@ function captureOfficialEntryTrace(code){
    gateBlocked:!!L.gateBlocked,gateReason:L.gateBlockedReason||null}));
   // A new exchange tick alone is not a reason to rewrite localStorage every 5s.
   // Prioritize state/Gate transitions and capture a 3-minute periodic heartbeat.
+  // Mirror the recorded official trade checks; this is a read-only snapshot, not a new gate.
+  const permission=layers.map((L,i)=>freshness===true&&!r.hardVeto&&!r.noBuyToday&&
+   L.confirmed&&!L.gateBlocked&&L.status==='CONFIRMED_IN'&&
+   Number.isFinite(Number(r.score))&&Number(r.score)>=LAYER_CONFIRM_RULES[i].minScore);
   const stateKey=JSON.stringify([today,!!r.hardVeto,!!r.noBuyToday,freshness,
-   layers.map(L=>[L.status,L.confirmed,L.gateBlocked,L.gateReason,L.confirmedAt])]);
+   layers.map((L,i)=>[L.status,L.confirmed,L.gateBlocked,L.gateReason,L.confirmedAt,permission[i]])]);
   const prev=ENTRY_TRACE_LAST_KEYS[code],transition=!prev||prev.day!==today||prev.stateKey!==stateKey;
   if(!transition&&now-prev.savedAt<180000)return false;
   const row={day:today,at:new Date(now).toISOString(),code,observationKey:key,
@@ -730,7 +734,8 @@ function captureOfficialEntryTrace(code){
    modelAt:lastBuy?.fetchedAt||null,px:Number(q.last),
    atr:Number.isFinite(Number(r.history?.atr14))?Number(r.history.atr14):null,
    score:Number.isFinite(Number(r.score))?Number(r.score):null,healthScore:r.health?.score??null,
-   hardVeto:!!r.hardVeto,noBuyToday:!!r.noBuyToday,fresh:freshness,layers};
+   hardVeto:!!r.hardVeto,noBuyToday:!!r.noBuyToday,fresh:freshness,
+   layers:layers.map((L,i)=>({...L,executionAllowed:permission[i]}))};
   const old=loadJSON(ENTRY_TRACE_KEY,[]),safe=Array.isArray(old)?old:[];
   const minDate=new Date(now-7*86400000).toISOString().slice(0,10);
   const next=safe.filter(v=>v&&v.day>=minDate&&v.day<=today).slice(-1199);
@@ -743,7 +748,11 @@ function captureOfficialEntryTrace(code){
 // A missing interval means a possible unobserved transition, not proof of a market signal.
 function classifyEntryTraceExit(previous,current,layerIndex){
  const a=previous?.layers?.[layerIndex],b=current?.layers?.[layerIndex];
- if(!a||!b||a.status!=='CONFIRMED_IN'||b.status==='CONFIRMED_IN')return null;
+ if(!a||!b)return null;
+ // Legacy snapshots without permission flags can classify status changes only.
+ const lostPermission=a.executionAllowed===true&&b.executionAllowed===false;
+ const lostStatus=a.status==='CONFIRMED_IN'&&b.status!=='CONFIRMED_IN';
+ if(!lostPermission&&!lostStatus)return null;
  const dt=Date.parse(current.at||'')-Date.parse(previous.at||'');
  if(previous.day!==current.day||!Number.isFinite(dt)||dt<0||dt>600000)
   return{reason:'OBSERVATION_GAP',detail:'相鄰快照間隔或日期不連續，不能判定退燈原因'};
@@ -751,6 +760,8 @@ function classifyEntryTraceExit(previous,current,layerIndex){
  if(current.hardVeto===true)return{reason:'HARD_GATE',detail:b.gateReason||'硬Gate阻擋'};
  if(current.noBuyToday===true)return{reason:'DAILY_BUY_PAUSE',detail:b.gateReason||'當日暫停買入'};
  if(b.status==='CONFIRMED_BLOCKED')return{reason:'GATE_OR_SCORE_BLOCKED',detail:b.gateReason||'分數或Gate阻擋；資料不足以細分'};
+ if(lostPermission&&b.status==='CONFIRMED_IN')
+  return{reason:'EXECUTION_PERMISSION_LOST',detail:'層級仍為已確認，但正式買入許可已失效；須核對分數及其他執行條件'};
  if(b.status==='CONFIRMED_BELOW'||b.status==='CONFIRMED_ABOVE'){
   const px=current.px,limit=b.status==='CONFIRMED_BELOW'?b.executionLow:b.executionHigh;
   if(!Number.isFinite(px)||px<=0||!Number.isFinite(limit)||limit<=0)
