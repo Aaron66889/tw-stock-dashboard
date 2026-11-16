@@ -493,3 +493,39 @@ test('home-facing execution explanation never grants buying on stale quote, hard
  x.r.hardVeto=false;x.activeStatus='WAIT';
  assert.doesNotMatch(fn.officialExecutionExplanation(x),/允許記錄正式模型買入/);
 });
+
+test('execution permission loss is audited even when layer remains CONFIRMED_IN',()=>{
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';",'function updateState(){',{ETF:['0050']});
+ const earlier={code:'0050',day:'2026-11-16',at:'2026-11-16T02:00:00Z',fresh:true,
+  layers:[{layer:1,status:'CONFIRMED_IN',executionAllowed:true}]};
+ const stale={...earlier,at:'2026-11-16T02:00:30Z',fresh:false,
+  layers:[{layer:1,status:'CONFIRMED_IN',executionAllowed:false}]};
+ assert.equal(ctx.classifyEntryTraceExit(earlier,stale,0).reason,'STALE_QUOTE_OR_MODEL');
+ const blocked={...stale,fresh:true,layers:[{layer:1,status:'CONFIRMED_IN',executionAllowed:false}]};
+ assert.equal(ctx.classifyEntryTraceExit(earlier,blocked,0).reason,'EXECUTION_PERMISSION_LOST');
+ const report=ctx.entryTraceTransitionAudit([earlier,stale]);
+ assert.equal(report.byETF['0050'].confirmedToNonConfirmed,1);
+ assert.equal(report.byETF['0050'].byReason.STALE_QUOTE_OR_MODEL,1);
+});
+test('official trace records layer-specific permission and immediate loss during stale quote',()=>{
+ const a=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const b=source.indexOf('function updateState(){',a);
+ let now=Date.parse('2026-11-16T02:00:00Z'),fresh=true;
+ class FakeDate extends Date{constructor(...args){super(...(args.length?args:[now]))}static now(){return now}}
+ const stored=new Map(),x={r:{score:55,history:{atr14:1},hardVeto:false,noBuyToday:false},
+  m:{layers:[{confirmed:true,gateBlocked:false,confirmedAt:'t',zone:{low:99,high:100}}]},px:99.5};
+ const ctx={ETF:['0050'],lastLive:{quotes:{'0050':{last:99.5}}},lastBuy:{},
+  statusFor:()=>x,dayKey:()=> '2026-11-16',
+  liveObservationKey:()=> 'same-quote',cashSessionIsOpenForNewConfirmation:()=>true,
+  officialExecutionSnapshotReady:()=>fresh,layerView:()=> 'CONFIRMED_IN',
+  LAYER_CONFIRM_RULES:[{minScore:50}],
+  loadJSON:(k,d)=>stored.has(k)?stored.get(k):d,saveJSON:(k,v)=>stored.set(k,v),Date:FakeDate};
+ const capture=vm.runInNewContext(source.slice(a,b)+'\ncaptureOfficialEntryTrace',ctx);
+ assert.equal(capture('0050'),true);
+ now+=5000;fresh=false;
+ assert.equal(capture('0050'),true,'permission loss must record immediately without price change');
+ const logs=stored.get('v124_entry_evidence_research_v1');
+ assert.equal(logs.length,2);
+ assert.equal(logs[0].layers[0].executionAllowed,true);
+ assert.equal(logs[1].layers[0].executionAllowed,false);
+});
