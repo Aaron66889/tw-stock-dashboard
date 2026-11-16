@@ -225,3 +225,36 @@ test('research trace fails closed on storage errors without disrupting official 
  assert.match(source,/if\(r&&!r\.error\)updateOne\(c,r\)/);
  assert.match(source,/captureOfficialEntryTrace\(c\)/);
 });
+
+test('trace samples unchanged quotes every 3 minutes but captures Gate and layer transitions immediately',()=>{
+ const start=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const end=source.indexOf('function updateState(){',start);
+ let tick=Date.parse('2026-11-16T02:02:00Z');
+ class FakeDate extends Date{constructor(...args){super(...(args.length?args:[tick]))}static now(){return tick}}
+ const storage=new Map();
+ const model={r:{history:{atr14:1},score:50,hardVeto:false,noBuyToday:false},
+  m:{layers:[{zone:{low:99,high:100},confirmed:false,gateBlocked:false}]},px:99.9};
+ const ctx={ETF:['0050'],lastLive:{quotes:{'0050':{last:99.9,time:'10:02'}}},
+  lastBuy:{fetchedAt:'2026-11-16T02:02:00Z'},statusFor:()=>model,dayKey:()=> '2026-11-16',
+  liveObservationKey:()=>String(tick),cashSessionIsOpenForNewConfirmation:()=>true,
+  officialExecutionSnapshotReady:()=>true,layerView:L=>L.gateBlocked?'CONFIRMED_BLOCKED':L.confirmed?'CONFIRMED_IN':'WAIT',
+  loadJSON:(k,d)=>storage.get(k)||d,saveJSON:(k,v)=>storage.set(k,v),Date:FakeDate};
+ const fns=vm.runInNewContext(source.slice(start,end)+'\ncaptureOfficialEntryTrace',ctx);
+ assert.equal(fns('0050'),true);
+ tick+=10000;
+ assert.equal(fns('0050'),false);
+ model.m.layers[0].gateBlocked=true;
+ assert.equal(fns('0050'),true);
+ tick+=10000;
+ assert.equal(fns('0050'),false);
+ tick+=180000;
+ assert.equal(fns('0050'),true);
+ const rows=storage.get('v124_entry_evidence_research_v1');
+ assert.equal(rows.length,3);
+ assert.deepEqual(Array.from(rows,x=>x.event),['STATE_CHANGE','STATE_CHANGE','HEARTBEAT']);
+});
+test('trace update runs only for a valid official model and preserves shadow evaluation',()=>{
+ assert.match(source,/if\(r&&!r\.error\)\{updateOne\(c,r\);captureOfficialEntryTrace\(c\)\}/);
+ assert.match(source,/if\(sr&&!sr\.error\)updateShadowOne\(c,sr\)/);
+ assert.doesNotMatch(source,/await captureOfficialEntryTrace/);
+});
