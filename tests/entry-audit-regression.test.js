@@ -331,3 +331,43 @@ test('historical evidence export tolerates null and malformed Shadow rows and HI
  assert.equal(a.byETF['0050'].fullyReplayable,0);
  for(const code of ['0056','00878','00919'])assert.equal(a.byETF[code].reasonableTrades,0);
 });
+
+test('full diagnostics payload serializes with blocked browser storage and preserves model trades',()=>{
+ const traceStart=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const traceEnd=source.indexOf('function updateState(){',traceStart);
+ const payloadStart=source.indexOf('function performanceDiagnosticPayload(){');
+ const payloadEnd=source.indexOf('function downloadTradeDiagnostics(){',payloadStart);
+ assert.ok(traceStart>=0&&traceEnd>traceStart&&payloadStart>traceEnd&&payloadEnd>payloadStart);
+ const trades=[{id:'manual-1',code:'0050',tradeType:'manual',entryDate:'2026-11-16',entryPrice:100,shares:5},
+  {id:'model-1',code:'0050',tradeType:'model',modelFamily:'reasonable',layer:2,
+   entryDate:'2026-11-16',entryPrice:99.5,shares:10,snapshot:{modelStatusText:'CONFIRMED_IN'}}];
+ const original=JSON.stringify(trades);
+ const context={
+  ETF:['0050','0056','00878','00919'],MODEL_TRADES:trades,HIST:{},SHADOW_LOG:[],
+  LAYER_CONFIRM_RULES:[{minScore:50},{minScore:46},{minScore:42}],
+  ETF_MODEL_INCIDENT_DATE:'2026-10-15',CLIENT_BUILD:'test',dayKey:()=> '2026-11-16',
+  incidentModelTrade:()=>false,incidentModelNotice:()=> '',
+  modelFamilyOf:t=>t.modelFamily||(t.tradeType==='manual'?'manual':'reasonable'),
+  modelTradePathMetricsReady:()=>false,tradePathMetric:()=>null,
+  modelNetMetrics:()=>({net:0,ret:0,gross:0,cost:0,currentPrice:100}),
+  modelBenchmarkDelta:()=>null,modelTradeDividendPerShare:()=>0,
+  tradeMaturedHorizon:()=>null,tradeMetricNumber:x=>Number(x),
+  tradeDiagnosticLabel:()=>'',modelTradeDataAudit:()=>({mode:'READ_ONLY'}),
+  deepLayerExecutionAudit:()=>({mode:'READ_ONLY'}),
+  modelTradeFairComparison:()=>({mode:'READ_ONLY'}),
+  modelEntryHealthAudit:()=>({mode:'READ_ONLY'}),
+  entryReplayEvidenceAudit:()=>({mode:'READ_ONLY'}),
+  mean:a=>a.length?a.reduce((n,v)=>n+v,0)/a.length:null,
+  loadJSON:()=>{throw Error('SecurityError: storage disabled')},Date
+ };
+ const code=source.slice(traceStart,traceEnd)+'\n'+source.slice(payloadStart,payloadEnd)+'\nperformanceDiagnosticPayload';
+ const exportFn=vm.runInNewContext(code,context,{timeout:1000});
+ const exported=JSON.parse(JSON.stringify(exportFn()));
+ assert.equal(exported.summary.total,2);
+ assert.equal(exported.summary.manual,1);
+ assert.equal(exported.summary.model,1);
+ assert.equal(exported.summary.liveTraceEvidence.status,'DIAGNOSTIC_UNAVAILABLE');
+ assert.equal(exported.trades.length,2);
+ assert.equal(exported.trades[1].layer,2);
+ assert.equal(JSON.stringify(trades),original,'export must not rewrite trade ledger');
+});
