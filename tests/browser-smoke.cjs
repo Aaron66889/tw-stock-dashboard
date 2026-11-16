@@ -290,6 +290,43 @@ const server=http.createServer((req,res)=>{
   assert.equal(purchaseSafety.acked.dirty,false);
   assert.equal(purchaseSafety.acked.sharesUnchanged,true,'cloud acknowledgement must not add local shares twice');
   assert.equal(purchaseSafety.retry.cloudCalls,2,'acknowledged order must never be resubmitted');
+  // Simulate cloud model-trade fetch timeout and unauthorized response.
+  // The browser must retain both clean and dirty local trades and never
+  // declare synchronization complete without a confirmed server response.
+  const modelSyncFailures=await page.evaluate(async()=>{
+   const local=[
+    {id:'synthetic-clean',code:'0050',shares:4,entryPrice:99,tradeType:'manual'},
+    {id:'synthetic-dirty',code:'00878',shares:8,entryPrice:20,tradeType:'manual',_syncDirty:true}
+   ];
+   MODEL_TRADES=JSON.parse(JSON.stringify(local));
+   MODEL_PENDING_DELETES=['synthetic-tombstone'];
+   MODEL_SYNC.busy=false;MODEL_SYNC.ready=true;
+   MODEL_SYNC.knownUnlocked=true;MODEL_SYNC.status='ready';
+   const snapshot=JSON.stringify({trades:MODEL_TRADES,deletes:MODEL_PENDING_DELETES});
+   modelSyncFetch=async()=>{throw Object.assign(new Error('SYNTHETIC_TIMEOUT'),{status:5033})};
+   await syncModelTrades(false);
+   const timeout={same:JSON.stringify({trades:MODEL_TRADES,deletes:MODEL_PENDING_DELETES})===snapshot,
+    status:MODEL_SYNC.status,ready:MODEL_SYNC.ready,message:MODEL_SYNC.message};
+   MODEL_SYNC.busy=false;
+   modelSyncFetch=async()=>{throw Object.assign(new Error('SYNTHETIC_401'),{status:401})};
+   await syncModelTrades(false);
+   const unauthorized={same:JSON.stringify({trades:MODEL_TRADES,deletes:MODEL_PENDING_DELETES})===snapshot,
+    status:MODEL_SYNC.status,ready:MODEL_SYNC.ready,message:MODEL_SYNC.message};
+   MODEL_SYNC.busy=false;MODEL_SYNC.ready=true;MODEL_SYNC.knownUnlocked=true;
+   modelSyncFetch=async()=>({ok:true,trades:null,deletedIds:null});
+   await syncModelTrades(false);
+   const malformed={same:JSON.stringify({trades:MODEL_TRADES,deletes:MODEL_PENDING_DELETES})===snapshot,
+    status:MODEL_SYNC.status,message:MODEL_SYNC.message};
+   return{timeout,unauthorized,malformed};
+  });
+  assert.equal(modelSyncFailures.timeout.same,true,'timeout preserves local clean and unsynced trade records');
+  assert.equal(modelSyncFailures.timeout.status,'degraded','timeout cannot claim ready status');
+  assert.match(modelSyncFailures.timeout.message,/SYNTHETIC_TIMEOUT/);
+  assert.equal(modelSyncFailures.unauthorized.same,true,'401 preserves local trade IDs and tombstones');
+  assert.equal(modelSyncFailures.unauthorized.status,'locked');
+  assert.equal(modelSyncFailures.unauthorized.ready,false);
+  assert.equal(modelSyncFailures.malformed.same,true,'malformed cloud payload cannot erase trades');
+  assert.equal(modelSyncFailures.malformed.status,'degraded');
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
