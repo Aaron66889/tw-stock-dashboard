@@ -1908,7 +1908,7 @@ function modelEntryHealthAudit(trades){
    const a=rows.filter(t=>{
     const n=Number(t?.snapshot?.health?.score);
     const v=t?.snapshot?.health?.score===null||t?.snapshot?.health?.score===undefined||!Number.isFinite(n)?null:n;
-    return label==='UNKNOWN'?v===null:label==='LOW_0_40'?v>=0&&v<=40:label==='MID_41_60'?v>40&&v<=60:v>60&&v<=100;
+    return label==='UNKNOWN'?v===null:v!==null&&(label==='LOW_0_40'?v>=0&&v<=40:label==='MID_41_60'?v>40&&v<=60:v>60&&v<=100);
    });
    const values=h=>a.map(t=>tradeMaturedHorizon(t,h)?.totalReturnPct).filter(Number.isFinite);
    const h5=values(5),h20=values(20);
