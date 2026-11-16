@@ -353,7 +353,7 @@ test('full diagnostics payload serializes with blocked browser storage and prese
   modelBenchmarkDelta:()=>null,modelTradeDividendPerShare:()=>0,
   tradeMaturedHorizon:()=>null,tradeMetricNumber:x=>Number(x),
   tradeDiagnosticLabel:()=>'',modelTradeDataAudit:()=>({mode:'READ_ONLY'}),
-  deepLayerExecutionAudit:()=>({mode:'READ_ONLY'}),
+  deepLayerBoundaryAudit:()=>({mode:'READ_ONLY'}),
   modelTradeFairComparison:()=>({mode:'READ_ONLY'}),
   modelEntryHealthAudit:()=>({mode:'READ_ONLY'}),
   entryReplayEvidenceAudit:()=>({mode:'READ_ONLY'}),
