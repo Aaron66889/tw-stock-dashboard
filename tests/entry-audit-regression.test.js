@@ -260,7 +260,7 @@ test('trace update runs only for a valid official model and preserves shadow eva
 });
 
 test('confirmed-to-paused transitions preserve separate price, freshness and Gate explanations',()=>{
- const ctx=loadFunction('function classifyEntryTraceExit(', 'function updateState(){',{ETF:['0050']});
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';", 'function updateState(){',{ETF:['0050']});
  const at='2026-11-16T02:00:00Z',next='2026-11-16T02:00:30Z';
  const base={code:'0050',day:'2026-11-16',at,px:99.5,hardVeto:false,noBuyToday:false,fresh:true,
   layers:[{status:'CONFIRMED_IN',confirmed:true,gateBlocked:false,executionLow:99,executionHigh:101}]};
@@ -277,7 +277,7 @@ test('confirmed-to-paused transitions preserve separate price, freshness and Gat
  assert.equal(ctx.classifyEntryTraceExit(base,v({}, {status:'CONFIRMED_IN'}),0),null);
 });
 test('entry trace transition report isolates ETFs and counts only observed confirmed exits',()=>{
- const ctx=loadFunction('function classifyEntryTraceExit(', 'function updateState(){',{ETF:['0050','0056']});
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';", 'function updateState(){',{ETF:['0050','0056']});
  const row=(code,at,status)=>({code,day:'2026-11-16',at,px:status==='CONFIRMED_BELOW'?98.8:99.5,fresh:true,hardVeto:false,noBuyToday:false,
   layers:[{status,executionLow:99,executionHigh:101},{status:'WAIT'},{status:'WAIT'}]});
  const data=[row('0050','2026-11-16T02:00:00Z','CONFIRMED_IN'),
@@ -292,7 +292,7 @@ test('entry trace transition report isolates ETFs and counts only observed confi
 });
 
 test('corrupted browser research entries are ignored without stopping diagnostic export',()=>{
- const ctx=loadFunction('function classifyEntryTraceExit(', 'function updateState(){',{
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';", 'function updateState(){',{
   ETF:['0050','0056'],loadJSON:()=>[
    null,{code:'0050',day:'2026-11-16',at:'not-a-time',layers:[]},
    {code:'0050',day:'2026-11-16',at:'2026-11-16T02:00:00Z',layers:{}},
@@ -308,7 +308,7 @@ test('corrupted browser research entries are ignored without stopping diagnostic
  assert.equal(report.byETF['0056'].observations,0);
 });
 test('unexpected local browser storage exception degrades to diagnostic unavailable only',()=>{
- const ctx=loadFunction('function classifyEntryTraceExit(', 'function updateState(){',{
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';", 'function updateState(){',{
   ETF:['0050'],loadJSON:()=>{throw Error('storage blocked')}
  });
  const report=ctx.entryTraceEvidenceSummary();
