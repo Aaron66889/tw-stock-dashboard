@@ -774,6 +774,17 @@ function classifyEntryTraceExit(previous,current,layerIndex){
  }
  return{reason:'STATE_RESET_OR_UNCLASSIFIED',detail:'已確認狀態消失或無法歸類；須查原始時序'};
 }
+// Recovery is a separate observation, not an inferred market buy signal.
+function classifyEntryTraceRecovery(previous,current,layerIndex){
+ const a=previous?.layers?.[layerIndex],b=current?.layers?.[layerIndex];
+ if(!a||!b||a.executionAllowed!==false||b.executionAllowed!==true)return null;
+ const dt=Date.parse(current.at||'')-Date.parse(previous.at||'');
+ if(previous.day!==current.day||!Number.isFinite(dt)||dt<0||dt>600000)
+  return{reason:'RECOVERY_OBSERVATION_GAP',detail:'跨日或超過10分鐘的資料缺口，不能確認許可何時恢復'};
+ if(current.fresh!==true||current.hardVeto===true||current.noBuyToday===true||b.status!=='CONFIRMED_IN')
+  return{reason:'RECOVERY_EVIDENCE_MISMATCH',detail:'執行許可欄位與行情或Gate狀態不一致'};
+ return{reason:'EXECUTION_PERMISSION_RESTORED',detail:'同一交易日已觀察到正式買入許可恢復；不代表過去曾有可成交訂單'};
+}
 function entryTraceTransitionAudit(rows){
  const input=Array.isArray(rows)?rows:[],byETF={};
  for(const code of ETF){
@@ -786,14 +797,21 @@ function entryTraceTransitionAudit(rows){
    const prev=data[i-1],cur=data[i];
    for(let li=0;li<3;li++){
     const result=classifyEntryTraceExit(prev,cur,li);
-    if(result)transitions.push({layer:li+1,day:cur.day,at:cur.at,from:prev.layers[li].status,
-      to:cur.layers[li].status,reason:result.reason,detail:result.detail});
+    const recovery=classifyEntryTraceRecovery(prev,cur,li);
+    if(result||recovery){
+     const event=result||recovery;
+     transitions.push({layer:li+1,day:cur.day,at:cur.at,from:prev.layers[li].status,
+      to:cur.layers[li].status,reason:event.reason,detail:event.detail,
+      eventType:result?'PERMISSION_LOST':'PERMISSION_RESTORED'});
+    }
    }
   }
   const counts={};
   for(const t of transitions)counts[t.reason]=(counts[t.reason]||0)+1;
-  byETF[code]={observations:data.length,confirmedToNonConfirmed:transitions.length,byReason:counts,
-   recentTransitions:transitions.slice(-30)};
+  byETF[code]={observations:data.length,
+   confirmedToNonConfirmed:transitions.filter(t=>t.eventType==='PERMISSION_LOST').length,
+   restoredPermissions:transitions.filter(t=>t.eventType==='PERMISSION_RESTORED').length,
+   byReason:counts,recentTransitions:transitions.slice(-30)};
  }
  return{mode:'READ_ONLY',method:'observed-consecutive-snapshots-only',
   note:'僅統計本瀏覽器保留的相鄰狀態變化，並非全部退燈或歷史回測；逾10分鐘缺口不得推定精確原因。',byETF};
