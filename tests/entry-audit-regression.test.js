@@ -549,3 +549,33 @@ test('watchdog records permission transitions despite a stalled buy-model refres
  assert.match(source,/setInterval\(observeOfficialEntryPermissionTimeout,15000\)/);
  assert.doesNotMatch(source.slice(start,end),/updateOne\(|saveJSON\(|fetch\(|loadBuy\(/);
 });
+
+test('research trace reports same-session permission recovery distinct from loss',()=>{
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';",'function updateState(){',{ETF:['0050']});
+ const row=(at,allowed,fresh)=>({code:'0050',day:'2026-11-16',at,fresh,hardVeto:false,noBuyToday:false,
+  layers:[{layer:1,status:'CONFIRMED_IN',executionAllowed:allowed}]});
+ const ready=row('2026-11-16T02:00:00Z',true,true);
+ const stale=row('2026-11-16T02:00:30Z',false,false);
+ const restored=row('2026-11-16T02:01:00Z',true,true);
+ const report=ctx.entryTraceTransitionAudit([ready,stale,restored]);
+ assert.equal(report.byETF['0050'].confirmedToNonConfirmed,1);
+ assert.equal(report.byETF['0050'].restoredPermissions,1);
+ assert.equal(report.byETF['0050'].byReason.STALE_QUOTE_OR_MODEL,1);
+ assert.equal(report.byETF['0050'].byReason.EXECUTION_PERMISSION_RESTORED,1);
+ const events=report.byETF['0050'].recentTransitions;
+ assert.equal(events[0].eventType,'PERMISSION_LOST');
+ assert.equal(events[1].eventType,'PERMISSION_RESTORED');
+});
+test('do not infer recovery when tab was suspended, date crossed or source evidence contradicts permission',()=>{
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';",'function updateState(){',{ETF:['0050']});
+ const row=(at,allowed,day='2026-11-16')=>({code:'0050',day,at,
+  fresh:true,hardVeto:false,noBuyToday:false,layers:[{status:'CONFIRMED_IN',executionAllowed:allowed}]});
+ const blocked=row('2026-11-16T02:00:00Z',false);
+ const tooLate=row('2026-11-16T02:20:00Z',true);
+ assert.equal(ctx.classifyEntryTraceRecovery(blocked,tooLate,0).reason,'RECOVERY_OBSERVATION_GAP');
+ const nextDay=row('2026-11-17T02:01:00Z',true,'2026-11-17');
+ assert.equal(ctx.classifyEntryTraceRecovery(blocked,nextDay,0).reason,'RECOVERY_OBSERVATION_GAP');
+ const contradictory={...row('2026-11-16T02:01:00Z',true),fresh:false};
+ assert.equal(ctx.classifyEntryTraceRecovery(blocked,contradictory,0).reason,'RECOVERY_EVIDENCE_MISMATCH');
+ assert.equal(ctx.classifyEntryTraceRecovery(blocked,row('2026-11-16T02:01:00Z',false),0),null);
+});
