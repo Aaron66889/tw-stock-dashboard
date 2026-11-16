@@ -31,6 +31,7 @@ test('dividend API combines four code-specific future distribution events instea
   twseDividendEvents:async code=>({ok:true,events:sampleEvents[code],source:'test'}),
   deadline:async p=>await p,
   twseDistributionAnnouncementMap:async()=>({ok:true,byCode:{},errors:[],source:'test'}),
+  twseOfficialUpcomingCashMap:async()=>({ok:true,byCode:{},errors:[],source:'test'}),
   latestDividendSnapshot:s=>s.at(-1),
   latestDividendSnapshotBefore:s=>s.at(-1),
   saveCloudDividendState:async state=>state,
