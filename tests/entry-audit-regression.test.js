@@ -171,3 +171,18 @@ test('replay audit safely handles absent or broken logs',()=>{
  assert.equal(a.byETF['0050'].fullyReplayable,0);
  assert.ok(a.byETF['0050'].trades[0].missing.includes('MISSING_ENTRY_TIMESTAMP'));
 });
+
+test('new official purchase captures layer-specific prices, confirmation and upstream timing for later audit',()=>{
+ const start=source.indexOf('function saveModelTrade(){');
+ const end=source.indexOf('let LAST_MODEL_TRADE_MARK_RENDER_AT=',start);
+ assert.ok(start>=0&&end>start);
+ const body=source.slice(start,end);
+ for(const field of [
+  'selectedLayerStatus','executionLow:','executionHigh:','observedPrice:',
+  'quoteObservationKey:','modelFetchedAt:','quoteReceivedAt:',
+  'quoteServerFetchedAt:','confirmedAt:','gateBlockedReason:'
+ ])assert.ok(body.includes(field),'missing trade audit field '+field);
+ assert.match(body,/if\(!manual&&!trendMode\)\{const x=statusFor\(code\)/);
+ assert.match(body,/x\.statuses\[layer-1\]!=='CONFIRMED_IN'/);
+ assert.match(body,/executionAudit:manual\?null:/);
+});
