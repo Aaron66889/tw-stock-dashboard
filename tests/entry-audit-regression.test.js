@@ -371,3 +371,36 @@ test('full diagnostics payload serializes with blocked browser storage and prese
  assert.equal(exported.trades[1].layer,2);
  assert.equal(JSON.stringify(trades),original,'export must not rewrite trade ledger');
 });
+
+test('four-ETF refresh survives one research trace failure and retains shadow refresh and trade state',()=>{
+ const begin=source.indexOf('function updateState(){');
+ const end=source.indexOf('function statusFor(c){',begin);
+ assert.ok(begin>=0&&end>begin);
+ const trades=[{id:'one',code:'0050',shares:10}],original=JSON.stringify(trades);
+ const ran={official:[],shadow:[],trace:[],saved:[]};
+ const models=Object.fromEntries(['0050','0056','00878','00919'].map(code=>[code,{code}]));
+ const ctx={
+  ETF:Object.keys(models),lastBuy:{models,shadowModels:models},MODEL_TRADES:trades,
+  resetDaily:()=>{},resetShadowDaily:()=>{},handlePreopen:()=>{},
+  updateOne:(code)=>ran.official.push(code),
+  updateShadowOne:(code)=>ran.shadow.push(code),
+  captureOfficialEntryTrace:code=>{ran.trace.push(code);if(code==='0056')return false;return true},
+  saveJSON:(key)=>ran.saved.push(key),
+  STATE:{},SHADOW_STATE:{},SHADOW_LOG:[]
+ };
+ vm.runInNewContext(source.slice(begin,end)+'\nupdateState()',ctx,{timeout:1000});
+ for(const field of ['official','shadow','trace'])assert.deepEqual(ran[field],Object.keys(models));
+ assert.deepEqual(ran.saved,['v124_state','v124_shadow_state','v124_shadow_replay']);
+ assert.equal(JSON.stringify(trades),original);
+});
+test('model update is not skipped when local research trace returns false',()=>{
+ const start=source.indexOf('function updateState(){');
+ const end=source.indexOf('function statusFor(c){',start);
+ const done=[];
+ const ctx={ETF:['0050'],lastBuy:{models:{'0050':{code:'0050'}},shadowModels:{}},
+  resetDaily:()=>{},resetShadowDaily:()=>{},handlePreopen:()=>{},
+  updateOne:()=>done.push('model'),captureOfficialEntryTrace:()=>{done.push('trace');return false},
+  updateShadowOne:()=>{},saveJSON:()=>{},STATE:{},SHADOW_STATE:{},SHADOW_LOG:[]};
+ vm.runInNewContext(source.slice(start,end)+'\nupdateState()',ctx,{timeout:1000});
+ assert.deepEqual(done,['model','trace']);
+});
