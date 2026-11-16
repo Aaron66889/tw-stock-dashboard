@@ -315,3 +315,19 @@ test('unexpected local browser storage exception degrades to diagnostic unavaila
  assert.equal(report.mode,'READ_ONLY');
  assert.equal(report.status,'DIAGNOSTIC_UNAVAILABLE');
 });
+
+test('historical evidence export tolerates null and malformed Shadow rows and HIST entries',()=>{
+ const ctx=loadFunction('function entryReplayEvidenceAudit(', 'function performanceDiagnosticPayload(',{
+  ETF:['0050','0056','00878','00919'],modelFamilyOf:t=>t.modelFamily,incidentModelTrade:()=>false
+ });
+ const trades=[{id:'a',code:'0050',entryDate:'2026-11-16',entryAt:'2026-11-16T02:01:00Z',modelFamily:'reasonable',layer:1}];
+ const old={ '0050':[null,{from:'2026-11-16T02:00:00Z',to:'2026-11-16T02:02:00Z'}] };
+ const shadow=[null,{},'invalid',{code:'0050',day:'2026-11-16',at:'2026-11-16T02:00:00Z',price:null},
+  {code:'0050',day:'2026-11-16',at:'2026-11-16T02:00:00Z',price:100}];
+ const a=ctx.entryReplayEvidenceAudit(trades,old,shadow);
+ assert.equal(a.byETF['0050'].reasonableTrades,1);
+ assert.equal(a.byETF['0050'].trades[0].historyWindows,1);
+ assert.equal(a.byETF['0050'].trades[0].retainedShadowObservations,1);
+ assert.equal(a.byETF['0050'].fullyReplayable,0);
+ for(const code of ['0056','00878','00919'])assert.equal(a.byETF[code].reasonableTrades,0);
+});
