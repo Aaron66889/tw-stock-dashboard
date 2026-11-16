@@ -1851,6 +1851,23 @@ function modelTradeFairComparison(trades){
 // Read-only boundary diagnostics. This is NOT a model permission or trade signal.
 // Compares current immutable execution band with the wider area already used for deep-layer confirmation.
 // A shadow candidate is never sent to saveModelTrade, order execution, or position accounting.
+// Research-only alternatives: fractions of the ORIGINAL deep-layer confirmation tolerance.
+// 0% = current official immutable lower bound. No setting changes any formal status/Gate.
+function deepExecutionShadowCandidates({confirmedLow,executionLow,atr,rule,px,confirmed,gateOk,quoteFresh,marketOpen}){
+ const empty={candidates:[],reason:'INSUFFICIENT_DATA'};
+ if(!confirmed||!rule||!Number.isFinite(confirmedLow)||!Number.isFinite(executionLow)||
+    !Number.isFinite(atr)||atr<=0||!Number.isFinite(px)||px<=0)return empty;
+ const tolerance=Math.max(Number(rule.confirmDownAbs||0),atr*Number(rule.confirmDownAtr||0));
+ const enabled=gateOk===true&&quoteFresh===true&&marketOpen===true;
+ return{reason:enabled?'VALID_RESEARCH_SNAPSHOT':'SAFETY_GATE_OR_SESSION_BLOCKED',
+  candidates:[0,.25,.5,1].map(fraction=>{
+   // Only loosen downward; never tighten or shift the official fixed envelope.
+   const lowerBound=Math.min(executionLow,confirmedLow-tolerance*fraction);
+   const inCandidateBand=px>=lowerBound&&px<executionLow;
+   return{fraction,lowerBound,inCandidateBand,shadowEligible:enabled&&inCandidateBand};
+  })};
+}
+
 function deepLayerBoundaryAudit(){
  const byETF={};
  for(const code of ETF){
@@ -1865,11 +1882,14 @@ function deepLayerBoundaryAudit(){
    const status=x?.statuses?.[i]||'UNKNOWN';
    const quoteFresh=!!x&&officialExecutionSnapshotReady(code);
    const gateOk=!!x&&!x.r.hardVeto&&!x.r.noBuyToday&&quoteFresh&&Number(x.r.score)>=rule.minScore&&!L?.gateBlocked;
+   const marketOpen=cashSessionIsOpenForNewConfirmation();
+   const shadowAB=deepExecutionShadowCandidates({confirmedLow,executionLow,atr:liveAtr,rule,px,
+    confirmed:!!L?.confirmed,gateOk,quoteFresh,marketOpen});
    layers.push({layer:i+1,status,confirmed:!!L?.confirmed,executionLow,confirmedZoneLow:Number.isFinite(confirmedLow)?confirmedLow:null,
     price:px,shadowConfirmationLow:candidateLow,
     belowExecutionBand:!!L?.confirmed&&executionLow!==null&&px!==null&&px<executionLow,
     shadowWithinExpandedLow:!!L?.confirmed&&candidateLow!==null&&px!==null&&px>=candidateLow&&executionLow!==null&&px<executionLow,
-    gateOk,quoteFresh,shadowWouldPermit:gateOk&&!!L?.confirmed&&candidateLow!==null&&Number.isFinite(px)&&px>=candidateLow&&executionLow!==null&&px<executionLow,
+    gateOk,quoteFresh,marketOpen,shadowAB,shadowWouldPermit:shadowAB.candidates.some(c=>c.fraction===1&&c.shadowEligible),
     note:'候選區間只供研究，不代表正式買入許可；須盤中逐筆回放後才可評估修改'});
   }
   byETF[code]=layers;
