@@ -9,6 +9,8 @@ on:
 jobs:
   front-end-browser:
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.1-noble
     timeout-minutes: 15
     permissions:
       contents: read
@@ -19,7 +21,5 @@ jobs:
           node-version: '22'
       - name: Install isolated browser test runner
         run: npm install --no-save --ignore-scripts --no-audit --no-fund playwright@1.56.1
-      - name: Install headless Chromium
-        run: npx playwright install --with-deps chromium
       - name: Browser boot and offline API resilience
         run: node tests/browser-smoke.cjs
