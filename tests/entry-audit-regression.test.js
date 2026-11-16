@@ -58,12 +58,12 @@ test('deep-layer confirmation envelope can extend below immutable execution lowe
 });
 
 test('L2/L3 audit is read-only and reports confirmed-below gap only with valid Gate',()=>{
- const ctx=loadFunction('function deepLayerBoundaryAudit(', 'function performanceDiagnosticPayload(',{
+ const ctx=loadFunction('function deepExecutionShadowCandidates(', 'function performanceDiagnosticPayload(',{
   ETF:['0050'],LAYER_CONFIRM_RULES:[null,{minScore:46,confirmDownAbs:.03,confirmDownAtr:.15},{minScore:42,confirmDownAbs:.03,confirmDownAtr:.18}],
   statusFor:()=>({r:{history:{atr14:1},score:60,hardVeto:false,noBuyToday:false},px:99.9,
    statuses:['WAIT','CONFIRMED_BELOW','WAIT'],
    m:{layers:[{}, {confirmed:true,confirmedZone:{low:100},executionLow:100,gateBlocked:false},{confirmed:false,confirmedZone:null,executionLow:null}]}}),
-  officialExecutionSnapshotReady:()=>true,Date
+  officialExecutionSnapshotReady:()=>true,cashSessionIsOpenForNewConfirmation:()=>true,Date
  });
  const out=ctx.deepLayerBoundaryAudit();
  assert.equal(out.mode,'READ_ONLY');
@@ -80,9 +80,28 @@ test('L2/L3 audit cannot imply permission without fresh Gate or a real price',()
    statuses:['WAIT','CONFIRMED_BELOW','WAIT'],
    m:{layers:[{}, {confirmed:true,confirmedZone:{low:100},executionLow:100,gateBlocked:false},{confirmed:false,confirmedZone:null,executionLow:null}]}};
  const ctx=loadFunction('function deepLayerBoundaryAudit(', 'function performanceDiagnosticPayload(',{
-   ...context,statusFor:()=>x,officialExecutionSnapshotReady:()=>false
+   ...context,statusFor:()=>x,officialExecutionSnapshotReady:()=>false,cashSessionIsOpenForNewConfirmation:()=>true
  });
  assert.equal(ctx.deepLayerBoundaryAudit().byETF['0050'][0].shadowWouldPermit,false);
  x.px=null;
  assert.equal(ctx.deepLayerBoundaryAudit().byETF['0050'][0].shadowWouldPermit,false);
+});
+
+test('A/B shadow bands are monotone and never bypass stale quote, closed market, or Gate',()=>{
+ const ctx=loadFunction('function deepExecutionShadowCandidates(', 'function deepLayerBoundaryAudit(',{});
+ const base={confirmedLow:100,executionLow:100,atr:1,
+  rule:{confirmDownAbs:.03,confirmDownAtr:.15},px:99.9,confirmed:true,
+  gateOk:true,quoteFresh:true,marketOpen:true};
+ const result=ctx.deepExecutionShadowCandidates(base);
+ assert.equal(result.reason,'VALID_RESEARCH_SNAPSHOT');
+ assert.deepEqual(Array.from(result.candidates,c=>c.fraction),[0,.25,.5,1]);
+ assert.deepEqual(Array.from(result.candidates,c=>c.shadowEligible),[false,false,false,true]);
+ for(const patch of [{gateOk:false},{quoteFresh:false},{marketOpen:false},{confirmed:false}]){
+  const x=ctx.deepExecutionShadowCandidates({...base,...patch});
+  assert.ok(x.candidates.every(y=>!y.shadowEligible));
+ }
+ for(const patch of [{px:0},{px:null},{atr:0},{confirmedLow:null}]){
+  const x=ctx.deepExecutionShadowCandidates({...base,...patch});
+  assert.equal(x.reason,'INSUFFICIENT_DATA');
+ }
 });
