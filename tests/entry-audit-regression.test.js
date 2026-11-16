@@ -478,7 +478,10 @@ test('home-facing execution explanation never grants buying on stale quote, hard
   incidentModelDay:()=>false,incidentModelNotice:()=>'',Date,
   LAYER_CONFIRM_RULES:[{minScore:50}],fmt:n=>String(n),deepestTouchedLayer:()=>-1,
   cashSessionIsOpenForNewConfirmation:()=>true};
- const fn=vm.runInNewContext(source.slice(start,end)+'\n({officialExecutionSnapshotReady,officialExecutionExplanation})',context);
+ const gateStart=source.indexOf('function officialExecutionSnapshotReady(');
+ class FrozenDate extends Date{static now(){return now}}
+ context.Date=FrozenDate;
+ const fn=vm.runInNewContext(source.slice(gateStart,start)+source.slice(start,end)+'\n({officialExecutionSnapshotReady,officialExecutionExplanation})',context);
  const x={activeLayer:0,activeStatus:'CONFIRMED_IN',px:99,r:{code:'0050',hardVeto:false,noBuyToday:false},
   m:{layers:[{executionLow:98,executionHigh:101}]}};
  assert.match(fn.officialExecutionExplanation(x),/允許記錄正式模型買入/);
