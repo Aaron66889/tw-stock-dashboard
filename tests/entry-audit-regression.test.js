@@ -404,3 +404,30 @@ test('model update is not skipped when local research trace returns false',()=>{
  vm.runInNewContext(source.slice(start,end)+'\nupdateState()',ctx,{timeout:1000});
  assert.deepEqual(done,['model','trace']);
 });
+
+test('Yahoo outage and backup quotes without provenance cannot become executable model entries',()=>{
+ const start=source.indexOf('function officialExecutionSnapshotReady(');
+ const end=source.indexOf('function officialExecutionExplanation(',start);
+ assert.ok(start>=0&&end>start);
+ const now=Date.parse('2026-11-16T03:30:30Z');
+ const fmt=x=>new Date(x).toISOString();
+ const valid={last:99.35,date:'2026-11-16',realtime:true,
+  fetchTime:fmt(now-10000),serverFetchedAt:fmt(now-12000)};
+ const context={lastBuy:{fetchedAt:fmt(now-10000),modelFreshByCode:{'0050':true}},
+  lastLive:{quotes:{'0050':valid}},incidentModelDay:()=>false,
+  dayKey:()=> '2026-11-16',Date};
+ const fn=vm.runInNewContext(source.slice(start,end)+'\nofficialExecutionSnapshotReady',context,{timeout:1000});
+ const ready=()=>fn('0050',now);
+ assert.equal(ready(),true,'same-day Yahoo quote with source timestamp is valid');
+ context.lastLive.quotes['0050']={...valid,serverFetchedAt:null};
+ assert.equal(ready(),false,'backup source without verified provider timing fails closed');
+ context.lastLive.quotes['0050']={...valid,lastGoodFallback:true};
+ assert.equal(ready(),false,'last-good fallback is a display value, not a model execution quote');
+ context.lastLive.quotes['0050']={...valid,serverFetchedAt:fmt(now-95000)};
+ assert.equal(ready(),false,'old upstream timestamp cannot be refreshed by HTTP receipt');
+ context.lastLive.quotes['0050']={...valid};
+ context.lastBuy.modelFreshByCode['0050']=false;
+ assert.equal(ready(),false,'stale model cannot pair with a fresh quote');
+ context.lastBuy.modelFreshByCode['0050']=true;
+ assert.equal(ready(),true,'fresh source plus fresh model restores eligibility');
+});
