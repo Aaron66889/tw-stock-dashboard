@@ -734,8 +734,16 @@ function classifyEntryTraceExit(previous,current,layerIndex){
  if(current.hardVeto===true)return{reason:'HARD_GATE',detail:b.gateReason||'硬Gate阻擋'};
  if(current.noBuyToday===true)return{reason:'DAILY_BUY_PAUSE',detail:b.gateReason||'當日暫停買入'};
  if(b.status==='CONFIRMED_BLOCKED')return{reason:'GATE_OR_SCORE_BLOCKED',detail:b.gateReason||'分數或Gate阻擋；資料不足以細分'};
- if(b.status==='CONFIRMED_BELOW')return{reason:'PRICE_BELOW_FROZEN_BAND',detail:'現價低於固定成交下限'};
- if(b.status==='CONFIRMED_ABOVE')return{reason:'PRICE_ABOVE_FROZEN_BAND',detail:'現價高於固定成交上限'};
+ if(b.status==='CONFIRMED_BELOW'||b.status==='CONFIRMED_ABOVE'){
+  const px=current.px,limit=b.status==='CONFIRMED_BELOW'?b.executionLow:b.executionHigh;
+  if(!Number.isFinite(px)||px<=0||!Number.isFinite(limit)||limit<=0)
+   return{reason:'MISSING_PRICE_BOUND_EVIDENCE',detail:'缺少有效現價或凍結執行上下限，不能證實價格越界'};
+  if(b.status==='CONFIRMED_BELOW'&&px<limit)
+   return{reason:'PRICE_BELOW_FROZEN_BAND',detail:'現價低於固定成交下限'};
+  if(b.status==='CONFIRMED_ABOVE'&&px>limit)
+   return{reason:'PRICE_ABOVE_FROZEN_BAND',detail:'現價高於固定成交上限'};
+  return{reason:'PRICE_STATUS_MISMATCH',detail:'標記狀態與實際價格不一致，不能將退燈歸因價格越界'};
+ }
  return{reason:'STATE_RESET_OR_UNCLASSIFIED',detail:'已確認狀態消失或無法歸類；須查原始時序'};
 }
 function entryTraceTransitionAudit(rows){
