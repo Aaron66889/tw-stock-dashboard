@@ -529,3 +529,23 @@ test('official trace records layer-specific permission and immediate loss during
  assert.equal(logs[0].layers[0].executionAllowed,true);
  assert.equal(logs[1].layers[0].executionAllowed,false);
 });
+
+test('watchdog records permission transitions despite a stalled buy-model refresh without changing model state',()=>{
+ const start=source.indexOf('function observeOfficialEntryPermissionTimeout(){');
+ const end=source.indexOf('function updateState(){',start);
+ assert.ok(start>=0&&end>start);
+ const models={'0050':{code:'0050'},'0056':{code:'0056'},'00878':{code:'00878'},'00919':{code:'00919'}};
+ const before=JSON.stringify(models),observed=[];
+ const context={ETF:Object.keys(models),lastBuy:{models},document:{visibilityState:'visible'},
+  cashSessionIsOpenForNewConfirmation:()=>true,captureOfficialEntryTrace:c=>observed.push(c)};
+ const f=vm.runInNewContext(source.slice(start,end)+'\nobserveOfficialEntryPermissionTimeout',context,{timeout:1000});
+ f();
+ assert.deepEqual(observed,Object.keys(models));
+ assert.equal(JSON.stringify(models),before);
+ context.document.visibilityState='hidden';
+ f();assert.equal(observed.length,4);
+ context.document.visibilityState='visible';context.cashSessionIsOpenForNewConfirmation=()=>false;
+ f();assert.equal(observed.length,4);
+ assert.match(source,/setInterval\(observeOfficialEntryPermissionTimeout,15000\)/);
+ assert.doesNotMatch(source.slice(start,end),/updateOne\(|saveJSON\(|fetch\(|loadBuy\(/);
+});
