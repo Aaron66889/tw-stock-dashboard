@@ -731,7 +731,22 @@ function captureOfficialEntryTrace(code){
    Number.isFinite(Number(r.score))&&Number(r.score)>=LAYER_CONFIRM_RULES[i].minScore);
   const stateKey=JSON.stringify([today,!!r.hardVeto,!!r.noBuyToday,freshness,
    layers.map((L,i)=>[L.status,L.confirmed,L.gateBlocked,L.gateReason,L.confirmedAt,permission[i]])]);
-  const prev=ENTRY_TRACE_LAST_KEYS[code],transition=!prev||prev.day!==today||prev.stateKey!==stateKey;
+  const old=loadJSON(ENTRY_TRACE_KEY,[]),safe=Array.isArray(old)?old:[];
+  // Recover the previous state after reload so a page refresh alone cannot
+  // manufacture a signal transition. Legacy rows have no stateKey; keep them.
+  let prev=ENTRY_TRACE_LAST_KEYS[code];
+  if(!prev){
+   for(let i=safe.length-1;i>=0;i--){
+    const last=safe[i];
+    if(last?.code!==code)continue;
+    const savedAt=Date.parse(last.at||'');
+    if(last.day===today&&typeof last.stateKey==='string'&&
+      Number.isFinite(savedAt)&&savedAt<=now&&savedAt>=now-86400000)
+     prev={day:last.day,stateKey:last.stateKey,savedAt};
+    break;
+   }
+  }
+  const transition=!prev||prev.day!==today||prev.stateKey!==stateKey;
   if(!transition&&now-prev.savedAt<180000)return false;
   const row={day:today,at:new Date(now).toISOString(),code,observationKey:key,
    event:transition?'STATE_CHANGE':'HEARTBEAT',
@@ -739,9 +754,8 @@ function captureOfficialEntryTrace(code){
    modelAt:lastBuy?.fetchedAt||null,px:validQuote?Number(q.last):null,
    atr:Number.isFinite(Number(r.history?.atr14))?Number(r.history.atr14):null,
    score:Number.isFinite(Number(r.score))?Number(r.score):null,healthScore:r.health?.score??null,
-   hardVeto:!!r.hardVeto,noBuyToday:!!r.noBuyToday,fresh:freshness,
+   hardVeto:!!r.hardVeto,noBuyToday:!!r.noBuyToday,fresh:freshness,stateKey,
    layers:layers.map((L,i)=>({...L,executionAllowed:permission[i]}))};
-  const old=loadJSON(ENTRY_TRACE_KEY,[]),safe=Array.isArray(old)?old:[];
   const minDate=new Date(now-7*86400000).toISOString().slice(0,10);
   const next=safe.filter(v=>v&&v.day>=minDate&&v.day<=today).slice(-1199);
   next.push(row);
