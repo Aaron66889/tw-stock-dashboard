@@ -661,3 +661,33 @@ test('browser reload does not create false entry transition; real permission cha
  assert.equal(tab3('0050'),true,'after heartbeat interval, observation may be written');
  assert.equal(store.get('v124_entry_evidence_research_v1').at(-1).event,'HEARTBEAT');
 });
+
+test('unchanged 15-second watchdog ticks do not repeatedly parse full local trace history',()=>{
+ const start=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const end=source.indexOf('function classifyEntryTraceExit(',start);
+ let now=Date.parse('2026-11-16T02:00:00Z'),loads=0,saves=0;
+ class Clock extends Date{constructor(...args){super(...(args.length?args:[now]))}static now(){return now}}
+ const stored=new Map(),x={r:{score:60,history:{atr14:1},hardVeto:false,noBuyToday:false},
+  m:{layers:[{confirmed:true,gateBlocked:false,confirmedAt:'initial'}]},px:100};
+ const ctx={ETF:['0050'],lastLive:{quotes:{'0050':{last:100}}},lastBuy:{},
+  statusFor:()=>x,dayKey:()=> '2026-11-16',cashSessionIsOpenForNewConfirmation:()=>true,
+  liveObservationKey:()=> 'stable-tick',officialExecutionSnapshotReady:()=>true,
+  layerView:()=> 'CONFIRMED_IN',LAYER_CONFIRM_RULES:[{minScore:50}],
+  loadJSON:(k,d)=>{loads++;return stored.has(k)?stored.get(k):d},
+  saveJSON:(k,v)=>{saves++;stored.set(k,v)},Date:Clock};
+ const fn=vm.runInNewContext(source.slice(start,end)+'\ncaptureOfficialEntryTrace',ctx,{timeout:1000});
+ assert.equal(fn('0050'),true);
+ assert.equal(loads,1);
+ assert.equal(saves,1);
+ for(let tick=0;tick<10;tick++){now+=15000;assert.equal(fn('0050'),false)}
+ assert.equal(loads,1,'unchanged 15-second polls must never parse stored history');
+ assert.equal(saves,1);
+ now+=45000;
+ assert.equal(fn('0050'),true,'3-minute heartbeat should be persisted');
+ assert.equal(loads,2);
+ assert.equal(saves,2);
+ x.r.hardVeto=true;now+=5000;
+ assert.equal(fn('0050'),true,'real Gate transition must still persist instantly');
+ assert.equal(loads,3);
+ assert.equal(saves,3);
+});
