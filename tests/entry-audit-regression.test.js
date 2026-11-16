@@ -47,7 +47,7 @@ test('new-model audit evidence is layer-specific, preserving old warning as unve
  assert.ok(!a.potentialSnapshotInconsistencies.some(x=>x.id==='new-good'));
 });
 test('deep-layer confirmation envelope can extend below immutable execution lower bound',()=>{
- const ctx=loadFunction('function executionUpAllowance(', 'function layerView(',{});
+ const ctx=loadFunction('function executionUpAllowance(', 'function flashLivePrices(',{});
  const atr=1,z={low:100,high:101};
  // L2 permits confirmation down to low - max(0.03, 0.15 ATR).
  const l2ConfirmationLow=z.low-Math.max(.03,.15*atr);
