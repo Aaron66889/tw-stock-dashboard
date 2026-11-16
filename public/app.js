@@ -722,6 +722,44 @@ function captureOfficialEntryTrace(code){
   try{saveJSON(ENTRY_TRACE_KEY,next);ENTRY_TRACE_LAST_KEYS[code]={day:today,stateKey,savedAt:now};return true}catch(_){return false}
  }catch(_){return false}
 }
+// Read-only evidence attribution: classify *observed* transitions, never claim an order was possible.
+// A missing interval means a possible unobserved transition, not proof of a market signal.
+function classifyEntryTraceExit(previous,current,layerIndex){
+ const a=previous?.layers?.[layerIndex],b=current?.layers?.[layerIndex];
+ if(!a||!b||a.status!=='CONFIRMED_IN'||b.status==='CONFIRMED_IN')return null;
+ const dt=Date.parse(current.at||'')-Date.parse(previous.at||'');
+ if(previous.day!==current.day||!Number.isFinite(dt)||dt<0||dt>600000)
+  return{reason:'OBSERVATION_GAP',detail:'相鄰快照間隔或日期不連續，不能判定退燈原因'};
+ if(current.fresh===false)return{reason:'STALE_QUOTE_OR_MODEL',detail:'當時模型或行情新鮮度未通過'};
+ if(current.hardVeto===true)return{reason:'HARD_GATE',detail:b.gateReason||'硬Gate阻擋'};
+ if(current.noBuyToday===true)return{reason:'DAILY_BUY_PAUSE',detail:b.gateReason||'當日暫停買入'};
+ if(b.status==='CONFIRMED_BLOCKED')return{reason:'GATE_OR_SCORE_BLOCKED',detail:b.gateReason||'分數或Gate阻擋；資料不足以細分'};
+ if(b.status==='CONFIRMED_BELOW')return{reason:'PRICE_BELOW_FROZEN_BAND',detail:'現價低於固定成交下限'};
+ if(b.status==='CONFIRMED_ABOVE')return{reason:'PRICE_ABOVE_FROZEN_BAND',detail:'現價高於固定成交上限'};
+ return{reason:'STATE_RESET_OR_UNCLASSIFIED',detail:'已確認狀態消失或無法歸類；須查原始時序'};
+}
+function entryTraceTransitionAudit(rows){
+ const input=Array.isArray(rows)?rows:[],byETF={};
+ for(const code of ETF){
+  const data=input.filter(x=>x?.code===code&&x.day&&x.at).slice().sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
+  const transitions=[];
+  for(let i=1;i<data.length;i++){
+   const prev=data[i-1],cur=data[i];
+   for(let li=0;li<3;li++){
+    const result=classifyEntryTraceExit(prev,cur,li);
+    if(result)transitions.push({layer:li+1,day:cur.day,at:cur.at,from:prev.layers[li].status,
+      to:cur.layers[li].status,reason:result.reason,detail:result.detail});
+   }
+  }
+  const counts={};
+  for(const t of transitions)counts[t.reason]=(counts[t.reason]||0)+1;
+  byETF[code]={observations:data.length,confirmedToNonConfirmed:transitions.length,byReason:counts,
+   recentTransitions:transitions.slice(-30)};
+ }
+ return{mode:'READ_ONLY',method:'observed-consecutive-snapshots-only',
+  note:'僅統計本瀏覽器保留的相鄰狀態變化，並非全部退燈或歷史回測；逾10分鐘缺口不得推定精確原因。',byETF};
+}
+
 function entryTraceEvidenceSummary(){
  const rows=loadJSON(ENTRY_TRACE_KEY,[]),a=Array.isArray(rows)?rows:[],byETF={};
  for(const code of ETF){
@@ -730,7 +768,7 @@ function entryTraceEvidenceSummary(){
    staleObservations:b.filter(x=>x.fresh===false).length,
    confirmedBelow:b.reduce((n,x)=>n+(x.layers||[]).filter(y=>y.layer>=2&&y.status==='CONFIRMED_BELOW').length,0)};
  }
- return{mode:'READ_ONLY',status:'PARTIAL_LIVE_EVIDENCE_ONLY',retention:'7 calendar days / max 1200 total observations',
+ return{mode:'READ_ONLY',status:'PARTIAL_LIVE_EVIDENCE_ONLY',transitions:entryTraceTransitionAudit(a),retention:'7 calendar days / max 1200 total observations',
   note:'僅儲存在本瀏覽器。重複行情不記錄；沒有逐筆買賣成交或完整原始價格資料，不能視為全歷史績效回測。',byETF};
 }
 function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error){updateOne(c,r);captureOfficialEntryTrace(c)}const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
