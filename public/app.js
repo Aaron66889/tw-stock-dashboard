@@ -1856,19 +1856,19 @@ function deepLayerBoundaryAudit(){
  for(const code of ETF){
   const x=statusFor(code),layers=[];
   for(const i of [1,2]){
-   const L=x?.m?.layers?.[i],rule=LAYER_CONFIRM_RULES[i],atr=Number(x?.r?.history?.atr14),px=Number(x?.px);
-   const confirmedLow=Number(L?.confirmedZone?.low);
+   const L=x?.m?.layers?.[i],rule=LAYER_CONFIRM_RULES[i],atr=Number(x?.r?.history?.atr14),px=x&&Number.isFinite(Number(x.px))?Number(x.px):null;
+   const confirmedLow=L?.confirmedZone&&Number.isFinite(Number(L.confirmedZone.low))?Number(L.confirmedZone.low):null;
    const liveAtr=Number.isFinite(atr)&&atr>0?atr:null;
    const confirmAllowance=liveAtr===null?null:Math.max(Number(rule.confirmDownAbs||0),liveAtr*Number(rule.confirmDownAtr||0));
    const executionLow=Number.isFinite(L?.executionLow)?L.executionLow:null;
-   const candidateLow=Number.isFinite(confirmedLow)&&confirmAllowance!==null?confirmedLow-confirmAllowance:null;
+   const candidateLow=confirmedLow!==null&&confirmAllowance!==null?confirmedLow-confirmAllowance:null;
    const status=x?.statuses?.[i]||'UNKNOWN';
    const quoteFresh=!!x&&officialExecutionSnapshotReady(code);
    const gateOk=!!x&&!x.r.hardVeto&&!x.r.noBuyToday&&quoteFresh&&Number(x.r.score)>=rule.minScore&&!L?.gateBlocked;
    layers.push({layer:i+1,status,confirmed:!!L?.confirmed,executionLow,confirmedZoneLow:Number.isFinite(confirmedLow)?confirmedLow:null,
-    price:Number.isFinite(px)?px:null,shadowConfirmationLow:candidateLow,
-    belowExecutionBand:!!L?.confirmed&&executionLow!==null&&Number.isFinite(px)&&px<executionLow,
-    shadowWithinExpandedLow:!!L?.confirmed&&candidateLow!==null&&Number.isFinite(px)&&px>=candidateLow&&executionLow!==null&&px<executionLow,
+    price:px,shadowConfirmationLow:candidateLow,
+    belowExecutionBand:!!L?.confirmed&&executionLow!==null&&px!==null&&px<executionLow,
+    shadowWithinExpandedLow:!!L?.confirmed&&candidateLow!==null&&px!==null&&px>=candidateLow&&executionLow!==null&&px<executionLow,
     gateOk,quoteFresh,shadowWouldPermit:gateOk&&!!L?.confirmed&&candidateLow!==null&&Number.isFinite(px)&&px>=candidateLow&&executionLow!==null&&px<executionLow,
     note:'候選區間只供研究，不代表正式買入許可；須盤中逐筆回放後才可評估修改'});
   }
