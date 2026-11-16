@@ -222,7 +222,7 @@ test('research trace fails closed on storage errors without disrupting official 
   layerView:()=> 'WAIT',loadJSON:()=>[],saveJSON:()=>{throw new Error('quota')},Date};
  const fn=vm.runInNewContext(source.slice(start,end)+'\ncaptureOfficialEntryTrace',ctx);
  assert.equal(fn('0050'),false);
- assert.match(source,/if\(r&&!r\.error\)updateOne\(c,r\)/);
+ assert.match(source,/if\(r&&!r\.error\)\{updateOne\(c,r\);captureOfficialEntryTrace\(c\)\}/);
  assert.match(source,/captureOfficialEntryTrace\(c\)/);
 });
 
