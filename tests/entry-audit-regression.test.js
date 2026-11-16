@@ -56,3 +56,33 @@ test('deep-layer confirmation envelope can extend below immutable execution lowe
  assert.equal(ctx.layerView(layer,99.9),'CONFIRMED_BELOW');
  assert.equal(ctx.layerView(layer,100.1),'CONFIRMED_IN');
 });
+
+test('L2/L3 audit is read-only and reports confirmed-below gap only with valid Gate',()=>{
+ const ctx=loadFunction('function deepLayerBoundaryAudit(', 'function performanceDiagnosticPayload(',{
+  ETF:['0050'],LAYER_CONFIRM_RULES:[null,{minScore:46,confirmDownAbs:.03,confirmDownAtr:.15},{minScore:42,confirmDownAbs:.03,confirmDownAtr:.18}],
+  statusFor:()=>({r:{history:{atr14:1},score:60,hardVeto:false,noBuyToday:false},px:99.9,
+   statuses:['WAIT','CONFIRMED_BELOW','WAIT'],
+   m:{layers:[{}, {confirmed:true,confirmedZone:{low:100},executionLow:100,gateBlocked:false},{confirmed:false,confirmedZone:null,executionLow:null}]}}),
+  officialExecutionSnapshotReady:()=>true,Date
+ });
+ const out=ctx.deepLayerBoundaryAudit();
+ assert.equal(out.mode,'READ_ONLY');
+ const [l2,l3]=out.byETF['0050'];
+ assert.equal(l2.belowExecutionBand,true);
+ assert.equal(l2.shadowWouldPermit,true);
+ assert.equal(l2.shadowConfirmationLow,99.85);
+ assert.equal(l3.shadowWouldPermit,false);
+ assert.equal(l3.shadowConfirmationLow,null);
+});
+test('L2/L3 audit cannot imply permission without fresh Gate or a real price',()=>{
+ const context={ETF:['0050'],LAYER_CONFIRM_RULES:[null,{minScore:46,confirmDownAbs:.03,confirmDownAtr:.15},{minScore:42,confirmDownAbs:.03,confirmDownAtr:.18}],Date};
+ const x={r:{history:{atr14:1},score:50,hardVeto:false,noBuyToday:false},px:99.9,
+   statuses:['WAIT','CONFIRMED_BELOW','WAIT'],
+   m:{layers:[{}, {confirmed:true,confirmedZone:{low:100},executionLow:100,gateBlocked:false},{confirmed:false,confirmedZone:null,executionLow:null}]}};
+ const ctx=loadFunction('function deepLayerBoundaryAudit(', 'function performanceDiagnosticPayload(',{
+   ...context,statusFor:()=>x,officialExecutionSnapshotReady:()=>false
+ });
+ assert.equal(ctx.deepLayerBoundaryAudit().byETF['0050'][0].shadowWouldPermit,false);
+ x.px=null;
+ assert.equal(ctx.deepLayerBoundaryAudit().byETF['0050'][0].shadowWouldPermit,false);
+});
