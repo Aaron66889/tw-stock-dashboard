@@ -136,3 +136,38 @@ test('health-cohort research uses same ETF, legitimate mature horizons, and no l
  assert.equal(b.HIGH_61_100.h5.n,0);
  assert.equal(b.UNKNOWN.trades,1);
 });
+
+test('historical replay evidence never claims verified trading permissions from compressed local data',()=>{
+ const ctx=loadFunction('function entryReplayEvidenceAudit(', 'function performanceDiagnosticPayload(',{
+  ETF:['0050'],modelFamilyOf:t=>t.modelFamily,incidentModelTrade:()=>false
+ });
+ const trades=[
+  {id:'a',code:'0050',entryDate:'2026-10-13',entryAt:'2026-10-13T02:00:00Z',layer:1,modelFamily:'reasonable'},
+  {id:'b',code:'0050',entryDate:'2026-09-11',entryAt:'2026-09-11T02:00:00Z',layer:2,modelFamily:'reasonable'},
+  {id:'manual',code:'0050',entryDate:'2026-10-13',entryAt:'2026-10-13T02:00:00Z',modelFamily:'manual'}
+ ];
+ const history={'0050':[{from:'2026-10-13T01:55:00Z',to:'2026-10-13T02:05:00Z',count:30}]};
+ const log=[
+  {code:'0050',day:'2026-10-13',at:'2026-10-13T01:59:00Z',price:100},
+  {code:'0050',day:'2026-10-13',at:'2026-10-13T02:01:00Z',price:99}
+ ];
+ const a=ctx.entryReplayEvidenceAudit(trades,history,log);
+ assert.equal(a.status,'INSUFFICIENT_HISTORICAL_EVIDENCE');
+ const etf=a.byETF['0050'];
+ assert.equal(etf.reasonableTrades,2);
+ assert.equal(etf.fullyReplayable,0);
+ assert.equal(etf.withQuoteBracket,1);
+ assert.equal(etf.trades[0].bracketedByObservedQuotes,true);
+ assert.equal(etf.trades[0].canVerifyOriginalExecution,false);
+ assert.ok(etf.trades[0].missing.includes('NO_HISTORICAL_OFFICIAL_GATE_REPLAY_INPUTS'));
+ assert.ok(etf.trades[1].missing.includes('NO_RAW_INTRADAY_OBSERVATIONS'));
+ assert.ok(etf.trades[1].missing.includes('NO_LOCAL_HISTORY_WINDOW'));
+});
+test('replay audit safely handles absent or broken logs',()=>{
+ const ctx=loadFunction('function entryReplayEvidenceAudit(', 'function performanceDiagnosticPayload(',{
+  ETF:['0050'],modelFamilyOf:t=>t.modelFamily,incidentModelTrade:()=>false
+ });
+ const a=ctx.entryReplayEvidenceAudit([{id:'a',code:'0050',entryDate:'2026-10-13',layer:1,modelFamily:'reasonable'}],null,null);
+ assert.equal(a.byETF['0050'].fullyReplayable,0);
+ assert.ok(a.byETF['0050'].trades[0].missing.includes('MISSING_ENTRY_TIMESTAMP'));
+});
