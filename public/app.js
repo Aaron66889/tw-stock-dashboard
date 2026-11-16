@@ -819,6 +819,12 @@ function entryTraceEvidenceSummary(){
    note:'本機研究紀錄無法讀取；已隔離錯誤，不影響正式交易與持股資料。'};
  }
 }
+// Read-only watchdog for the case where an upstream refresh stalls: record loss of
+// execution permission even without a successful loadBuy() call. Never alter STATE.
+function observeOfficialEntryPermissionTimeout(){
+ if(document.visibilityState==='hidden'||!cashSessionIsOpenForNewConfirmation()||!lastBuy?.models)return;
+ for(const code of ETF)if(lastBuy.models[code]&&!lastBuy.models[code].error)captureOfficialEntryTrace(code);
+}
 function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error){updateOne(c,r);captureOfficialEntryTrace(c)}const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
 function statusFor(c){const r=lastBuy?.models?.[c],m=STATE.models?.[c];if(!r||r.error||!m)return null;const px=Number(lastLive?.quotes?.[c]?.last??r.price),statuses=m.layers.map(L=>layerView(L,px));let activeLayer=statuses.lastIndexOf('CONFIRMED_IN');if(activeLayer<0){activeLayer=0;for(let i=statuses.length-1;i>=0;i--){if(statuses[i]!=='WAIT'&&statuses[i]!=='INVALID'){activeLayer=i;break}}}const activeStatus=statuses[activeLayer]||statuses[0];return{r,m,px,statuses,activeLayer,activeStatus,rank:rank(activeStatus)}}
 
@@ -2182,4 +2188,5 @@ loadDividendAuto=apiSingleFlight(loadDividendAuto);
 loadPublicDividendAnnouncements=apiSingleFlight(loadPublicDividendAnnouncements);
 loadTrendBuy=apiSingleFlight(loadTrendBuy);
 loadCommentary=apiSingleFlight(loadCommentary);
+setInterval(observeOfficialEntryPermissionTimeout,15000);
 setInterval(setMode,30000);boot();
