@@ -248,6 +248,48 @@ const server=http.createServer((req,res)=>{
   assert.equal(cloudSafety.pending.cloudCalled,false,'pending transactions block cloud holdings downloads');
   assert.match(cloudSafety.offline.message,/SYNTHETIC_CLOUD_OFFLINE/);
   assert.match(cloudSafety.malformed.message,/格式不完整/);
+  // Test the actual pending-purchase commit queue against synthetic server
+  // acknowledgements; never touch live Supabase or cloud transaction endpoints.
+  const purchaseSafety=await page.evaluate(async()=>{
+   const op={id:'synthetic-order-1',code:'0050',shares:10,entryPrice:99,entryAt:'2026-11-16T02:00:00Z'};
+   H=[{t:'0050',n:'synthetic',s:133,c:80}]; // already locally incremented
+   const localBefore=JSON.stringify(H);
+   HOLDINGS_PENDING_TRADES=[{...op}];
+   MODEL_TRADES=[{...op,_syncDirty:true,tradeType:'manual'}];
+   MODEL_SYNC.ready=true;
+   MODEL_SYNC.knownUnlocked=true;
+   HOLDINGS_OP_BUSY=false;
+   HOLDINGS_PUSH_BUSY=false;
+   API_TRAFFIC.cooldownUntil=0;
+   let calls=0;
+   modelSyncFetch=async url=>{
+    if(url!=='/api/model-trades/commit-purchase')throw Error('UNEXPECTED_PURCHASE_ENDPOINT');
+    calls++;
+    return {ok:true,tradePersisted:true,applied:false,tradeId:op.id};
+   };
+   await commitPendingPurchasesFirst();
+   const partial={queued:HOLDINGS_PENDING_TRADES.length,dirty:MODEL_TRADES[0]._syncDirty,
+    sharesUnchanged:JSON.stringify(H)===localBefore,cloudCalls:calls};
+   modelSyncFetch=async url=>{
+    if(url!=='/api/model-trades/commit-purchase')throw Error('UNEXPECTED_PURCHASE_ENDPOINT');
+    calls++;
+    return {ok:true,tradePersisted:true,applied:true,tradeId:op.id};
+   };
+   await commitPendingPurchasesFirst();
+   const acked={queued:HOLDINGS_PENDING_TRADES.length,dirty:MODEL_TRADES[0]._syncDirty,
+    sharesUnchanged:JSON.stringify(H)===localBefore,cloudCalls:calls};
+   await commitPendingPurchasesFirst();
+   const retry={queued:HOLDINGS_PENDING_TRADES.length,cloudCalls:calls};
+   MODEL_SYNC.ready=false;
+   return {partial,acked,retry};
+  });
+  assert.equal(purchaseSafety.partial.queued,1,'partial cloud acknowledgement must retain trade ID');
+  assert.equal(purchaseSafety.partial.dirty,true);
+  assert.equal(purchaseSafety.partial.sharesUnchanged,true);
+  assert.equal(purchaseSafety.acked.queued,0,'complete acknowledgement removes confirmed queued trade');
+  assert.equal(purchaseSafety.acked.dirty,false);
+  assert.equal(purchaseSafety.acked.sharesUnchanged,true,'cloud acknowledgement must not add local shares twice');
+  assert.equal(purchaseSafety.retry.cloudCalls,2,'acknowledged order must never be resubmitted');
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
