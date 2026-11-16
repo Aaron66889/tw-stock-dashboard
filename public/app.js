@@ -749,7 +749,10 @@ function classifyEntryTraceExit(previous,current,layerIndex){
 function entryTraceTransitionAudit(rows){
  const input=Array.isArray(rows)?rows:[],byETF={};
  for(const code of ETF){
-  const data=input.filter(x=>x?.code===code&&x.day&&x.at).slice().sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
+  // Ignore malformed legacy/localStorage entries rather than taking down diagnostics export.
+  const data=input.filter(x=>x&&x.code===code&&typeof x.day==='string'&&
+   typeof x.at==='string'&&Number.isFinite(Date.parse(x.at))&&Array.isArray(x.layers)).slice()
+   .sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
   const transitions=[];
   for(let i=1;i<data.length;i++){
    const prev=data[i-1],cur=data[i];
@@ -769,15 +772,24 @@ function entryTraceTransitionAudit(rows){
 }
 
 function entryTraceEvidenceSummary(){
- const rows=loadJSON(ENTRY_TRACE_KEY,[]),a=Array.isArray(rows)?rows:[],byETF={};
- for(const code of ETF){
-  const b=a.filter(x=>x&&x.code===code);
-  byETF[code]={observations:b.length,days:[...new Set(b.map(x=>x.day))].sort(),
-   staleObservations:b.filter(x=>x.fresh===false).length,
-   confirmedBelow:b.reduce((n,x)=>n+(x.layers||[]).filter(y=>y.layer>=2&&y.status==='CONFIRMED_BELOW').length,0)};
+ // Diagnostic data is optional and untrusted; never abort a holdings/performance export.
+ try{
+  const rows=loadJSON(ENTRY_TRACE_KEY,[]),a=Array.isArray(rows)?rows:[],
+   valid=a.filter(x=>x&&typeof x.code==='string'&&typeof x.day==='string'&&
+    typeof x.at==='string'&&Number.isFinite(Date.parse(x.at))&&Array.isArray(x.layers)),byETF={};
+  for(const code of ETF){
+   const b=valid.filter(x=>x.code===code);
+   byETF[code]={observations:b.length,days:[...new Set(b.map(x=>x.day))].sort(),
+    staleObservations:b.filter(x=>x.fresh===false).length,
+    confirmedBelow:b.reduce((n,x)=>n+x.layers.filter(y=>y&&y.layer>=2&&y.status==='CONFIRMED_BELOW').length,0)};
+  }
+  return{mode:'READ_ONLY',status:'PARTIAL_LIVE_EVIDENCE_ONLY',invalidRecords:a.length-valid.length,
+   transitions:entryTraceTransitionAudit(valid),retention:'7 calendar days / max 1200 total observations',
+   note:'僅儲存在本瀏覽器。格式損壞的紀錄已略過；缺少完整逐筆行情與原始Gate，因此不能視為歷史回測。',byETF};
+ }catch(_){
+  return{mode:'READ_ONLY',status:'DIAGNOSTIC_UNAVAILABLE',invalidRecords:null,byETF:{},
+   note:'本機研究紀錄無法讀取；已隔離錯誤，不影響正式交易與持股資料。'};
  }
- return{mode:'READ_ONLY',status:'PARTIAL_LIVE_EVIDENCE_ONLY',transitions:entryTraceTransitionAudit(a),retention:'7 calendar days / max 1200 total observations',
-  note:'僅儲存在本瀏覽器。重複行情不記錄；沒有逐筆買賣成交或完整原始價格資料，不能視為全歷史績效回測。',byETF};
 }
 function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error){updateOne(c,r);captureOfficialEntryTrace(c)}const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
 function statusFor(c){const r=lastBuy?.models?.[c],m=STATE.models?.[c];if(!r||r.error||!m)return null;const px=Number(lastLive?.quotes?.[c]?.last??r.price),statuses=m.layers.map(L=>layerView(L,px));let activeLayer=statuses.lastIndexOf('CONFIRMED_IN');if(activeLayer<0){activeLayer=0;for(let i=statuses.length-1;i>=0;i--){if(statuses[i]!=='WAIT'&&statuses[i]!=='INVALID'){activeLayer=i;break}}}const activeStatus=statuses[activeLayer]||statuses[0];return{r,m,px,statuses,activeLayer,activeStatus,rank:rank(activeStatus)}}
