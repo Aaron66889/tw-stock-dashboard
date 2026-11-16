@@ -294,6 +294,8 @@ const server=http.createServer((req,res)=>{
   // The browser must retain both clean and dirty local trades and never
   // declare synchronization complete without a confirmed server response.
   const modelSyncFailures=await page.evaluate(async()=>{
+   // Drain any boot-time single-flight sync before replacing its response stub.
+   await syncModelTrades(false);
    const local=[
     {id:'synthetic-clean',code:'0050',shares:4,entryPrice:99,tradeType:'manual'},
     {id:'synthetic-dirty',code:'00878',shares:8,entryPrice:20,tradeType:'manual',_syncDirty:true}
@@ -319,6 +321,7 @@ const server=http.createServer((req,res)=>{
     status:MODEL_SYNC.status,message:MODEL_SYNC.message};
    return{timeout,unauthorized,malformed};
   });
+  console.log('SYNTHETIC_MODEL_SYNC_SCENARIOS',JSON.stringify(modelSyncFailures));
   assert.equal(modelSyncFailures.timeout.same,true,'timeout preserves local clean and unsynced trade records');
   assert.equal(modelSyncFailures.timeout.status,'degraded','timeout cannot claim ready status');
   assert.match(modelSyncFailures.timeout.message,/SYNTHETIC_TIMEOUT/);
