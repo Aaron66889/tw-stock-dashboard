@@ -1862,7 +1862,7 @@ function deepExecutionShadowCandidates({confirmedLow,executionLow,atr,rule,px,co
  return{reason:enabled?'VALID_RESEARCH_SNAPSHOT':'SAFETY_GATE_OR_SESSION_BLOCKED',
   candidates:[0,.25,.5,1].map(fraction=>{
    // Only loosen downward; never tighten or shift the official fixed envelope.
-   const lowerBound=Math.min(executionLow,confirmedLow-tolerance*fraction);
+   const lowerBound=fraction===0?executionLow:Math.min(executionLow,confirmedLow-tolerance*fraction);
    const inCandidateBand=px>=lowerBound&&px<executionLow;
    return{fraction,lowerBound,inCandidateBand,shadowEligible:enabled&&inCandidateBand};
   })};
