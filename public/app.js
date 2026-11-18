@@ -777,7 +777,7 @@ function captureOfficialEntryTrace(code){
    ENTRY_TRACE_PANEL_CACHE=null;
    // Notifications are observational, never a source of permission or a trade.
    // Only true -> false -> true *observed* transitions may re-notify.
-   if(previous&&row.event==='STATE_CHANGE'&&typeof window.SignalAlerts?.observeExecutionTransition==='function'){
+   if(previous&&row.event==='STATE_CHANGE'&&typeof window!=='undefined'&&typeof window.SignalAlerts?.observeExecutionTransition==='function'){
     const elapsed=Date.parse(row.at)-Date.parse(previous.at);
     if(elapsed>=0&&elapsed<=600000){
      for(let i=0;i<3;i++){
@@ -815,8 +815,12 @@ function classifyEntryTraceExit(previous,current,layerIndex){
  if(current.hardVeto===true)return{reason:'HARD_GATE',detail:b.gateReason||'硬Gate阻擋'};
  if(current.noBuyToday===true)return{reason:'DAILY_BUY_PAUSE',detail:b.gateReason||'當日暫停買入'};
  if(b.status==='CONFIRMED_BLOCKED')return{reason:'GATE_OR_SCORE_BLOCKED',detail:b.gateReason||'分數或Gate阻擋；資料不足以細分'};
- if(lostPermission&&b.status==='CONFIRMED_IN')
+ if(lostPermission&&b.status==='CONFIRMED_IN'){
+  const rule=LAYER_CONFIRM_RULES[layerIndex];
+  if(Number.isFinite(current.score)&&rule&&current.score<rule.minScore)
+   return{reason:'SCORE_BELOW_MINIMUM',detail:'模型分數 '+current.score+' 未達第'+(layerIndex+1)+'層最低 '+rule.minScore+' 分'};
   return{reason:'EXECUTION_PERMISSION_LOST',detail:'層級仍為已確認，但正式買入許可已失效；須核對分數及其他執行條件'};
+ }
  if(b.status==='CONFIRMED_BELOW'||b.status==='CONFIRMED_ABOVE'){
   const px=current.px,limit=b.status==='CONFIRMED_BELOW'?b.executionLow:b.executionHigh;
   if(!Number.isFinite(px)||px<=0||!Number.isFinite(limit)||limit<=0)
@@ -913,6 +917,7 @@ function entryTraceLastExitPanel(code){
    lost.reason==='DAILY_BUY_PAUSE'?'當日暫停買入':
    lost.reason==='GATE_OR_SCORE_BLOCKED'?'Gate 或分數阻擋':
    lost.reason==='EXECUTION_PERMISSION_LOST'?'買入許可失效（需核對分數）':
+   lost.reason==='SCORE_BELOW_MINIMUM'?'模型分數低於該層門檻':
    lost.reason==='PRICE_BELOW_FROZEN_BAND'?'跌破首次確認執行下限':
    lost.reason==='PRICE_ABOVE_FROZEN_BAND'?'超過首次確認執行上限':
    lost.reason==='MISSING_PRICE_BOUND_EVIDENCE'?'缺少報價或執行區證據':
