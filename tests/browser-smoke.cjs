@@ -119,7 +119,9 @@ const server=http.createServer((req,res)=>{
     [...document.querySelectorAll(sel)].find(n=>n.querySelector('.ticker')?.textContent?.startsWith('0050')));
    const read=cards.map(card=>({disabled:card?.querySelector('button[onclick*="openModelTrade"]')?.disabled,
     text:card?.innerText||''}));
-   const allowed=officialLayerExecutionEligible(statusFor('0050'),0);
+   const x=statusFor('0050');
+   const allowed=officialExecutionSnapshotReady('0050')&&!x.r.hardVeto&&!x.r.noBuyToday&&
+    x.statuses[0]==='CONFIRMED_IN'&&Number(x.r.score)>=LAYER_CONFIRM_RULES[0].minScore;
    let alertText='';
    const oldAlert=window.alert;
    window.alert=msg=>{alertText=String(msg)};
