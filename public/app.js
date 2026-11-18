@@ -816,7 +816,7 @@ function classifyEntryTraceExit(previous,current,layerIndex){
  if(current.noBuyToday===true)return{reason:'DAILY_BUY_PAUSE',detail:b.gateReason||'當日暫停買入'};
  if(b.status==='CONFIRMED_BLOCKED')return{reason:'GATE_OR_SCORE_BLOCKED',detail:b.gateReason||'分數或Gate阻擋；資料不足以細分'};
  if(lostPermission&&b.status==='CONFIRMED_IN'){
-  const rule=LAYER_CONFIRM_RULES[layerIndex];
+  const rule=typeof LAYER_CONFIRM_RULES!=='undefined'?LAYER_CONFIRM_RULES[layerIndex]:null;
   if(Number.isFinite(current.score)&&rule&&current.score<rule.minScore)
    return{reason:'SCORE_BELOW_MINIMUM',detail:'模型分數 '+current.score+' 未達第'+(layerIndex+1)+'層最低 '+rule.minScore+' 分'};
   return{reason:'EXECUTION_PERMISSION_LOST',detail:'層級仍為已確認，但正式買入許可已失效；須核對分數及其他執行條件'};
@@ -933,7 +933,7 @@ function entryTraceLastExitPanel(code){
 function observeOfficialEntryPermissionTimeout(){
  // An opted-in alert session must still detect a timeout when the tab is hidden
  // and normal model polling has stalled; browsers may throttle the interval.
- if((document.visibilityState==='hidden'&&!window.SignalAlerts?.monitoring?.())||
+ if((document.visibilityState==='hidden'&&!(typeof window!=='undefined'&&window.SignalAlerts?.monitoring?.()))||
     !cashSessionIsOpenForNewConfirmation()||!lastBuy?.models)return;
  let changed=false;
  for(const code of ETF)if(lastBuy.models[code]&&!lastBuy.models[code].error)
