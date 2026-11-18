@@ -1722,11 +1722,26 @@ async function syncModelTrades(force=false){
   }
   if(!Array.isArray(d.trades)||!Array.isArray(d.deletedIds))throw Error('雲端交易格式不完整，本機紀錄已保留');
   const pendingDeletes=new Set(MODEL_PENDING_DELETES),cloudDeleted=new Set(d.deletedIds);
-  const merged=new Map(d.trades.filter(t=>!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id)).map(t=>[t.id,{...t,_syncDirty:false}]));
-  for(const t of MODEL_TRADES)if(t._syncDirty&&!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id))merged.set(t.id,t);
+  const merged=new Map(d.trades.filter(t=>t?.id&&!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id)).map(t=>[t.id,{...t,_syncDirty:false}]));
+  let unconfirmedCloudRows=0;
+  for(const t of MODEL_TRADES){
+   if(!t?.id||pendingDeletes.has(t.id)||cloudDeleted.has(t.id))continue;
+   // An import may return success while the subsequent GET reads an older
+   // cloud snapshot. Never erase locally acknowledged but unobserved trades.
+   if(!merged.has(t.id)){
+    if(!t._syncDirty)markModelTradeDirty(t);
+    merged.set(t.id,t);
+    unconfirmedCloudRows++;
+   }else if(t._syncDirty)merged.set(t.id,t);
+  }
   MODEL_TRADES=[...merged.values()];
   const deleted=new Set(d.deletedIds||[]);MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(id=>!deleted.has(id));
-  modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();MODEL_SYNC.status='ready';MODEL_SYNC.message='交易紀錄已校對；以交易ID合併手機／電腦資料。';renderModelTrades();
+  modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();
+  MODEL_SYNC.status=unconfirmedCloudRows?'degraded':'ready';
+  MODEL_SYNC.message=unconfirmedCloudRows?
+   '有 '+unconfirmedCloudRows+' 筆本機交易尚未在雲端回讀確認；已保留並排入重試':
+   '交易紀錄已校對；以交易ID合併手機／電腦資料。';
+  renderModelTrades();
  }catch(e){
   if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.knownUnlocked=false;saveJSON('v124_model_sync_known_unlocked',false);MODEL_SYNC.status='locked';MODEL_SYNC.message='這台裝置尚未輸入同步碼。'}
   else if(e.status===503){MODEL_SYNC.ready=false;MODEL_SYNC.status='setup';MODEL_SYNC.message='Render 尚缺 MODEL_SYNC_KEY / Supabase 環境設定。'}
