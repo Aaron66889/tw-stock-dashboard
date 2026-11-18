@@ -297,13 +297,32 @@ function officialExecutionSnapshotReady(code,nowMs=Date.now()){
   q?.lastGoodFallback!==true&&q?.corporateActionReferenceMissing!==true&&
   ageValid(receivedAt)&&ageValid(sourceAt));
 }
+// Explanation-only: never used to grant execution or override officialExecutionSnapshotReady.
+function officialExecutionFreshnessExplanation(code,nowMs=Date.now()){
+ const m=lastBuy,q=lastLive?.quotes?.[code],day=dayKey();
+ const ageValid=v=>{const t=Date.parse(v||'');return Number.isFinite(t)&&t<=nowMs+15000&&nowMs-t<=90000};
+ if(incidentModelDay())return '模型異常日停用正式買入';
+ if(!m||m.modelFreshByCode?.[code]!==true)return '模型資料尚未更新或不符合新鮮度條件';
+ if(!ageValid(m.fetchedAt))return '模型更新時間已逾90秒或時間戳無效';
+ if(!q)return '尚未取得即時報價';
+ if(q.date!==day)return '報價日期不是今日交易日';
+ if(!(Number(q.last)>0))return '即時報價缺少有效成交價';
+ if(q.corporateActionReferenceMissing===true)return '除權息參考價缺漏，避免誤判漲跌';
+ if(q.lastGoodFallback===true)return '目前使用最後有效報價（備援顯示），不可當作即時買入價';
+ if(q.realtime===false)return '目前不是經驗證的即時報價';
+ if(!ageValid(q.serverFetchedAt))return '行情來源時間戳缺失或已逾90秒；須等待供應商最新報價';
+ if(!ageValid(q.fetchTime))return '瀏覽器接收報價時間戳缺失或已逾90秒';
+ return '即時行情或模型狀態尚未符合正式買入要求';
+}
 function officialExecutionExplanation(x){
  if(incidentModelDay())return '禁止模型買入：'+incidentModelNotice();
  if(!x)return'模型資料尚未載入';
  const i=x.activeLayer,L=x.m?.layers?.[i],s=x.activeStatus,rule=LAYER_CONFIRM_RULES[i];
- if(!officialExecutionSnapshotReady(x.r.code))return '禁止模型買入：模型或即時報價逾時／日期不符，須等待最新有效行情重新確認';
+ if(!officialExecutionSnapshotReady(x.r.code))return '禁止模型買入：'+officialExecutionFreshnessExplanation(x.r.code)+'；須等待有效資料恢復';
  if(x.r.hardVeto)return '禁止模型買入：硬Gate｜'+(x.r.hardVetoReason||'未提供原因');
  if(x.r.noBuyToday)return '禁止模型買入：'+(x.r.noBuyReason||'本日風險條件未通過');
+ if(s==='CONFIRMED_IN'&&Number(x.r.score)<(rule?.minScore??Infinity))
+  return '禁止模型買入：第'+(i+1)+'層已確認，但模型分數 '+x.r.score+' 未達最低 '+rule.minScore+' 分；保留確認快照';
  if(s==='CONFIRMED_IN')return '允許記錄正式模型買入：第'+(i+1)+'層確認、價格及Gate均通過';
  if(s==='CONFIRMED_BLOCKED')return '禁止模型買入：'+(L?.gateBlockedReason||'分數或Gate未通過');
  if(s==='CONFIRMED_BELOW')return '暫不可依模型買入：現價 '+fmt(x.px)+' 低於首次確認執行下限 '+fmt(L?.executionLow)+'，須重新評估；原確認紀錄保留';
@@ -683,13 +702,184 @@ function appendHistory(code,r,m,px){
  const last=arr.at(-1);if(last&&Math.abs(last.first-v.first)<.025&&Math.abs(last.second-v.second)<.025&&Math.abs(last.third-v.third)<.025&&last.status===v.status){last.to=now;last.priceLast=px;last.priceMin=Math.min(last.priceMin,px);last.priceMax=Math.max(last.priceMax,px);last.count++}else arr.push(v);
  HIST[code]=arr.slice(-1200);saveJSON('v124_buy_history',HIST)
 }
-function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error)updateOne(c,r);const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
+// Independent, bounded research trace. No purchases, no personal holdings, and no network writes.
+// The official state is computed first; logging errors must never interrupt its refresh.
+const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';
+let ENTRY_TRACE_LAST_KEYS={};
+function captureOfficialEntryTrace(code){
+ try{
+  const x=statusFor(code),q=lastLive?.quotes?.[code],r=x?.r,m=x?.m;
+  if(!x||r?.error||!m)return false;
+  if(!cashSessionIsOpenForNewConfirmation())return false;
+  // Loss of the live quote is itself relevant evidence. Never treat the model's
+  // fallback r.price as a verified market observation.
+  const validQuote=!!q&&q.last!==null&&q.last!==undefined&&
+   Number.isFinite(Number(q.last))&&Number(q.last)>0;
+  const today=dayKey(),now=Date.now(),
+   key=validQuote?liveObservationKey(code,r,x.px):'MISSING_LIVE_QUOTE|'+code+'|'+today;
+  if(!key)return false;
+  const freshness=officialExecutionSnapshotReady(code);
+  const layers=m.layers.map((L,i)=>({layer:i+1,status:layerView(L,x.px),confirmed:!!L.confirmed,
+   zoneLow:L.zone?.low??null,zoneHigh:L.zone?.high??null,
+   confirmedLow:L.confirmedZone?.low??null,executionLow:L.executionLow??null,
+   executionHigh:L.executionHigh??null,confirmedAt:L.confirmedAt||null,
+   touchMin:L.touchMin??null,touchMinAt:L.touchMinAt||null,
+   gateBlocked:!!L.gateBlocked,gateReason:L.gateBlockedReason||null}));
+  // A new exchange tick alone is not a reason to rewrite localStorage every 5s.
+  // Prioritize state/Gate transitions and capture a 3-minute periodic heartbeat.
+  // Mirror the recorded official trade checks; this is a read-only snapshot, not a new gate.
+  const permission=layers.map((L,i)=>freshness===true&&!r.hardVeto&&!r.noBuyToday&&
+   L.confirmed&&!L.gateBlocked&&L.status==='CONFIRMED_IN'&&
+   Number.isFinite(Number(r.score))&&Number(r.score)>=LAYER_CONFIRM_RULES[i].minScore);
+  const stateKey=JSON.stringify([today,!!r.hardVeto,!!r.noBuyToday,freshness,
+   layers.map((L,i)=>[L.status,L.confirmed,L.gateBlocked,L.gateReason,L.confirmedAt,permission[i]])]);
+  // Skip JSON parsing on every 15-second watchdog tick. Only a new tab,
+  // real state transition or periodic heartbeat needs to read local history.
+  let prev=ENTRY_TRACE_LAST_KEYS[code],safe=null;
+  if(!prev){
+   const old=loadJSON(ENTRY_TRACE_KEY,[]);
+   safe=Array.isArray(old)?old:[];
+   // Restore deduplication state on browser reload.
+   for(let i=safe.length-1;i>=0;i--){
+    const last=safe[i];
+    if(last?.code!==code)continue;
+    const savedAt=Date.parse(last.at||'');
+    if(last.day===today&&typeof last.stateKey==='string'&&
+      Number.isFinite(savedAt)&&savedAt<=now&&savedAt>=now-86400000)
+     prev={day:last.day,stateKey:last.stateKey,savedAt};
+    break;
+   }
+   if(prev)ENTRY_TRACE_LAST_KEYS[code]=prev;
+  }
+  const transition=!prev||prev.day!==today||prev.stateKey!==stateKey;
+  if(!transition&&now-prev.savedAt<180000)return false;
+  if(!safe){
+   const old=loadJSON(ENTRY_TRACE_KEY,[]);
+   safe=Array.isArray(old)?old:[];
+  }
+  const row={day:today,at:new Date(now).toISOString(),code,observationKey:key,
+   event:transition?'STATE_CHANGE':'HEARTBEAT',
+   quoteAt:q?.time||null,sourceAt:q?.serverFetchedAt||null,receivedAt:q?.fetchTime||null,
+   modelAt:lastBuy?.fetchedAt||null,px:validQuote?Number(q.last):null,
+   atr:Number.isFinite(Number(r.history?.atr14))?Number(r.history.atr14):null,
+   score:Number.isFinite(Number(r.score))?Number(r.score):null,healthScore:r.health?.score??null,
+   hardVeto:!!r.hardVeto,noBuyToday:!!r.noBuyToday,fresh:freshness,stateKey,
+   layers:layers.map((L,i)=>({...L,executionAllowed:permission[i]}))};
+  const minDate=new Date(now-7*86400000).toISOString().slice(0,10);
+  const next=safe.filter(v=>v&&v.day>=minDate&&v.day<=today).slice(-1199);
+  next.push(row);
+  // A full browser quota must never break official live-model refresh.
+  try{saveJSON(ENTRY_TRACE_KEY,next);ENTRY_TRACE_LAST_KEYS[code]={day:today,stateKey,savedAt:now};return true}catch(_){return false}
+ }catch(_){return false}
+}
+// Read-only evidence attribution: classify *observed* transitions, never claim an order was possible.
+// A missing interval means a possible unobserved transition, not proof of a market signal.
+function classifyEntryTraceExit(previous,current,layerIndex){
+ const a=previous?.layers?.[layerIndex],b=current?.layers?.[layerIndex];
+ if(!a||!b)return null;
+ // Legacy snapshots without permission flags can classify status changes only.
+ const lostPermission=a.executionAllowed===true&&b.executionAllowed===false;
+ const lostStatus=a.status==='CONFIRMED_IN'&&b.status!=='CONFIRMED_IN';
+ if(!lostPermission&&!lostStatus)return null;
+ const dt=Date.parse(current.at||'')-Date.parse(previous.at||'');
+ if(previous.day!==current.day||!Number.isFinite(dt)||dt<0||dt>600000)
+  return{reason:'OBSERVATION_GAP',detail:'相鄰快照間隔或日期不連續，不能判定退燈原因'};
+ if(current.fresh===false)return{reason:'STALE_QUOTE_OR_MODEL',detail:'當時模型或行情新鮮度未通過'};
+ if(current.hardVeto===true)return{reason:'HARD_GATE',detail:b.gateReason||'硬Gate阻擋'};
+ if(current.noBuyToday===true)return{reason:'DAILY_BUY_PAUSE',detail:b.gateReason||'當日暫停買入'};
+ if(b.status==='CONFIRMED_BLOCKED')return{reason:'GATE_OR_SCORE_BLOCKED',detail:b.gateReason||'分數或Gate阻擋；資料不足以細分'};
+ if(lostPermission&&b.status==='CONFIRMED_IN')
+  return{reason:'EXECUTION_PERMISSION_LOST',detail:'層級仍為已確認，但正式買入許可已失效；須核對分數及其他執行條件'};
+ if(b.status==='CONFIRMED_BELOW'||b.status==='CONFIRMED_ABOVE'){
+  const px=current.px,limit=b.status==='CONFIRMED_BELOW'?b.executionLow:b.executionHigh;
+  if(!Number.isFinite(px)||px<=0||!Number.isFinite(limit)||limit<=0)
+   return{reason:'MISSING_PRICE_BOUND_EVIDENCE',detail:'缺少有效現價或凍結執行上下限，不能證實價格越界'};
+  if(b.status==='CONFIRMED_BELOW'&&px<limit)
+   return{reason:'PRICE_BELOW_FROZEN_BAND',detail:'現價低於固定成交下限'};
+  if(b.status==='CONFIRMED_ABOVE'&&px>limit)
+   return{reason:'PRICE_ABOVE_FROZEN_BAND',detail:'現價高於固定成交上限'};
+  return{reason:'PRICE_STATUS_MISMATCH',detail:'標記狀態與實際價格不一致，不能將退燈歸因價格越界'};
+ }
+ return{reason:'STATE_RESET_OR_UNCLASSIFIED',detail:'已確認狀態消失或無法歸類；須查原始時序'};
+}
+// Recovery is a separate observation, not an inferred market buy signal.
+function classifyEntryTraceRecovery(previous,current,layerIndex){
+ const a=previous?.layers?.[layerIndex],b=current?.layers?.[layerIndex];
+ if(!a||!b||a.executionAllowed!==false||b.executionAllowed!==true)return null;
+ const dt=Date.parse(current.at||'')-Date.parse(previous.at||'');
+ if(previous.day!==current.day||!Number.isFinite(dt)||dt<0||dt>600000)
+  return{reason:'RECOVERY_OBSERVATION_GAP',detail:'跨日或超過10分鐘的資料缺口，不能確認許可何時恢復'};
+ if(current.fresh!==true||current.hardVeto===true||current.noBuyToday===true||b.status!=='CONFIRMED_IN')
+  return{reason:'RECOVERY_EVIDENCE_MISMATCH',detail:'執行許可欄位與行情或Gate狀態不一致'};
+ return{reason:'EXECUTION_PERMISSION_RESTORED',detail:'同一交易日已觀察到正式買入許可恢復；不代表過去曾有可成交訂單'};
+}
+function entryTraceTransitionAudit(rows){
+ const input=Array.isArray(rows)?rows:[],byETF={};
+ for(const code of ETF){
+  // Ignore malformed legacy/localStorage entries rather than taking down diagnostics export.
+  const data=input.filter(x=>x&&x.code===code&&typeof x.day==='string'&&
+   typeof x.at==='string'&&Number.isFinite(Date.parse(x.at))&&Array.isArray(x.layers)).slice()
+   .sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
+  const transitions=[];
+  for(let i=1;i<data.length;i++){
+   const prev=data[i-1],cur=data[i];
+   for(let li=0;li<3;li++){
+    const result=classifyEntryTraceExit(prev,cur,li);
+    const recovery=classifyEntryTraceRecovery(prev,cur,li);
+    if(result||recovery){
+     const event=result||recovery;
+     const eventType=result?'PERMISSION_LOST':
+      recovery.reason==='EXECUTION_PERMISSION_RESTORED'?'PERMISSION_RESTORED':'RECOVERY_UNVERIFIED';
+     transitions.push({layer:li+1,day:cur.day,at:cur.at,from:prev.layers[li].status,
+      to:cur.layers[li].status,reason:event.reason,detail:event.detail,eventType});
+    }
+   }
+  }
+  const counts={};
+  for(const t of transitions)counts[t.reason]=(counts[t.reason]||0)+1;
+  byETF[code]={observations:data.length,
+   confirmedToNonConfirmed:transitions.filter(t=>t.eventType==='PERMISSION_LOST').length,
+   restoredPermissions:transitions.filter(t=>t.eventType==='PERMISSION_RESTORED').length,
+   unverifiableRecoveries:transitions.filter(t=>t.eventType==='RECOVERY_UNVERIFIED').length,
+   byReason:counts,recentTransitions:transitions.slice(-30)};
+ }
+ return{mode:'READ_ONLY',method:'observed-consecutive-snapshots-only',
+  note:'僅統計本瀏覽器保留的相鄰狀態變化，並非全部退燈或歷史回測；逾10分鐘缺口不得推定精確原因。',byETF};
+}
+
+function entryTraceEvidenceSummary(){
+ // Diagnostic data is optional and untrusted; never abort a holdings/performance export.
+ try{
+  const rows=loadJSON(ENTRY_TRACE_KEY,[]),a=Array.isArray(rows)?rows:[],
+   valid=a.filter(x=>x&&typeof x.code==='string'&&typeof x.day==='string'&&
+    typeof x.at==='string'&&Number.isFinite(Date.parse(x.at))&&Array.isArray(x.layers)),byETF={};
+  for(const code of ETF){
+   const b=valid.filter(x=>x.code===code);
+   byETF[code]={observations:b.length,days:[...new Set(b.map(x=>x.day))].sort(),
+    staleObservations:b.filter(x=>x.fresh===false).length,
+    confirmedBelow:b.reduce((n,x)=>n+x.layers.filter(y=>y&&y.layer>=2&&y.status==='CONFIRMED_BELOW').length,0)};
+  }
+  return{mode:'READ_ONLY',status:'PARTIAL_LIVE_EVIDENCE_ONLY',invalidRecords:a.length-valid.length,
+   transitions:entryTraceTransitionAudit(valid),retention:'7 calendar days / max 1200 total observations',
+   note:'僅儲存在本瀏覽器。格式損壞的紀錄已略過；缺少完整逐筆行情與原始Gate，因此不能視為歷史回測。',byETF};
+ }catch(_){
+  return{mode:'READ_ONLY',status:'DIAGNOSTIC_UNAVAILABLE',invalidRecords:null,byETF:{},
+   note:'本機研究紀錄無法讀取；已隔離錯誤，不影響正式交易與持股資料。'};
+ }
+}
+// Read-only watchdog for the case where an upstream refresh stalls: record loss of
+// execution permission even without a successful loadBuy() call. Never alter STATE.
+function observeOfficialEntryPermissionTimeout(){
+ if(document.visibilityState==='hidden'||!cashSessionIsOpenForNewConfirmation()||!lastBuy?.models)return;
+ for(const code of ETF)if(lastBuy.models[code]&&!lastBuy.models[code].error)captureOfficialEntryTrace(code);
+}
+function updateState(){resetDaily();resetShadowDaily();handlePreopen();ETF.forEach(c=>{const r=lastBuy.models[c];if(r&&!r.error){updateOne(c,r);captureOfficialEntryTrace(c)}const sr=lastBuy?.shadowModels?.[c];if(sr&&!sr.error)updateShadowOne(c,sr)});saveJSON('v124_state',STATE);saveJSON('v124_shadow_state',SHADOW_STATE);saveJSON('v124_shadow_replay',SHADOW_LOG)}
 function statusFor(c){const r=lastBuy?.models?.[c],m=STATE.models?.[c];if(!r||r.error||!m)return null;const px=Number(lastLive?.quotes?.[c]?.last??r.price),statuses=m.layers.map(L=>layerView(L,px));let activeLayer=statuses.lastIndexOf('CONFIRMED_IN');if(activeLayer<0){activeLayer=0;for(let i=statuses.length-1;i>=0;i--){if(statuses[i]!=='WAIT'&&statuses[i]!=='INVALID'){activeLayer=i;break}}}const activeStatus=statuses[activeLayer]||statuses[0];return{r,m,px,statuses,activeLayer,activeStatus,rank:rank(activeStatus)}}
 
 function renderPreopen(){const el=$('preopenSummary'),p=PREOPEN.day===dayKey()?(PREOPEN.locked||PREOPEN.draft):null,d=taipeiNow(),m=d.getHours()*60+d.getMinutes();$('preopenCard').style.border=m>=537&&m<540?'2px solid #d6a044':'';if(!p){el.innerHTML='今日尚未捕捉08:57盤前版本。08:45起會先累積台指期日盤走勢，盤中不會用事後價格冒充盤前預測。';return}const lead=p.txfLead,leadLine=lead?.available?`<br><b>08:45台指日盤先行：</b>${lead.sessionChangePct>=0?'+':''}${Number(lead.sessionChangePct).toFixed(2)}%｜3分 ${lead.d3?`${lead.d3.pct>=0?'+':''}${lead.d3.pct.toFixed(2)}%`:'累積中'}｜5分 ${lead.d5?`${lead.d5.pct>=0?'+':''}${lead.d5.pct.toFixed(2)}%`:'累積中'}｜${lead.source}${lead.confidence<.99?'（部分樣本）':''}`:(lead?.active?'<br><b>08:45台指日盤先行：</b>樣本累積中':'');el.innerHTML=`<b>${PREOPEN.locked?'🔒 已鎖定':'估算中'} ${new Date(p.at).toLocaleTimeString('zh-TW',{hour12:false})}</b>${leadLine}<br>`+ETF.filter(c=>p.models[c]).map(c=>`${c}　① ${ztxt(p.models[c].first)}　② ${ztxt(p.models[c].second)}　③ ${ztxt(p.models[c].third)}`).join('<br>')}
 function renderHomeRanking(){
  const a=ETF.map(c=>[c,statusFor(c)]).filter(x=>x[1]).sort((a,b)=>b[1].rank-a[1].rank||b[1].r.score-a[1].r.score);
- $('homeBuyRanking').innerHTML=a.map(([c,x])=>`<div class="card buycard"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div><div class="score">${x.r.score}<small>/100</small></div></div>${noBuyWithoutTouch(x)?`<div class="notice"><b>今日暫無合理買點：</b>${x.r.noBuyReason}<br>參考合理區仍保留：① ${ztxt(x.m.layers[0].zone)} ② ${ztxt(x.m.layers[1].zone)} ③ ${ztxt(x.m.layers[2].zone)}</div>`:`<div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(c)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一買點',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b>${confirmSnapshotText(x.m.layers[0])?`<small>${confirmSnapshotText(x.m.layers[0])}</small>`:''}</div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想買點',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力買點',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div>`}<div class="note"><b>正式買入判定：</b>${officialExecutionExplanation(x)}</div>${x.r.noBuyToday&&deepestTouchedLayer(x)>=0?`<div class="notice"><b>已觸價但尚未確認：</b>${x.r.noBuyReason||'目前 Gate 尚未通過。'}</div>`:''}${window.DipWatch?.panel(c,x.r,x.m,lastLive?.quotes?.[c],lastBuy)||''}${shadowPanel(c)}<button class="btn" onclick="openDetail('${c}')">成分股／歷史買點</button> <button class="btn primary" ${(!officialExecutionSnapshotReady(c)||x.r.hardVeto||x.r.noBuyToday||x.activeStatus!=='CONFIRMED_IN')?'disabled title="尚未通過正式模型買入許可；請勿記為模型績效"':''} onclick="openModelTrade('${c}',${x.activeLayer+1})">${x.r.hardVeto||x.r.noBuyToday?'正式模型暫停':x.activeStatus==='CONFIRMED_IN'?'記錄模型買入':'模型買點未確認'}</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div>`).join('')||'模型載入中';
+ $('homeBuyRanking').innerHTML=a.map(([c,x])=>`<div class="card buycard"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div><div class="score">${x.r.score}<small>/100</small></div></div>${noBuyWithoutTouch(x)?`<div class="notice"><b>今日暫無合理買點：</b>${x.r.noBuyReason}<br>參考合理區仍保留：① ${ztxt(x.m.layers[0].zone)} ② ${ztxt(x.m.layers[1].zone)} ③ ${ztxt(x.m.layers[2].zone)}</div>`:`<div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(c)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一買點',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b>${confirmSnapshotText(x.m.layers[0])?`<small>${confirmSnapshotText(x.m.layers[0])}</small>`:''}</div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想買點',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力買點',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div>`}<div class="note"><b>正式買入判定：</b>${officialExecutionExplanation(x)}</div>${x.r.noBuyToday&&deepestTouchedLayer(x)>=0?`<div class="notice"><b>已觸價但尚未確認：</b>${x.r.noBuyReason||'目前 Gate 尚未通過。'}</div>`:''}${window.DipWatch?.panel(c,x.r,x.m,lastLive?.quotes?.[c],lastBuy)||''}${shadowPanel(c)}<button class="btn" onclick="openDetail('${c}')">成分股／歷史買點</button> <button class="btn primary" ${((!officialExecutionSnapshotReady(c)||x.r.hardVeto||x.r.noBuyToday||x.activeStatus!=='CONFIRMED_IN')||Number(x.r.score)<LAYER_CONFIRM_RULES[x.activeLayer].minScore)?'disabled title="尚未通過正式模型買入許可；請勿記為模型績效"':''} onclick="openModelTrade('${c}',${x.activeLayer+1})">${x.r.hardVeto||x.r.noBuyToday?'正式模型暫停':x.activeStatus==='CONFIRMED_IN'?(Number(x.r.score)<LAYER_CONFIRM_RULES[x.activeLayer].minScore?'分數不足／不可模型買入':'記錄模型買入'):'模型買點未確認'}</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div>`).join('')||'模型載入中';
  const ev=EVENTS.at(-1);$('homeModelEvent').innerHTML='<b>戰情：</b>'+(ev?ev.text:'尚無重大模型事件。')
 }
 function explain(c,x){const touched=deepestTouchedLayer(x),activeL=x.m?.layers?.[x.activeLayer];if(x.r?.hardVeto)return`價格${touched>=0?'已觸及第'+(touched+1)+'層，但':'尚未取得正式買入確認，且'}硬Gate FAIL（${x.r.hardVetoReason||'市場風險或報價資料異常'}）。目前只代表價格位置，非可執行買點；等待Gate重新通過及確認條件成立，不因跌進L2/L3就自動買入。`;if(x.activeStatus==='CONFIRMED_BLOCKED')return`第${x.activeLayer+1}層價格確認快照已保留，但目前 ${activeL?.gateBlockedReason||'Gate/分數條件'} 暫停執行；條件恢復後若仍在執行區可再分批。`;if(x.activeStatus==='FORMING'&&activeL?.confirmationReason)return`第${x.activeLayer+1}層已觸價，${activeL.confirmationReason}。`;if(x.statuses[0]==='CONFIRMED_IN')return`第一筆分批條件成立；確認後允許小幅反彈成交，但仍有執行上限，不代表最低點。`;if(touched>=0&&x.r.noBuyToday&&!activeL?.confirmed)return`第${touched+1}層價格已觸及，但目前尚未確認：${x.r.noBuyReason}`;if(x.r.noBuyToday&&!activeL?.confirmed)return x.r.noBuyReason;if(x.statuses[0]==='CONFIRMED_ABOVE')return`第一層先前已確認，但現價已超過確認後執行上限；不追價，等回測。`;if(x.statuses[0]==='CONFIRMED_BELOW')return`第一層確認快照保留，但價格已跌破確認區；暫停第一層執行並開始觀察第二層。`;if(x.statuses[0]==='FAST_PASS')return`快速穿透保護：不一次打滿三層，先等重新收斂。`;if(x.statuses[0]==='FORMING')return`價格已觸及第一層；現在等待至少20秒、最低反彈幅度，並用有效破低容忍帶過濾正常tick雜訊；不再要求連續3筆觀測。`;if(x.px<=x.m.layers[0].zone.high)return`價格已達第一層門檻；正在等待穩定度／分數確認，跌穿區間不會被當成「沒碰到」。`;return`尚未達第一層；須先滿足有效昨收的ATR最低回檔深度，才可能觸及統計買點；再等待盤中止跌確認，Gate PASS 不代表可買。`}
@@ -913,7 +1103,7 @@ async function loadTrendBuy(force=false){
 }
 
 function renderBuyCards(){
- $('buyCards').innerHTML=(incidentModelDay()?'<div class="notice" style="margin-bottom:12px"><b>'+incidentModelNotice()+'</b></div>':'')+ETF.map(c=>{const x=statusFor(c);if(!x)return`<section class="card">${c}載入中</section>`;const h=x.r.health||{};return`<section class="card buycard ${x.activeStatus==='CONFIRMED_IN'?'buyok':x.r.hardVeto?'invalid':''}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div><div class="score">${x.r.score}/100</div></div><div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(c)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b>${confirmSnapshotText(x.m.layers[0])?`<small>${confirmSnapshotText(x.m.layers[0])}</small>`:''}</div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div><div class="healthgrid"><div class="box"><span class="k">防追高風險</span><b>${x.r.chaseRisk}/100</b><small>歷史警戒 ${x.r.chaseWarningThreshold??'—'}｜追價硬線 ${x.r.chaseHardThreshold??88}<br>樣本 ${x.r.chaseCalibration?.observations??'—'}｜防追高門檻 WF ${x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0}期｜校準 ${x.r.chaseCalibration?.lockedDate||'未鎖定'}｜${chaseLockText(x.r.chaseCalibration)}</small></div><div class="box"><span class="k">環境</span><b>${x.r.environmentScore.toFixed(0)}</b></div><div class="box"><span class="k">成分健康</span><b>${h.usable?h.score+'/100':'資料不足'}</b></div><div class="box"><span class="k">連續買不到</span><b>${STATE.noSignalDays?.[c]||0}日</b></div></div><div class="reading"><b>白話：</b>${explain(c,x)}<br><b>決策拆解：</b>${decisionTransparency(x)}<br><b>正式買入判定：</b>${officialExecutionExplanation(x)}<br><b>第一層可觸及性：</b>${reachabilityText(x)}<br><b>開盤參考與上限：</b>${sessionEntryText(x)}</div>${window.DipWatch?.panel(c,x.r,x.m,lastLive?.quotes?.[c],lastBuy)||''}${window.CrashGateLabUI?.auditSnippet(lastBuy?.researchGateAudit?.[c])||''}${shadowPanel(c)}<div class="row" style="margin-top:8px"><span class="note">${h.usable?h.divergence:'完整成分覆蓋不足時不納入分數'}</span><button class="btn" onclick="openDetail('${c}')">查看成分／歷史</button> <button class="btn primary" ${(!officialExecutionSnapshotReady(c)||x.r.hardVeto||x.r.noBuyToday||x.activeStatus!=='CONFIRMED_IN')?'disabled title="尚未通過正式模型買入許可；請勿記為模型績效"':''} onclick="openModelTrade('${c}',${x.activeLayer+1})">${x.r.hardVeto||x.r.noBuyToday?'正式模型暫停':x.activeStatus==='CONFIRMED_IN'?'記錄模型買入':'模型買點未確認'}</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('')
+ $('buyCards').innerHTML=(incidentModelDay()?'<div class="notice" style="margin-bottom:12px"><b>'+incidentModelNotice()+'</b></div>':'')+ETF.map(c=>{const x=statusFor(c);if(!x)return`<section class="card">${c}載入中</section>`;const h=x.r.health||{};return`<section class="card buycard ${x.activeStatus==='CONFIRMED_IN'?'buyok':x.r.hardVeto?'invalid':''}"><div class="row"><div><div class="ticker">${c} ${NAME[c]}</div><span class="modelstate">${displayModelState(x)}</span></div><div class="score">${x.r.score}/100</div></div><div class="buygrid"><div class="buybox"><span class="k">現價</span><b class="${etfPriceClass(c,x.px)}">${fmt(x.px)} <span class="etf-daily-pct">${etfDailyChangeText(c,x.px)}</span></b><small>${etfFetchStamp()}${etfExchangeStamp(c)}</small></div><div class="buybox ${layerBoxClass(x.m.layers[0],x.px,'first')}"><span class="k">${layerBoxLabel('第一',x.m.layers[0],x.px)}</span><b>${ztxt(x.m.layers[0].zone)}</b>${confirmSnapshotText(x.m.layers[0])?`<small>${confirmSnapshotText(x.m.layers[0])}</small>`:''}</div><div class="buybox ${layerBoxClass(x.m.layers[1],x.px)}"><span class="k">${layerBoxLabel('理想',x.m.layers[1],x.px)}</span><b>${ztxt(x.m.layers[1].zone)}</b></div><div class="buybox ${layerBoxClass(x.m.layers[2],x.px)}"><span class="k">${layerBoxLabel('強力',x.m.layers[2],x.px)}</span><b>${ztxt(x.m.layers[2].zone)}</b></div></div><div class="healthgrid"><div class="box"><span class="k">防追高風險</span><b>${x.r.chaseRisk}/100</b><small>歷史警戒 ${x.r.chaseWarningThreshold??'—'}｜追價硬線 ${x.r.chaseHardThreshold??88}<br>樣本 ${x.r.chaseCalibration?.observations??'—'}｜防追高門檻 WF ${x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0}期｜校準 ${x.r.chaseCalibration?.lockedDate||'未鎖定'}｜${chaseLockText(x.r.chaseCalibration)}</small></div><div class="box"><span class="k">環境</span><b>${x.r.environmentScore.toFixed(0)}</b></div><div class="box"><span class="k">成分健康</span><b>${h.usable?h.score+'/100':'資料不足'}</b></div><div class="box"><span class="k">連續買不到</span><b>${STATE.noSignalDays?.[c]||0}日</b></div></div><div class="reading"><b>白話：</b>${explain(c,x)}<br><b>決策拆解：</b>${decisionTransparency(x)}<br><b>正式買入判定：</b>${officialExecutionExplanation(x)}<br><b>第一層可觸及性：</b>${reachabilityText(x)}<br><b>開盤參考與上限：</b>${sessionEntryText(x)}</div>${window.DipWatch?.panel(c,x.r,x.m,lastLive?.quotes?.[c],lastBuy)||''}${window.CrashGateLabUI?.auditSnippet(lastBuy?.researchGateAudit?.[c])||''}${shadowPanel(c)}<div class="row" style="margin-top:8px"><span class="note">${h.usable?h.divergence:'完整成分覆蓋不足時不納入分數'}</span><button class="btn" onclick="openDetail('${c}')">查看成分／歷史</button> <button class="btn primary" ${((!officialExecutionSnapshotReady(c)||x.r.hardVeto||x.r.noBuyToday||x.activeStatus!=='CONFIRMED_IN')||Number(x.r.score)<LAYER_CONFIRM_RULES[x.activeLayer].minScore)?'disabled title="尚未通過正式模型買入許可；請勿記為模型績效"':''} onclick="openModelTrade('${c}',${x.activeLayer+1})">${x.r.hardVeto||x.r.noBuyToday?'正式模型暫停':x.activeStatus==='CONFIRMED_IN'?(Number(x.r.score)<LAYER_CONFIRM_RULES[x.activeLayer].minScore?'分數不足／不可模型買入':'記錄模型買入'):'模型買點未確認'}</button> <button class="btn" onclick="openManualTrade('${c}')">記錄自主買入</button></div></section>`}).join('')
 }
 function renderModelCards(){
  $('modelCards').innerHTML=ETF.map(c=>{const x=statusFor(c);if(!x)return'';const r=x.r;return`<div class="card"><div class="row"><b>${c} ${NAME[c]}</b><span>${stageText(x.activeStatus,x.activeLayer+1)}</span></div><div class="grid4"><div class="box"><span class="k">${r.historyOfficial?'完整回測歷史':'暫用歷史樣本'}</span><b>${r.history.historyDays}日</b><small>${r.historyOfficial?'PASS':`${r.historyProgress?.doneMonths||0}/${r.historyProgress?.totalMonths||0}月｜${r.historyProgress?.percent||0}%`}</small></div><div class="box"><span class="k">5/20/60/120/250</span><b>全部納入</b></div><div class="box"><span class="k">防追高</span><b>${r.chaseRisk}/100</b><small>警戒 ${r.chaseWarningThreshold??'—'}｜硬線 ${r.chaseHardThreshold??88}｜${r.chaseCalibration?.regime||'—'}<br>樣本 ${r.chaseCalibration?.observations??'—'}｜防追高門檻 WF ${r.chaseCalibration?.walkForwardCount??r.chaseCalibration?.walkForwardYears?.length??0}期｜${r.chaseCalibration?.lockedDate||'未鎖定'}｜${chaseLockText(r.chaseCalibration)}</small></div><div class="box"><span class="k">參與率保護</span><b>${r.history.bullStructure&&Number(STATE.noSignalDays?.[c]||0)>=15?'重錨中':'監控'}</b></div></div><div class="reading">SMA20 ${fmt(r.history.sma20)}｜60 ${fmt(r.history.sma60)}｜120 ${fmt(r.history.sma120)}｜250 ${fmt(r.history.sma250)}｜ATR ${fmt(r.history.atr14)}｜近1年價格位置 ${r.history.pricePercentile.toFixed(0)}%。</div></div>`}).join('')
@@ -1534,11 +1724,26 @@ async function syncModelTrades(force=false){
   }
   if(!Array.isArray(d.trades)||!Array.isArray(d.deletedIds))throw Error('雲端交易格式不完整，本機紀錄已保留');
   const pendingDeletes=new Set(MODEL_PENDING_DELETES),cloudDeleted=new Set(d.deletedIds);
-  const merged=new Map(d.trades.filter(t=>!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id)).map(t=>[t.id,{...t,_syncDirty:false}]));
-  for(const t of MODEL_TRADES)if(t._syncDirty&&!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id))merged.set(t.id,t);
+  const merged=new Map(d.trades.filter(t=>t?.id&&!pendingDeletes.has(t.id)&&!cloudDeleted.has(t.id)).map(t=>[t.id,{...t,_syncDirty:false}]));
+  let unconfirmedCloudRows=0;
+  for(const t of MODEL_TRADES){
+   if(!t?.id||pendingDeletes.has(t.id)||cloudDeleted.has(t.id))continue;
+   // An import may return success while the subsequent GET reads an older
+   // cloud snapshot. Never erase locally acknowledged but unobserved trades.
+   if(!merged.has(t.id)){
+    if(!t._syncDirty)markModelTradeDirty(t);
+    merged.set(t.id,t);
+    unconfirmedCloudRows++;
+   }else if(t._syncDirty)merged.set(t.id,t);
+  }
   MODEL_TRADES=[...merged.values()];
   const deleted=new Set(d.deletedIds||[]);MODEL_PENDING_DELETES=MODEL_PENDING_DELETES.filter(id=>!deleted.has(id));
-  modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();MODEL_SYNC.status='ready';MODEL_SYNC.message='交易紀錄已校對；以交易ID合併手機／電腦資料。';renderModelTrades();
+  modelSyncSaveLocal();MODEL_SYNC.lastAt=d.fetchedAt||new Date().toISOString();
+  MODEL_SYNC.status=unconfirmedCloudRows?'degraded':'ready';
+  MODEL_SYNC.message=unconfirmedCloudRows?
+   '有 '+unconfirmedCloudRows+' 筆本機交易尚未在雲端回讀確認；已保留並排入重試':
+   '交易紀錄已校對；以交易ID合併手機／電腦資料。';
+  renderModelTrades();
  }catch(e){
   if(e.status===401){MODEL_SYNC.ready=false;MODEL_SYNC.knownUnlocked=false;saveJSON('v124_model_sync_known_unlocked',false);MODEL_SYNC.status='locked';MODEL_SYNC.message='這台裝置尚未輸入同步碼。'}
   else if(e.status===503){MODEL_SYNC.ready=false;MODEL_SYNC.status='setup';MODEL_SYNC.message='Render 尚缺 MODEL_SYNC_KEY / Supabase 環境設定。'}
@@ -1567,6 +1772,9 @@ function openModelTrade(code,layer=1){
  const x=statusFor(code);if(!x)return alert('模型尚未載入');
  if(!officialExecutionSnapshotReady(code))return alert('模型／即時報價已逾時，不能記錄成正式模型買入；請先等待新行情。');
  if(x.r?.hardVeto||x.r?.noBuyToday)return alert('正式模型的硬Gate或暫停條件尚未解除，不能記作模型訊號；若你自行決定買進，請選擇「記錄自主買入」。');
+ const selected=x.m?.layers?.[Number(layer)-1],rule=LAYER_CONFIRM_RULES[Number(layer)-1];
+ if(!selected||!rule||!selected.confirmed||selected.gateBlocked||x.statuses?.[Number(layer)-1]!=='CONFIRMED_IN'||Number(x.r.score)<rule.minScore)
+  return alert('第'+layer+'層尚未通過正式模型買入許可（包含確認狀態、執行價區、分數或Gate）；若自行買進，請記錄自主買入。');
  setTradeEntryMode('model');
  $('mtCode').value=code;$('mtPrice').value=Number(x.px).toFixed(2);$('mtShares').value='';$('mtLayer').value=String(layer);
  fillTradeSnapshot(code,x,false);
@@ -1607,8 +1815,9 @@ function saveModelTrade(){
  }else{
   const x=statusFor(code);if(!x)return alert('合理買點模型尚未載入');
   const firstHigh=Number(x.m.layers[0]?.zone?.high),priceVsFirstHighPct=Number.isFinite(firstHigh)&&firstHigh>0?(price/firstHigh-1)*100:null;
-  signalText=x.r.noBuyToday?'今日暫無合理買點':stageText(x.activeStatus,x.activeLayer+1);
-  snapshot={modelFamily:manual?'manual':'reasonable',zones:x.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:x.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),score:x.r.score,chaseRisk:x.r.chaseRisk,chaseWarningThreshold:x.r.chaseWarningThreshold??null,chaseHardThreshold:x.r.chaseHardThreshold??88,chaseCalibrationSource:x.r.chaseCalibration?.source||null,chaseCalibrationLockedDate:x.r.chaseCalibration?.lockedDate||null,chaseCalibrationLockStatus:x.r.chaseCalibration?.lockStatus||null,chaseCalibrationObservations:x.r.chaseCalibration?.observations??null,chaseCalibrationWalkForwardCount:x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0,confirmationVersion:CONFIRM_RULE_VERSION,confirmationRule:LAYER_CONFIRM_RULES[layer?layer-1:0]||null,environmentScore:x.r.environmentScore,health:x.r.health||null,noBuyToday:!!x.r.noBuyToday,modelStatus:x.activeStatus||null,modelStatusText:signalText,priceVsFirstHighPct,night:lastNight?{last:lastNight.last,changePct:lastNight.changePct}:null,overseas:lastOverseas?.quotes?{NASDAQ:lastOverseas.quotes.NASDAQ?.changePct,SOX:lastOverseas.quotes.SOX?.changePct,TSM:lastOverseas.quotes.TSM?.changePct}:null,shadow:(()=>{const sx=shadowStatusFor(code);return sx?{zones:sx.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:sx.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),status:sx.activeStatus,statusText:stageText(sx.activeStatus,sx.activeLayer+1),criticalGate:sx.r?.criticalGate||null,policy:sx.r?.shadowPolicy||null,confirmationVersion:SHADOW_CONFIRM_VERSION}:null})(),version:'V12.4',build:CLIENT_BUILD};
+  const selectedLayerStatus=!manual?x.statuses[layer-1]:x.activeStatus;
+  signalText=x.r.noBuyToday?'今日暫無合理買點':stageText(selectedLayerStatus,manual?x.activeLayer+1:layer);
+  snapshot={modelFamily:manual?'manual':'reasonable',zones:x.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:x.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),score:x.r.score,chaseRisk:x.r.chaseRisk,chaseWarningThreshold:x.r.chaseWarningThreshold??null,chaseHardThreshold:x.r.chaseHardThreshold??88,chaseCalibrationSource:x.r.chaseCalibration?.source||null,chaseCalibrationLockedDate:x.r.chaseCalibration?.lockedDate||null,chaseCalibrationLockStatus:x.r.chaseCalibration?.lockStatus||null,chaseCalibrationObservations:x.r.chaseCalibration?.observations??null,chaseCalibrationWalkForwardCount:x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0,confirmationVersion:CONFIRM_RULE_VERSION,confirmationRule:LAYER_CONFIRM_RULES[layer?layer-1:0]||null,environmentScore:x.r.environmentScore,health:x.r.health||null,noBuyToday:!!x.r.noBuyToday,modelStatus:selectedLayerStatus||null,modelStatusText:signalText,executionAudit:manual?null:{selectedLayer:layer,selectedLayerStatus,activeLayerAtEntry:x.activeLayer+1,activeStatusAtEntry:x.activeStatus,gatePassed:!x.r.hardVeto&&!x.r.noBuyToday&&!x.m.layers[layer-1]?.gateBlocked,quoteAndModelFresh:officialExecutionSnapshotReady(code),minimumScore:LAYER_CONFIRM_RULES[layer-1]?.minScore??null,executionLow:Number.isFinite(x.m.layers[layer-1]?.executionLow)?x.m.layers[layer-1].executionLow:null,executionHigh:Number.isFinite(x.m.layers[layer-1]?.executionHigh)?x.m.layers[layer-1].executionHigh:null,observedPrice:Number.isFinite(x.px)?x.px:null,quoteObservationKey:liveObservationKey(code,x.r,x.px),modelFetchedAt:lastBuy?.fetchedAt||null,quoteReceivedAt:lastLive?.quotes?.[code]?.fetchTime||null,quoteServerFetchedAt:lastLive?.quotes?.[code]?.serverFetchedAt||null,confirmedAt:x.m.layers[layer-1]?.confirmedAt||null,gateBlockedReason:x.m.layers[layer-1]?.gateBlockedReason||null,recordedAt:new Date().toISOString()},priceVsFirstHighPct,night:lastNight?{last:lastNight.last,changePct:lastNight.changePct}:null,overseas:lastOverseas?.quotes?{NASDAQ:lastOverseas.quotes.NASDAQ?.changePct,SOX:lastOverseas.quotes.SOX?.changePct,TSM:lastOverseas.quotes.TSM?.changePct}:null,shadow:(()=>{const sx=shadowStatusFor(code);return sx?{zones:sx.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:sx.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),status:sx.activeStatus,statusText:stageText(sx.activeStatus,sx.activeLayer+1),criticalGate:sx.r?.criticalGate||null,policy:sx.r?.shadowPolicy||null,confirmationVersion:SHADOW_CONFIRM_VERSION}:null})(),version:'V12.4',build:CLIENT_BUILD};
  }
  const trade={id:'mt_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),code,name:NAME[code],tradeType,modelFamily,layer,entryAt:new Date().toISOString(),entryDate:dayKey(),entryPrice:price,shares,snapshot,exitAt:null,exitPrice:null,perf:null};
  markModelTradeDirty(trade);MODEL_TRADES.push(trade);modelSyncSaveLocal();
@@ -1805,8 +2014,12 @@ function modelTradeDataAudit(trades){
  for(const t of eligible){
   const family=modelFamilyOf(t),s=String(t.snapshot?.modelStatusText||t.snapshot?.modelStatus||'');
   if(!s){flagged.push({id:t.id,code:t.code,entryDate:t.entryDate,flag:'MISSING_STATUS_SNAPSHOT',note:'歷史版缺少可驗證的進場狀態，不能當成已確認買點的證據'});continue}
-  if(family==='reasonable'&&/觀察|形成中|Gate|暫停|失效|重新定價|等待/.test(s))
-   flagged.push({id:t.id,code:t.code,entryDate:t.entryDate,flag:'REVIEW_CONFIRMATION_OR_GATE',status:s,note:'僅為原始快照警示；需核對當時正式訊號與Gate狀態，不能自行改成自主買入'});
+  const ev=t.snapshot?.executionAudit;
+  if(family==='reasonable'&&ev){
+   if(ev.selectedLayer!==Number(t.layer)||ev.selectedLayerStatus!=='CONFIRMED_IN'||ev.gatePassed!==true||ev.quoteAndModelFresh!==true)
+    flagged.push({id:t.id,code:t.code,entryDate:t.entryDate,flag:'EXECUTION_EVIDENCE_MISMATCH',status:s,executionAudit:ev,note:'正式買入時的選定層級、Gate或行情快照不一致；保留原交易，需人工核對'});
+  }else if(family==='reasonable'&&/觀察|形成中|Gate|暫停|失效|重新定價|等待/.test(s))
+   flagged.push({id:t.id,code:t.code,entryDate:t.entryDate,flag:'REVIEW_CONFIRMATION_OR_GATE',status:s,note:'舊版記錄可能使用主狀態而非實際成交層級，需對照當時正式訊號與Gate；不能自行改成自主買入'});
   if(family==='trend'&&!/可小額|強勢突破|突破後回踩/.test(s))
    flagged.push({id:t.id,code:t.code,entryDate:t.entryDate,flag:'REVIEW_TREND_STATUS',status:s,note:'未顯示明確強勢加碼許可，須核對'});
  }
@@ -1821,8 +2034,133 @@ function modelTradeDataAudit(trades){
  return{mode:'READ_ONLY',episodeGrouping:'same ETF within 10 calendar days (approximate; not precise 10 trading sessions)',
   modelTradeCount:eligible.length,trendTradeCount:sorted.length,trendEpisodes:groups.length,
   episodes:groups.map(({lastMs,...x})=>({...x,lastDate:new Date(lastMs).toISOString().slice(0,10)})),
-  potentialSnapshotInconsistencies:flagged,
-  note:'僅檢驗匯出診斷資料；不刪除、不重新分類、不修改雲端持股或交易紀錄。Gate警示需對照實際下單時刻。'};
+  potentialSnapshotInconsistencies:flagged,reviewRequiredCount:flagged.length,verifiedConfirmedCount:null,verificationStatus:'HISTORICAL_REPLAY_REQUIRED',
+  note:'快照疑點不等於已證實錯誤交易。僅檢驗匯出診斷資料，不刪除、不重新分類、不修改雲端持股或交易紀錄。Gate警示需對照實際下單時刻；尚未完成逐筆行情重播。'};
+}
+
+
+// Audit-only comparison: never changes holdings, model trade types, or live entry gates.
+// Same ETF + same fixed holding horizon avoids comparing September buys with November buys
+// solely by their current mark-to-market return. These are descriptive, not causal matches.
+function modelTradeFairComparison(trades){
+ const groups=['manual','reasonable','trend'],out={};
+ for(const code of ETF){
+  out[code]={};
+  for(const family of groups){
+   const a=(trades||[]).filter(t=>t.code===code&&modelFamilyOf(t)===family&&!incidentModelTrade(t));
+   const sample=h=>a.map(t=>tradeMaturedHorizon(t,h)?.totalReturnPct).filter(Number.isFinite);
+   const h5=sample(5),h20=sample(20);
+   out[code][family]={trades:a.length,h5:{samples:h5.length,avgTotalReturnPct:mean(h5)},h20:{samples:h20.length,avgTotalReturnPct:mean(h20)}};
+  }
+ }
+ return{method:'same-ETF-fixed-horizon-descriptive',note:'5/20交易日含息價格報酬；未對同時點配對，不得解讀為策略優劣的因果證明。',byETF:out};
+}
+
+// Read-only boundary diagnostics. This is NOT a model permission or trade signal.
+// Compares current immutable execution band with the wider area already used for deep-layer confirmation.
+// A shadow candidate is never sent to saveModelTrade, order execution, or position accounting.
+// Research-only alternatives: fractions of the ORIGINAL deep-layer confirmation tolerance.
+// 0% = current official immutable lower bound. No setting changes any formal status/Gate.
+function deepExecutionShadowCandidates({confirmedLow,executionLow,atr,rule,px,confirmed,gateOk,quoteFresh,marketOpen}){
+ const empty={candidates:[],reason:'INSUFFICIENT_DATA'};
+ if(!confirmed||!rule||!Number.isFinite(confirmedLow)||!Number.isFinite(executionLow)||
+    !Number.isFinite(atr)||atr<=0||!Number.isFinite(px)||px<=0)return empty;
+ const tolerance=Math.max(Number(rule.confirmDownAbs||0),atr*Number(rule.confirmDownAtr||0));
+ const enabled=gateOk===true&&quoteFresh===true&&marketOpen===true;
+ return{reason:enabled?'VALID_RESEARCH_SNAPSHOT':'SAFETY_GATE_OR_SESSION_BLOCKED',
+  candidates:[0,.25,.5,1].map(fraction=>{
+   // Only loosen downward; never tighten or shift the official fixed envelope.
+   const lowerBound=fraction===0?executionLow:Math.min(executionLow,confirmedLow-tolerance*fraction);
+   const inCandidateBand=px>=lowerBound&&px<executionLow;
+   return{fraction,lowerBound,inCandidateBand,shadowEligible:enabled&&inCandidateBand};
+  })};
+}
+
+function deepLayerBoundaryAudit(){
+ const byETF={};
+ for(const code of ETF){
+  const x=statusFor(code),layers=[];
+  for(const i of [1,2]){
+   const L=x?.m?.layers?.[i],rule=LAYER_CONFIRM_RULES[i],atr=Number(x?.r?.history?.atr14),px=x&&Number.isFinite(Number(x.px))?Number(x.px):null;
+   const confirmedLow=L?.confirmedZone&&Number.isFinite(Number(L.confirmedZone.low))?Number(L.confirmedZone.low):null;
+   const liveAtr=Number.isFinite(atr)&&atr>0?atr:null;
+   const confirmAllowance=liveAtr===null?null:Math.max(Number(rule.confirmDownAbs||0),liveAtr*Number(rule.confirmDownAtr||0));
+   const executionLow=Number.isFinite(L?.executionLow)?L.executionLow:null;
+   const candidateLow=confirmedLow!==null&&confirmAllowance!==null?confirmedLow-confirmAllowance:null;
+   const status=x?.statuses?.[i]||'UNKNOWN';
+   const quoteFresh=!!x&&officialExecutionSnapshotReady(code);
+   const gateOk=!!x&&!x.r.hardVeto&&!x.r.noBuyToday&&quoteFresh&&Number(x.r.score)>=rule.minScore&&!L?.gateBlocked;
+   const marketOpen=cashSessionIsOpenForNewConfirmation();
+   const shadowAB=deepExecutionShadowCandidates({confirmedLow,executionLow,atr:liveAtr,rule,px,
+    confirmed:!!L?.confirmed,gateOk,quoteFresh,marketOpen});
+   layers.push({layer:i+1,status,confirmed:!!L?.confirmed,executionLow,confirmedZoneLow:Number.isFinite(confirmedLow)?confirmedLow:null,
+    price:px,shadowConfirmationLow:candidateLow,
+    belowExecutionBand:!!L?.confirmed&&executionLow!==null&&px!==null&&px<executionLow,
+    shadowWithinExpandedLow:!!L?.confirmed&&candidateLow!==null&&px!==null&&px>=candidateLow&&executionLow!==null&&px<executionLow,
+    gateOk,quoteFresh,marketOpen,shadowAB,shadowWouldPermit:shadowAB.candidates.some(c=>c.fraction===1&&c.shadowEligible),
+    note:'候選區間只供研究，不代表正式買入許可；須盤中逐筆回放後才可評估修改'});
+  }
+  byETF[code]=layers;
+ }
+ return{mode:'READ_ONLY',asOf:new Date().toISOString(),method:'snapshot-only-not-historical-replay',byETF};
+}
+
+// Read-only stratification: small historical samples must never be used as a new live Gate.
+// Uses validated fixed-horizon returns, not current mark-to-market values with unequal holding ages.
+function modelEntryHealthAudit(trades){
+ const labels=['LOW_0_40','MID_41_60','HIGH_61_100','UNKNOWN'],byETF={};
+ for(const code of ETF){
+  const rows=(trades||[]).filter(t=>t.code===code&&modelFamilyOf(t)==='reasonable'&&!incidentModelTrade(t));
+  byETF[code]={};
+  for(const label of labels){
+   const a=rows.filter(t=>{
+    const n=Number(t?.snapshot?.health?.score);
+    const v=t?.snapshot?.health?.score===null||t?.snapshot?.health?.score===undefined||!Number.isFinite(n)?null:n;
+    return label==='UNKNOWN'?v===null:v!==null&&(label==='LOW_0_40'?v>=0&&v<=40:label==='MID_41_60'?v>40&&v<=60:v>60&&v<=100);
+   });
+   const values=h=>a.map(t=>tradeMaturedHorizon(t,h)?.totalReturnPct).filter(Number.isFinite);
+   const h5=values(5),h20=values(20);
+   byETF[code][label]={trades:a.length,h5:{n:h5.length,meanPct:mean(h5)},h20:{n:h20.length,meanPct:mean(h20)}};
+  }
+ }
+ return{mode:'READ_ONLY',method:'health-bucket-observed-trades-not-signal-backtest',
+  note:'低健康分數與後續表現只是樣本相關性，非因果或可部署規則；各組樣本數不足時不應調門檻。',byETF};
+}
+
+// Replay evidence inventory. Existing HIST coalesces observations, while SHADOW_LOG
+// rolls over daily and lacks full official Gate inputs. Neither is a tick replay.
+// Do not infer missing quotes, fill prices, or historical buy permissions.
+function entryReplayEvidenceAudit(trades,history,shadowLog){
+ const h=history&&typeof history==='object'?history:{},logs=Array.isArray(shadowLog)?shadowLog:[],byETF={};
+ for(const code of ETF){
+  const rows=(trades||[]).filter(t=>t.code===code&&modelFamilyOf(t)==='reasonable'&&!incidentModelTrade(t));
+  const perTrade=rows.map(t=>{
+   const day=String(t.entryDate||''),stamp=Date.parse(t.entryAt||'');
+   const hist=Array.isArray(h[code])?h[code]:[];
+   const windows=hist.filter(x=>x&&(String(x.from||'').slice(0,10)===day||
+     (Number.isFinite(stamp)&&Date.parse(x.from||'')<=stamp&&Date.parse(x.to||'')>=stamp)));
+   const observations=logs.filter(x=>x&&x.code===code&&x.day===day&&x.price!==null&&x.price!==undefined&&Number.isFinite(Number(x.price))&&Number(x.price)>0);
+   const usableTime=Number.isFinite(stamp);
+   const before=usableTime&&observations.some(x=>Number.isFinite(Date.parse(x.at||''))&&Date.parse(x.at)<=stamp);
+   const after=usableTime&&observations.some(x=>Number.isFinite(Date.parse(x.at||''))&&Date.parse(x.at)>=stamp);
+   const reasons=[];
+   if(!usableTime)reasons.push('MISSING_ENTRY_TIMESTAMP');
+   if(!windows.length)reasons.push('NO_LOCAL_HISTORY_WINDOW');
+   if(!observations.length)reasons.push('NO_RAW_INTRADAY_OBSERVATIONS');
+   else if(!(before&&after))reasons.push('NO_BRACKETING_INTRADAY_OBSERVATIONS');
+   reasons.push('NO_HISTORICAL_OFFICIAL_GATE_REPLAY_INPUTS');
+   return{id:t.id,entryDate:day,layer:t.layer,historyWindows:windows.length,
+    retainedShadowObservations:observations.length,bracketedByObservedQuotes:!!(before&&after),
+    canVerifyOriginalExecution:false,readiness:'INSUFFICIENT_FOR_FAITHFUL_REPLAY',missing:reasons};
+  });
+  byETF[code]={reasonableTrades:rows.length,fullyReplayable:0,
+   withRetainedShadowObservations:perTrade.filter(x=>x.retainedShadowObservations>0).length,
+   withQuoteBracket:perTrade.filter(x=>x.bracketedByObservedQuotes).length,
+   trades:perTrade};
+ }
+ return{mode:'READ_ONLY',status:'INSUFFICIENT_HISTORICAL_EVIDENCE',
+  limitations:['HIST merges many observations','SHADOW_LOG is truncated/reset by date','past official hard Gate and source-freshness inputs are not recorded per tick'],
+  note:'保留原始交易類型。沒有完整的過去 Gate、行情時間戳及區間內逐筆報價，就不能宣稱完成歷史 L1/L2/L3 逐筆重播。',byETF};
 }
 
 function performanceDiagnosticPayload(){
@@ -1832,7 +2170,7 @@ function performanceDiagnosticPayload(){
   byLayer[layer]={trades:a.length,avgNetReturnPct:mean(rets),avgMAEPct:mean(mae),avgMFEPct:mean(mfe),reachedNextLayer:layer<3?a.filter(t=>layer===1?t.perf?.reachedLayer2:t.perf?.reachedLayer3).length:null,avgBenchmarkDeltaCurrentPct:mean(bdelta)};
  }
  const famStats=a=>{const rets=a.map(modelNetMetrics).map(x=>x.ret).filter(Number.isFinite),pathA=a.filter(modelTradePathMetricsReady),mae=pathA.map(t=>tradePathMetric(t,'maePct')).filter(Number.isFinite),mfe=pathA.map(t=>tradePathMetric(t,'mfePct')).filter(Number.isFinite),bd=a.map(t=>modelBenchmarkDelta(t)).filter(Number.isFinite);return{trades:a.length,avgNetReturnPct:mean(rets),avgMAEPct:mean(mae),avgMFEPct:mean(mfe),avgBenchmarkDeltaCurrentPct:mean(bd)}};
- return{generatedAt:new Date().toISOString(),day:dayKey(),build:CLIENT_BUILD,confirmationRules:LAYER_CONFIRM_RULES,audit:modelTradeDataAudit(MODEL_TRADES),excludedIncident:{date:ETF_MODEL_INCIDENT_DATE,reason:incidentModelNotice(),excludedModelTradeIds:MODEL_TRADES.filter(incidentModelTrade).map(t=>t.id)},summary:{total:MODEL_TRADES.length,model:modelTrades.length,manual:MODEL_TRADES.filter(t=>t.tradeType==='manual').length,valued:MODEL_TRADES.filter(t=>Number.isFinite(modelNetMetrics(t).net)).length,unvalued:MODEL_TRADES.filter(t=>!Number.isFinite(modelNetMetrics(t).net)).length,byLayer,byFamily:{reasonable:famStats(reasonableTrades),trend:famStats(trendTrades)}},trades:MODEL_TRADES.map(t=>{const p=t.perf||{},m=modelNetMetrics(t),bench=p.benchmark||{};return{id:t.id,code:t.code,name:t.name,tradeType:t.tradeType||'model',modelFamily:modelFamilyOf(t),layer:t.layer,entryAt:t.entryAt,entryDate:t.entryDate,entryPrice:t.entryPrice,shares:t.shares,exitAt:t.exitAt||null,exitPrice:t.exitPrice||null,build:t.snapshot?.build||null,confirmationVersion:t.snapshot?.confirmationVersion||null,confirmationRule:t.snapshot?.confirmationRule||null,score:t.snapshot?.score??null,chaseRisk:t.snapshot?.chaseRisk??null,chaseWarningThreshold:t.snapshot?.chaseWarningThreshold??null,chaseHardThreshold:t.snapshot?.chaseHardThreshold??null,chaseCalibrationLockedDate:t.snapshot?.chaseCalibrationLockedDate??null,chaseCalibrationObservations:t.snapshot?.chaseCalibrationObservations??null,chaseCalibrationWalkForwardCount:t.snapshot?.chaseCalibrationWalkForwardCount??null,environmentScore:t.snapshot?.environmentScore??null,healthScore:t.snapshot?.health?.score??null,healthDivergence:t.snapshot?.health?.divergence??null,modelStatus:t.snapshot?.modelStatusText||null,zones:t.snapshot?.zones||null,trendLevels:t.snapshot?.trendLevels||null,trend:t.snapshot?.trend||null,trendScoreGroups:t.snapshot?.scoreGroups||null,trendRegime:t.snapshot?.regime||null,trendBacktest:t.snapshot?.trendBacktest||null,shadow:t.snapshot?.shadow||null,currentPrice:m.currentPrice??null,currentPriceSource:m.priceSource||null,currentPriceAsOf:m.priceAsOf||null,currentPriceReturnPct:m.currentPriceReturnPct??null,currentTotalReturnPct:m.currentTotalReturnPct??null,accruedDividendPerShare:modelTradeDividendPerShare(t),eligibleDividends:p.eligibleDividends||[],dividendDataComplete:p.dividendDataComplete??null,returnBasis:p.returnBasis||p.frontendReturnBasis||null,netPnL:m.net,netReturnPct:m.ret,grossPnL:m.gross,estimatedCost:m.cost,horizon:{5:tradeMaturedHorizon(t,5),20:tradeMaturedHorizon(t,20),60:tradeMaturedHorizon(t,60)},maePct:tradePathMetric(t,'maePct'),priceMaePct:modelTradePathMetricsReady(t)?tradeMetricNumber(p.priceMaePct):null,maeDate:modelTradePathMetricsReady(t)?p.maeDate??null:null,mfePct:tradePathMetric(t,'mfePct'),priceMfePct:modelTradePathMetricsReady(t)?tradeMetricNumber(p.priceMfePct):null,mfeDate:modelTradePathMetricsReady(t)?p.mfeDate??null:null,reachedLayer2:!!p.reachedLayer2,reachedLayer3:!!p.reachedLayer3,chaseEntry:p.chaseEntry??null,benchmarkEntryMode:bench.entryMode||null,benchmarkEntryPrice:bench.entryPrice??null,benchmarkCurrentReturnPct:bench.currentReturnPct??null,benchmarkDeltaCurrentPct:modelBenchmarkDelta(t,m),benchmarkHorizon:bench.horizon||null,diagnosis:tradeDiagnosticLabel(t)} })};
+ return{generatedAt:new Date().toISOString(),day:dayKey(),build:CLIENT_BUILD,confirmationRules:LAYER_CONFIRM_RULES,audit:modelTradeDataAudit(MODEL_TRADES),deepLayerExecutionAudit:deepLayerBoundaryAudit(),excludedIncident:{date:ETF_MODEL_INCIDENT_DATE,reason:incidentModelNotice(),excludedModelTradeIds:MODEL_TRADES.filter(incidentModelTrade).map(t=>t.id)},summary:{total:MODEL_TRADES.length,model:modelTrades.length,manual:MODEL_TRADES.filter(t=>t.tradeType==='manual').length,valued:MODEL_TRADES.filter(t=>Number.isFinite(modelNetMetrics(t).net)).length,unvalued:MODEL_TRADES.filter(t=>!Number.isFinite(modelNetMetrics(t).net)).length,byLayer,byFamily:{manual:famStats(MODEL_TRADES.filter(t=>t.tradeType==='manual')),reasonable:famStats(reasonableTrades),trend:famStats(trendTrades)},fairComparison:modelTradeFairComparison(MODEL_TRADES),entryHealthAudit:modelEntryHealthAudit(MODEL_TRADES),replayEvidence:entryReplayEvidenceAudit(MODEL_TRADES,HIST,SHADOW_LOG),liveTraceEvidence:entryTraceEvidenceSummary()},trades:MODEL_TRADES.map(t=>{const p=t.perf||{},m=modelNetMetrics(t),bench=p.benchmark||{};return{id:t.id,code:t.code,name:t.name,tradeType:t.tradeType||'model',modelFamily:modelFamilyOf(t),layer:t.layer,entryAt:t.entryAt,entryDate:t.entryDate,entryPrice:t.entryPrice,shares:t.shares,exitAt:t.exitAt||null,exitPrice:t.exitPrice||null,build:t.snapshot?.build||null,confirmationVersion:t.snapshot?.confirmationVersion||null,confirmationRule:t.snapshot?.confirmationRule||null,score:t.snapshot?.score??null,chaseRisk:t.snapshot?.chaseRisk??null,chaseWarningThreshold:t.snapshot?.chaseWarningThreshold??null,chaseHardThreshold:t.snapshot?.chaseHardThreshold??null,chaseCalibrationLockedDate:t.snapshot?.chaseCalibrationLockedDate??null,chaseCalibrationObservations:t.snapshot?.chaseCalibrationObservations??null,chaseCalibrationWalkForwardCount:t.snapshot?.chaseCalibrationWalkForwardCount??null,environmentScore:t.snapshot?.environmentScore??null,healthScore:t.snapshot?.health?.score??null,healthDivergence:t.snapshot?.health?.divergence??null,modelStatus:t.snapshot?.modelStatusText||null,zones:t.snapshot?.zones||null,trendLevels:t.snapshot?.trendLevels||null,trend:t.snapshot?.trend||null,trendScoreGroups:t.snapshot?.scoreGroups||null,trendRegime:t.snapshot?.regime||null,trendBacktest:t.snapshot?.trendBacktest||null,shadow:t.snapshot?.shadow||null,currentPrice:m.currentPrice??null,currentPriceSource:m.priceSource||null,currentPriceAsOf:m.priceAsOf||null,currentPriceReturnPct:m.currentPriceReturnPct??null,currentTotalReturnPct:m.currentTotalReturnPct??null,accruedDividendPerShare:modelTradeDividendPerShare(t),eligibleDividends:p.eligibleDividends||[],dividendDataComplete:p.dividendDataComplete??null,returnBasis:p.returnBasis||p.frontendReturnBasis||null,netPnL:m.net,netReturnPct:m.ret,grossPnL:m.gross,estimatedCost:m.cost,horizon:{5:tradeMaturedHorizon(t,5),20:tradeMaturedHorizon(t,20),60:tradeMaturedHorizon(t,60)},maePct:tradePathMetric(t,'maePct'),priceMaePct:modelTradePathMetricsReady(t)?tradeMetricNumber(p.priceMaePct):null,maeDate:modelTradePathMetricsReady(t)?p.maeDate??null:null,mfePct:tradePathMetric(t,'mfePct'),priceMfePct:modelTradePathMetricsReady(t)?tradeMetricNumber(p.priceMfePct):null,mfeDate:modelTradePathMetricsReady(t)?p.mfeDate??null:null,reachedLayer2:!!p.reachedLayer2,reachedLayer3:!!p.reachedLayer3,chaseEntry:p.chaseEntry??null,benchmarkEntryMode:bench.entryMode||null,benchmarkEntryPrice:bench.entryPrice??null,benchmarkCurrentReturnPct:bench.currentReturnPct??null,benchmarkDeltaCurrentPct:modelBenchmarkDelta(t,m),benchmarkHorizon:bench.horizon||null,diagnosis:tradeDiagnosticLabel(t)} })};
 }
 
 function downloadTradeDiagnostics(){
@@ -1916,4 +2254,5 @@ loadDividendAuto=apiSingleFlight(loadDividendAuto);
 loadPublicDividendAnnouncements=apiSingleFlight(loadPublicDividendAnnouncements);
 loadTrendBuy=apiSingleFlight(loadTrendBuy);
 loadCommentary=apiSingleFlight(loadCommentary);
+setInterval(observeOfficialEntryPermissionTimeout,15000);
 setInterval(setMode,30000);boot();

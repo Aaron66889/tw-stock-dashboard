@@ -57,7 +57,7 @@ function check(modelChanges={},quoteChanges={}){
  const now=Date.parse('2026-10-30T03:00:30Z'),asOf=new Date(now-30000).toISOString();
  const lastBuy={fetchedAt:asOf,modelFreshByCode:{'0050':true},...modelChanges};
  const lastLive={quotes:{'0050':{last:108.2,date:'2026-10-30',fetchTime:asOf,serverFetchedAt:asOf,realtime:true,lastGoodFallback:false,...quoteChanges}}};
- const fn=vm.runInNewContext(checkSource,{lastBuy,lastLive,dayKey:()=> '2026-10-30',Date});
+ const fn=vm.runInNewContext(checkSource,{lastBuy,lastLive,dayKey:()=> '2026-10-30',incidentModelDay:()=>false,Date});
  return fn('0050',now);
 }
 test('true fresh quote and model snapshot permits evaluation',()=>{assert.equal(check(),true)});

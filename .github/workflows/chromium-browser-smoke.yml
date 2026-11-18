@@ -1,0 +1,25 @@
+name: Isolated Chromium Browser Smoke
+on:
+  pull_request:
+    paths:
+      - 'public/**'
+      - 'tests/browser-smoke.cjs'
+      - '.github/workflows/chromium-browser-smoke.yml'
+  workflow_dispatch:
+jobs:
+  front-end-browser:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.1-noble
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install isolated browser test runner
+        run: npm install --no-save --ignore-scripts --no-audit --no-fund playwright@1.56.1
+      - name: Browser boot and offline API resilience
+        run: node tests/browser-smoke.cjs
