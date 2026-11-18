@@ -108,6 +108,33 @@ const server=http.createServer((req,res)=>{
     assert.equal(find('below',view,other).disabled,false,'0050 dropping must not affect '+other+' '+view);
    }
   }
+  // A previously confirmed layer can remain CONFIRMED_IN after the score
+  // subsequently falls below its minimum. UI and save Gate must both block.
+  const lowScore=await page.evaluate(()=>{
+   lastLive.quotes['0050'].last=100;
+   lastBuy.models['0050'].hardVeto=false;
+   lastBuy.models['0050'].score=49; // L1 requires 50
+   renderHomeRanking();renderBuyCards();
+   const cards=['#homeBuyRanking .buycard','#buyCards .buycard'].map(sel=>
+    [...document.querySelectorAll(sel)].find(n=>n.querySelector('.ticker')?.textContent?.startsWith('0050')));
+   const read=cards.map(card=>({disabled:card?.querySelector('button[onclick*="openModelTrade"]')?.disabled,
+    text:card?.innerText||''}));
+   const allowed=officialLayerExecutionEligible(statusFor('0050'),0);
+   let alertText='';
+   const oldAlert=window.alert;
+   window.alert=msg=>{alertText=String(msg)};
+   try{openModelTrade('0050',1)}finally{window.alert=oldAlert}
+   const modalOpen=document.getElementById('modelTradeModal')?.classList.contains('on');
+   lastBuy.models['0050'].score=70;
+   return{read,allowed,alertText,modalOpen};
+  });
+  assert.equal(lowScore.allowed,false,'L1 minimum-score rule is shared by official decision');
+  for(const item of lowScore.read){
+   assert.equal(item.disabled,true,'confirmed below-minimum-score button must stay disabled');
+   assert.match(item.text,/未達最低 50 分/,'display must explain score block');
+  }
+  assert.match(lowScore.alertText,/尚未通過正式模型買入許可/);
+  assert.equal(lowScore.modalOpen,false,'direct manual invocation cannot bypass score Gate');
   // Exercise the real loadEtfLive() browser ingestion path, not just injected
   // state. A synthetic provider fallback must be displayed but never executable.
   const ingestion=await page.evaluate(async()=>{
