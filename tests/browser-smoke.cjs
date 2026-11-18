@@ -330,6 +330,70 @@ const server=http.createServer((req,res)=>{
   assert.equal(modelSyncFailures.unauthorized.ready,false);
   assert.equal(modelSyncFailures.malformed.same,true,'malformed cloud payload cannot erase trades');
   assert.equal(modelSyncFailures.malformed.status,'degraded');
+  // Cross-device reconciliation with synthetic cloud snapshots. Tombstones
+  // and pending local edits take priority over clean cached trades.
+  const reconciliation=await page.evaluate(async()=>{
+   const mk=(id,price,extra={})=>({id,code:'0050',shares:10,entryPrice:price,tradeType:'manual',...extra});
+   const run=async({local,cloud,deleted,localDeletes=[],uploadedIds=[]})=>{
+    MODEL_TRADES=local.map(t=>({...t}));
+    MODEL_PENDING_DELETES=[...localDeletes];
+    MODEL_SYNC.busy=false;MODEL_SYNC.ready=true;MODEL_SYNC.knownUnlocked=true;
+    MODEL_SYNC.status='ready';
+    let reads=0,uploadRequests=[];
+    const cloudMap=new Map(cloud.map(t=>[t.id,{...t}]));
+    modelSyncFetch=async url=>{
+     if(url!=='/api/model-trades')throw Error('UNEXPECTED_RECONCILIATION_ENDPOINT');
+     reads++;
+     return {ok:true,initialized:true,trades:[...cloudMap.values()],
+      deletedIds:deleted,fetchedAt:new Date().toISOString()};
+    };
+    syncDirtyModelTrades=async()=>{
+     uploadRequests=MODEL_TRADES.filter(t=>t._syncDirty).map(t=>t.id);
+     for(const t of MODEL_TRADES.filter(t=>t._syncDirty)){
+      if(uploadedIds.includes(t.id)){
+       cloudMap.set(t.id,{...t,_syncDirty:false});
+       t._syncDirty=false;
+      }else throw Error('SIMULATED_UPLOAD_REJECTED');
+     }
+    };
+    await syncModelTrades(false);
+    return{trades:MODEL_TRADES.map(t=>({id:t.id,price:t.entryPrice,dirty:!!t._syncDirty})),
+     pendingDeletes:[...MODEL_PENDING_DELETES],status:MODEL_SYNC.status,
+     uploadRequests,reads};
+   };
+   const remoteWins=await run({
+    local:[mk('shared',90),mk('local-only',91)],
+    cloud:[mk('shared',100),mk('remote-only',102)],
+    deleted:['deleted-old'],uploadedIds:['local-only']
+   });
+   const dirtyLocalWins=await run({
+    local:[mk('shared',95,{_syncDirty:true})],
+    cloud:[mk('shared',100)],
+    deleted:[],uploadedIds:['shared']
+   });
+   const tombstones=await run({
+    local:[mk('deleted-old',88,{_syncDirty:true}),mk('local-pending-delete',77)],
+    cloud:[mk('deleted-old',88),mk('local-pending-delete',77)],
+    deleted:['deleted-old'],localDeletes:['local-pending-delete']
+   });
+   return{remoteWins,dirtyLocalWins,tombstones};
+  });
+  assert.equal(reconciliation.remoteWins.status,'ready');
+  assert.deepEqual(reconciliation.remoteWins.trades.map(t=>t.id).sort(),
+   ['local-only','remote-only','shared']);
+  assert.equal(reconciliation.remoteWins.trades.find(t=>t.id==='shared').price,100,
+   'newer cloud value should replace clean local cache');
+  assert.equal(reconciliation.remoteWins.trades.find(t=>t.id==='local-only').dirty,false);
+  assert.deepEqual(reconciliation.remoteWins.uploadRequests,['local-only'],
+   'local-only trade should be repaired to cloud exactly once');
+  assert.equal(reconciliation.dirtyLocalWins.status,'ready');
+  assert.equal(reconciliation.dirtyLocalWins.trades.find(t=>t.id==='shared').price,95,
+   'dirty local edit must overwrite earlier cloud revision once acknowledged');
+  assert.deepEqual(reconciliation.dirtyLocalWins.uploadRequests,['shared']);
+  assert.equal(reconciliation.tombstones.trades.length,0,
+   'cloud and pending local tombstones must never resurrect deleted trades');
+  assert.deepEqual(reconciliation.tombstones.pendingDeletes,['local-pending-delete'],
+   'unacknowledged local deletion must remain queued');
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
