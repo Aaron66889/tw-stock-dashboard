@@ -2,7 +2,7 @@
 (function(root){
  'use strict';
  const ETF=['0050','0056','00878','00919'],KEY='twstock_signal_alerts_v1',SEEN='twstock_signal_alert_seen_v1',HISTORY='twstock_signal_alert_history_v1';
- const LIMIT=180,ALERT_DAY_LIMIT=24;
+ const LIMIT=240,ALERT_DAY_LIMIT=120;
  function read(key,fallback){try{const x=JSON.parse(localStorage.getItem(key)||'null');return x??fallback}catch{return fallback}}
  function write(key,value){try{localStorage.setItem(key,JSON.stringify(value))}catch(_){}}
  const settings=read(KEY,{enabled:false,sound:true});
@@ -114,6 +114,25 @@
    }
   }
  }
+ // Repeated alerts are based on observed official permission transitions,
+ // not today's one-time initial confirmation dedup key.
+ function observeExecutionTransition(event){
+  if(!enabled||!marketOpen()||!event||!ETF.includes(event.code)||
+     ![1,2,3].includes(Number(event.layer))||
+     !['PERMISSION_LOST','PERMISSION_RESTORED'].includes(event.eventType))return false;
+  const time=Date.parse(event.at||'');
+  if(!Number.isFinite(time)||nowDay(new Date(time))!==nowDay()||
+     time>Date.now()+15000||Date.now()-time>120000)return false;
+  const layer='L'+event.layer;
+  const isLoss=event.eventType==='PERMISSION_LOST';
+  const type=layer+'_'+(isLoss?'EXIT':'RELIT')+'_'+event.at;
+  const label=isLoss?'正式買入退燈':'正式買入重新亮燈';
+  const body=(isLoss?'原本允許買入，現已暫停；':'買入許可已恢復，請重新核對；')+
+   '原因：'+String(event.detail||event.reason||'未提供')+
+   '｜觀測價 '+fmt(event.price)+'元｜分數 '+(event.score??'—')+
+   '｜僅通知，不代表下單';
+  return emit(event.code,type,layer+' '+label,body,'buy');
+ }
  function observeTrend(data,live){
   if(!enabled||!marketOpen()||!data?.ok||!fresh(data.fetchedAt,90000))return;
   for(const code of ETF){
@@ -125,7 +144,7 @@
    emit(code,'TREND_A','強勢加碼A版成立','現價 '+fmt(px)+'元｜執行帶 '+fmt(lv.entryLow)+'～'+fmt(lv.entryHigh)+'元｜最高追價 '+fmt(lv.maxChase)+'元｜A版'+fmt(m.score)+'分｜B版 '+b+'。請重新確認行情。','trendBuyPage');
   }
  }
- root.SignalAlerts={enable,toggleSound,test,monitoring:()=>enabled,observeLayers,observeTrend,render,marketOpen};
+ root.SignalAlerts={enable,toggleSound,test,monitoring:()=>enabled,observeLayers,observeTrend,observeExecutionTransition,render,marketOpen};
  if(root.addEventListener)root.addEventListener('storage',e=>{if(e.key===KEY){const v=read(KEY,{enabled:false,sound:true});enabled=v.enabled===true;sound=v.sound!==false;render()}if(e.key===SEEN){seen=read(SEEN,{})}});
  prune();
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',render);else render();
