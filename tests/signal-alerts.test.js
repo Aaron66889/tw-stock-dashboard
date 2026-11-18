@@ -116,3 +116,45 @@ test('notification engine script loads before app, and model polling hooks remai
  assert.ok(app.includes("if(!force&&!onPage&&!watched)return"));
  assert.ok(app.includes("if(document.visibilityState==='hidden'&&!(window.SignalAlerts?.monitoring()&&twMarketOpenClient()))return"));
 });
+
+test('official permission exit and subsequent relight each trigger a desktop notification; distinct cycles repeat',()=>{
+ const c=client({enabled:true});
+ const base={code:'00919',layer:1,price:31.5,score:55,reason:'STALE_QUOTE_OR_MODEL',detail:'模型或行情新鮮度未通過'};
+ const sequence=[
+  {...base,eventType:'PERMISSION_LOST',at:'2026-10-14T02:15:00.000Z'},
+  {...base,eventType:'PERMISSION_RESTORED',at:'2026-10-14T02:15:01.000Z',detail:'買入許可重新成立'},
+  {...base,eventType:'PERMISSION_LOST',at:'2026-10-14T02:15:02.000Z'},
+  {...base,eventType:'PERMISSION_RESTORED',at:'2026-10-14T02:15:03.000Z',detail:'買入許可重新成立'}
+ ];
+ c.ctx.sequence=sequence;
+ for(let i=0;i<4;i++)c.run(`SignalAlerts.observeExecutionTransition(sequence[${i}])`);
+ assert.equal(c.notifications.length,4,'second relight must not be suppressed by first same-day alert');
+ assert.match(c.notifications[0].title,/退燈/);
+ assert.match(c.notifications[1].title,/重新亮燈/);
+ assert.match(c.notifications[2].title,/退燈/);
+ assert.match(c.notifications[3].title,/重新亮燈/);
+ assert.equal(new Set(c.notifications.map(n=>n.opts.tag)).size,4,'each event gets its own OS notification tag');
+ c.run('SignalAlerts.observeExecutionTransition(sequence[3])');
+ assert.equal(c.notifications.length,4,'replayed identical transition deduplicated');
+ assert.equal(c.run("JSON.parse(localStorage.getItem('twstock_signal_alert_history_v1')).length"),4);
+});
+test('permission transition alerts are opt-in, same-day, bounded to fresh observations and real session',()=>{
+ const e={code:'0056',layer:1,eventType:'PERMISSION_LOST',at:fixed,price:48.94,score:42,detail:'行情逾時'};
+ const c=client(),t=client({enabled:true});
+ c.ctx.event=e;t.ctx.event=e;
+ c.run('SignalAlerts.observeExecutionTransition(event)');
+ assert.equal(c.notifications.length,0);
+ t.run('SignalAlerts.observeExecutionTransition(event)');
+ assert.equal(t.notifications.length,1);
+ for(const mutate of [
+  v=>v.at='2026-10-13T02:15:00Z',
+  v=>v.at='2026-10-14T00:00:00Z',
+  v=>v.layer=4,
+  v=>v.code='9999',
+  v=>v.eventType='RECOVERY_UNVERIFIED'
+ ]){
+  const x=client({enabled:true});x.ctx.event={...e};mutate(x.ctx.event);
+  x.run('SignalAlerts.observeExecutionTransition(event)');
+  assert.equal(x.notifications.length,0,JSON.stringify(x.ctx.event));
+ }
+});
