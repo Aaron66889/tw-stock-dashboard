@@ -691,3 +691,44 @@ test('unchanged 15-second watchdog ticks do not repeatedly parse full local trac
  assert.equal(loads,3);
  assert.equal(saves,3);
 });
+
+test('real official trace emits observed loss then relight once each, without calling trade or changing gates',()=>{
+ const a=source.indexOf("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';");
+ const b=source.indexOf('function updateState(){',a);
+ let clock=Date.parse('2026-11-16T02:00:00Z'),fresh=true;
+ class Clock extends Date{constructor(...args){super(...(args.length?args:[clock]))}static now(){return clock}}
+ const storage=new Map(),events=[];
+ const x={r:{code:'0050',score:55,history:{atr14:1},hardVeto:false,noBuyToday:false},
+  m:{layers:[{zone:{low:99,high:100},confirmedZone:{low:99,high:100},executionLow:99,executionHigh:100,confirmed:true,gateBlocked:false}]},
+  px:99.5,statuses:['CONFIRMED_IN']};
+ const ctx={ETF:['0050'],Date:Clock,LAYER_CONFIRM_RULES:[{minScore:50}],
+  lastBuy:{fetchedAt:'2026-11-16T02:00:00Z'},lastLive:{quotes:{'0050':{last:99.5}}},
+  statusFor:()=>x,dayKey:()=> '2026-11-16',liveObservationKey:()=> 'same-quote',
+  officialExecutionSnapshotReady:()=>fresh,cashSessionIsOpenForNewConfirmation:()=>true,
+  layerView:()=> 'CONFIRMED_IN',
+  loadJSON:(k,d)=>storage.get(k)??d,saveJSON:(k,v)=>storage.set(k,v),
+  window:{SignalAlerts:{observeExecutionTransition:v=>events.push({...v})}}
+ };
+ const capture=vm.runInNewContext(source.slice(a,b)+'\ncaptureOfficialEntryTrace',ctx);
+ assert.equal(capture('0050'),true,'first observation initializes a baseline');
+ assert.equal(events.length,0,'first observation is not a fabricated exit');
+ clock+=15000;fresh=false;
+ assert.equal(capture('0050'),true);
+ assert.equal(events.length,1);assert.equal(events[0].eventType,'PERMISSION_LOST');
+ assert.equal(events[0].reason,'STALE_QUOTE_OR_MODEL');
+ capture('0050');assert.equal(events.length,1,'unchanged stale quote does not replay alert');
+ clock+=15000;fresh=true;
+ assert.equal(capture('0050'),true);
+ assert.equal(events.length,2);assert.equal(events[1].eventType,'PERMISSION_RESTORED');
+ assert.equal(storage.get('v124_entry_evidence_research_v1').length,3);
+});
+test('score drops below minimum are a distinct observed exit attribution',()=>{
+ const ctx=loadFunction("const ENTRY_TRACE_KEY='v124_entry_evidence_research_v1';",'function updateState(){',{
+  LAYER_CONFIRM_RULES:[{minScore:50}],ETF:['0050']});
+ const pre={code:'0050',day:'2026-11-16',at:'2026-11-16T02:00:00Z',score:55,fresh:true,hardVeto:false,noBuyToday:false,
+  layers:[{status:'CONFIRMED_IN',executionAllowed:true}]};
+ const post={...pre,at:'2026-11-16T02:00:20Z',score:42,layers:[{status:'CONFIRMED_IN',executionAllowed:false}]};
+ const result=ctx.classifyEntryTraceExit(pre,post,0);
+ assert.equal(result.reason,'SCORE_BELOW_MINIMUM');
+ assert.match(result.detail,/42.*50/);
+});
