@@ -134,6 +134,7 @@ const server=http.createServer((req,res)=>{
   for(const item of lowScore.read){
    assert.equal(item.disabled,true,'confirmed below-minimum-score button must stay disabled');
    assert.match(item.text,/未達最低 50 分/,'display must explain score block');
+   assert.match(item.text,/分數不足／不可模型買入/,'disabled button must explain low score');
   }
   assert.match(lowScore.alertText,/尚未通過正式模型買入許可/);
   assert.equal(lowScore.modalOpen,false,'direct manual invocation cannot bypass score Gate');
