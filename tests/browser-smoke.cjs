@@ -394,6 +394,39 @@ const server=http.createServer((req,res)=>{
    'cloud and pending local tombstones must never resurrect deleted trades');
   assert.deepEqual(reconciliation.tombstones.pendingDeletes,['local-pending-delete'],
    'unacknowledged local deletion must remain queued');
+  // Read-after-write lag: an acknowledged import must not disappear if the
+  // second cloud GET returns an older snapshot. Reconciliation waits for proof.
+  const staleReadback=await page.evaluate(async()=>{
+   const onlyLocal={id:'synthetic-lag-1',code:'0050',shares:7,entryPrice:88,tradeType:'manual',_syncDirty:true};
+   MODEL_TRADES=[{...onlyLocal}];MODEL_PENDING_DELETES=[];
+   MODEL_SYNC.busy=false;MODEL_SYNC.ready=true;MODEL_SYNC.knownUnlocked=true;MODEL_SYNC.status='ready';
+   let read=0,uploads=0,cloudVisible=false;
+   modelSyncFetch=async url=>{
+    if(url!=='/api/model-trades')throw Error('UNEXPECTED_READBACK_ENDPOINT');
+    read++;
+    return {ok:true,initialized:true,trades:cloudVisible?[{...onlyLocal,_syncDirty:false}]:[],
+     deletedIds:[],fetchedAt:new Date().toISOString()};
+   };
+   syncDirtyModelTrades=async()=>{
+    uploads++;
+    for(const t of MODEL_TRADES)if(t._syncDirty)t._syncDirty=false;
+   };
+   await syncModelTrades(false);
+   const lag={status:MODEL_SYNC.status,message:MODEL_SYNC.message,
+    trades:MODEL_TRADES.map(t=>({id:t.id,dirty:!!t._syncDirty})),read,uploads};
+   cloudVisible=true;
+   await syncModelTrades(false);
+   const recovered={status:MODEL_SYNC.status,
+    trades:MODEL_TRADES.map(t=>({id:t.id,dirty:!!t._syncDirty})),read,uploads};
+   return{lag,recovered};
+  });
+  assert.equal(staleReadback.lag.status,'degraded');
+  assert.deepEqual(staleReadback.lag.trades,[{id:'synthetic-lag-1',dirty:true}],
+   'lagging cloud GET must keep local trade queued, not drop it');
+  assert.match(staleReadback.lag.message,/尚未在雲端回讀確認/);
+  assert.equal(staleReadback.recovered.status,'ready');
+  assert.deepEqual(staleReadback.recovered.trades,[{id:'synthetic-lag-1',dirty:false}],
+   'matching cloud readback confirms local trade without duplication');
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
