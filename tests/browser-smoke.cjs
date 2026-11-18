@@ -138,6 +138,30 @@ const server=http.createServer((req,res)=>{
   }
   assert.match(lowScore.alertText,/尚未通過正式模型買入許可/);
   assert.equal(lowScore.modalOpen,false,'direct manual invocation cannot bypass score Gate');
+  // Real browser DOM: show the last observed permission loss on the ETF card.
+  // A later observed recovery must not erase the original reason.
+  const latestExitPanel=await page.evaluate(()=>{
+   const day=dayKey(),iso=delta=>new Date(Date.now()-delta).toISOString();
+   const lay=(status,allow)=>[
+    {layer:1,status,executionAllowed:allow,confirmed:true,executionLow:99,executionHigh:101},
+    {layer:2,status:'WAIT',executionAllowed:false},
+    {layer:3,status:'WAIT',executionAllowed:false}
+   ];
+   const entries=[
+    {code:'0050',day,at:iso(24000),fresh:true,hardVeto:false,noBuyToday:false,px:100,score:70,layers:lay('CONFIRMED_IN',true)},
+    {code:'0050',day,at:iso(16000),fresh:false,hardVeto:false,noBuyToday:false,px:100,score:70,layers:lay('CONFIRMED_IN',false)},
+    {code:'0050',day,at:iso(8000),fresh:true,hardVeto:false,noBuyToday:false,px:100,score:70,layers:lay('CONFIRMED_IN',true)}
+   ];
+   localStorage.setItem(ENTRY_TRACE_KEY,JSON.stringify(entries));ENTRY_TRACE_PANEL_CACHE=null;
+   renderHomeRanking();renderBuyCards();
+   const summary=entryTraceLastExitPanel('0050');
+   const card=[...document.querySelectorAll('#buyCards .buycard')].find(n=>n.querySelector('.ticker')?.textContent?.startsWith('0050'));
+   return{summary,visible:card?.innerText||'',other:entryTraceLastExitPanel('0056')};
+  });
+  assert.match(latestExitPanel.summary,/模型／行情逾時/);
+  assert.match(latestExitPanel.visible,/最近一次退燈/);
+  assert.match(latestExitPanel.visible,/後續已觀測到重新亮燈/);
+  assert.match(latestExitPanel.other,/尚未記錄到可核對/);
   // Exercise the real loadEtfLive() browser ingestion path, not just injected
   // state. A synthetic provider fallback must be displayed but never executable.
   const ingestion=await page.evaluate(async()=>{
