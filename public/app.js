@@ -2367,10 +2367,13 @@ loadPublicDividendAnnouncements=apiSingleFlight(loadPublicDividendAnnouncements)
 loadTrendBuy=apiSingleFlight(loadTrendBuy);
 loadCommentary=apiSingleFlight(loadCommentary);
 setInterval(observeOfficialEntryPermissionTimeout,15000);
-setInterval(setMode,30000);
-// Existing isolated test harness and legacy browsers without a research
-// adapter preserve synchronous boot order and established trade-sync semantics.
-if(!window.ResearchStore){boot()}else (async()=>{
+// Preserve the existing synchronous startup contract for test harnesses
+// without IndexedDB while hydrating research before boot on real browsers.
+if(!window.ResearchStore){
+ setInterval(setMode,30000);boot();
+}else{
+ setInterval(setMode,30000);
+ (async()=>{
  // Research hydration must precede network/model polling and initial charts.
  // Without it, the first model tick could overwrite a partially migrated archive.
  try{
@@ -2387,4 +2390,5 @@ if(!window.ResearchStore){boot()}else (async()=>{
   }
  }catch(e){window.StorageSafety?.warnQuota?.('研究儲存初始化：'+e.message)}
  boot();
-})();
+ })();
+}
