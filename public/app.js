@@ -108,6 +108,18 @@ let DIVIDEND_PUBLIC={busy:false,ready:false,lastAt:null,message:'正式配息公
  byCode:loadJSON('v124_public_dividend_announcements',{})||{},source:null};
 let MODEL_PENDING_DELETES=loadJSON('v124_model_trade_pending_deletes',[]);
 let MODEL_TRADE_FILTER='all',MODEL_TRADE_LIMIT=10,MODEL_TRADE_EXPANDED=null;
+ // Emergency read-only snapshot includes unsaved in-memory state during quota
+ // failure. It never mutates portfolio, pending ledgers, or cloud data.
+ window.twStockEmergencyRuntimeSnapshot=()=>JSON.parse(JSON.stringify({
+  trades:MODEL_TRADES,holdings:H,
+  pendingHoldingsTrades:HOLDINGS_PENDING_TRADES,
+  pendingTradeDeletes:MODEL_PENDING_DELETES,
+  holdingsManualDirty:HOLDINGS_MANUAL_DIRTY,
+  sync:{modelStatus:MODEL_SYNC.status,modelReady:MODEL_SYNC.ready,
+   holdingsReady:HOLDINGS_SYNC.ready,holdingsMessage:HOLDINGS_SYNC.message},
+  capturedAt:new Date().toISOString()
+ }));
+
 
 function migrate1689Existing0050Trade(){
  const key='v1689_0050_10540_20_migrated';if(localStorage.getItem(key))return;
@@ -116,7 +128,16 @@ function migrate1689Existing0050Trade(){
  localStorage.setItem(key,'1')
 }
 function loadJSON(k,d){try{const x=JSON.parse(localStorage.getItem(k));return x??d}catch{return d}}
-function saveJSON(k,v){localStorage.setItem(k,JSON.stringify(v))}
+function saveJSON(k,v){
+ try{localStorage.setItem(k,JSON.stringify(v))}
+ catch(e){
+  // Critical portfolio and pending-operation writes MUST fail loudly. Never
+  // silently report synchronization success when the local write was rejected.
+  if(e?.name==='QuotaExceededError'||/exceeded the quota/i.test(e?.message||''))
+   window.StorageSafety?.warnQuota?.(k);
+  throw e;
+ }
+}
 function saveLastGood(k,v){try{localStorage.setItem('v124_lastgood_'+k,JSON.stringify({at:new Date().toISOString(),data:v}))}catch{}}
 function loadLastGood(k){try{return JSON.parse(localStorage.getItem('v124_lastgood_'+k)||'null')}catch{return null}}
 function ageText(ts){if(!ts)return'';const m=Math.max(0,Math.round((Date.now()-Date.parse(ts))/60000));return m<1?'剛剛':m+'分鐘前'}
@@ -1890,9 +1911,21 @@ function saveModelTrade(){
   snapshot={modelFamily:manual?'manual':'reasonable',zones:x.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:x.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),score:x.r.score,chaseRisk:x.r.chaseRisk,chaseWarningThreshold:x.r.chaseWarningThreshold??null,chaseHardThreshold:x.r.chaseHardThreshold??88,chaseCalibrationSource:x.r.chaseCalibration?.source||null,chaseCalibrationLockedDate:x.r.chaseCalibration?.lockedDate||null,chaseCalibrationLockStatus:x.r.chaseCalibration?.lockStatus||null,chaseCalibrationObservations:x.r.chaseCalibration?.observations??null,chaseCalibrationWalkForwardCount:x.r.chaseCalibration?.walkForwardCount??x.r.chaseCalibration?.walkForwardYears?.length??0,confirmationVersion:CONFIRM_RULE_VERSION,confirmationRule:LAYER_CONFIRM_RULES[layer?layer-1:0]||null,environmentScore:x.r.environmentScore,health:x.r.health||null,noBuyToday:!!x.r.noBuyToday,modelStatus:selectedLayerStatus||null,modelStatusText:signalText,executionAudit:manual?null:{selectedLayer:layer,selectedLayerStatus,activeLayerAtEntry:x.activeLayer+1,activeStatusAtEntry:x.activeStatus,gatePassed:!x.r.hardVeto&&!x.r.noBuyToday&&!x.m.layers[layer-1]?.gateBlocked,quoteAndModelFresh:officialExecutionSnapshotReady(code),minimumScore:LAYER_CONFIRM_RULES[layer-1]?.minScore??null,executionLow:Number.isFinite(x.m.layers[layer-1]?.executionLow)?x.m.layers[layer-1].executionLow:null,executionHigh:Number.isFinite(x.m.layers[layer-1]?.executionHigh)?x.m.layers[layer-1].executionHigh:null,observedPrice:Number.isFinite(x.px)?x.px:null,quoteObservationKey:liveObservationKey(code,x.r,x.px),modelFetchedAt:lastBuy?.fetchedAt||null,quoteReceivedAt:lastLive?.quotes?.[code]?.fetchTime||null,quoteServerFetchedAt:lastLive?.quotes?.[code]?.serverFetchedAt||null,confirmedAt:x.m.layers[layer-1]?.confirmedAt||null,gateBlockedReason:x.m.layers[layer-1]?.gateBlockedReason||null,recordedAt:new Date().toISOString()},priceVsFirstHighPct,night:lastNight?{last:lastNight.last,changePct:lastNight.changePct}:null,overseas:lastOverseas?.quotes?{NASDAQ:lastOverseas.quotes.NASDAQ?.changePct,SOX:lastOverseas.quotes.SOX?.changePct,TSM:lastOverseas.quotes.TSM?.changePct}:null,shadow:(()=>{const sx=shadowStatusFor(code);return sx?{zones:sx.m.layers.map(L=>({low:L.zone.low,high:L.zone.high,center:center(L.zone)})),confirmedSnapshots:sx.m.layers.map(L=>L.confirmedZone?{zone:{low:L.confirmedZone.low,high:L.confirmedZone.high,center:center(L.confirmedZone)},at:L.confirmedAt||L.triggeredAt||null,price:L.confirmedPrice??null}:null),status:sx.activeStatus,statusText:stageText(sx.activeStatus,sx.activeLayer+1),criticalGate:sx.r?.criticalGate||null,policy:sx.r?.shadowPolicy||null,confirmationVersion:SHADOW_CONFIRM_VERSION}:null})(),version:'V12.4',build:CLIENT_BUILD};
  }
  const trade={id:'mt_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),code,name:NAME[code],tradeType,modelFamily,layer,entryAt:new Date().toISOString(),entryDate:dayKey(),entryPrice:price,shares,snapshot,exitAt:null,exitPrice:null,perf:null};
- markModelTradeDirty(trade);MODEL_TRADES.push(trade);modelSyncSaveLocal();
+ markModelTradeDirty(trade);MODEL_TRADES.push(trade);
+ try{modelSyncSaveLocal()}
+ catch(e){
+  MODEL_TRADES=MODEL_TRADES.filter(t=>t.id!==trade.id);
+  alert('這筆成交尚未成功存入本機，未增加持股、也未送往雲端。請先按頁面上方「下載完整備份」並清理研究快取，再依券商成交明細重新登錄。錯誤：'+(e.message||String(e)));
+  return;
+ }
  // Exactly one local increment + one idempotent cloud operation per NEW trade ID.
- queueHoldingsTrade(trade);
+ try{queueHoldingsTrade(trade)}
+ catch(e){
+  // Trade row may already be durable, while the separate pending holdings
+  // operation might not be. Do not show successful purchase or auto-sync.
+  alert('成交紀錄已嘗試保存，但持股／待同步佇列未完整寫入。請先下載完整備份（含記憶體中的交易與佇列），並核對券商成交明細；不要重複登錄這筆交易。錯誤：'+(e.message||String(e)));
+  return;
+ }
  closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncAllCloud(true);
  if(manual)addEvent(`${code} 已記錄自主買入（未觸發模型）：${shares}股 @ ${price.toFixed(2)}｜當下模型：${signalText}`,'trade');
  else if(trendMode)addEvent(`${code} 已記錄強勢加碼實戰並同步持股：${shares}股 @ ${price.toFixed(2)}｜${signalText}`,'trade');
