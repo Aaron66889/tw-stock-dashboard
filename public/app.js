@@ -1919,7 +1919,13 @@ function saveModelTrade(){
   return;
  }
  // Exactly one local increment + one idempotent cloud operation per NEW trade ID.
- queueHoldingsTrade(trade);
+ try{queueHoldingsTrade(trade)}
+ catch(e){
+  // Trade row may already be durable, while the separate pending holdings
+  // operation might not be. Do not show successful purchase or auto-sync.
+  alert('成交紀錄已嘗試保存，但持股／待同步佇列未完整寫入。請先下載完整備份（含記憶體中的交易與佇列），並核對券商成交明細；不要重複登錄這筆交易。錯誤：'+(e.message||String(e)));
+  return;
+ }
  closeModelTrade();renderModelTrades();renderHoldings();refreshModelTradePerformance();syncAllCloud(true);
  if(manual)addEvent(`${code} 已記錄自主買入（未觸發模型）：${shares}股 @ ${price.toFixed(2)}｜當下模型：${signalText}`,'trade');
  else if(trendMode)addEvent(`${code} 已記錄強勢加碼實戰並同步持股：${shares}股 @ ${price.toFixed(2)}｜${signalText}`,'trade');
