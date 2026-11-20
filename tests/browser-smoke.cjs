@@ -508,7 +508,7 @@ const server=http.createServer((req,res)=>{
    localStorage.setItem('v124_model_trades',JSON.stringify([{id:'ci-protected-trade-1',code:'0050',shares:10,_syncDirty:true}]));
    localStorage.setItem('v124_holdings_pending_trade_ops_r3802',JSON.stringify([{id:'ci-protected-trade-1',shares:10}]));
    localStorage.setItem('twStockHoldingsV12',JSON.stringify([{t:'0050',s:3760,c:81}]));
-   localStorage.setItem('v124_buy_history',JSON.stringify({0050:[{from:'2026-11-20T09:00:00+08:00',count:2}]}));
+   localStorage.setItem('v124_buy_history',JSON.stringify({'0050':[{from:'2026-11-20T09:00:00+08:00',count:2}]}));
    localStorage.setItem('v124_shadow_replay',JSON.stringify([{day:'2026-11-20',at:'2026-11-20T09:00:00+08:00',code:'0050',score:40}]));
    localStorage.setItem('v124_entry_evidence_research_v1',JSON.stringify([{day:'2026-11-20',at:'2026-11-20T09:00:00+08:00',code:'0050',layers:[]}]));
   });
