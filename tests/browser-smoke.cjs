@@ -140,7 +140,7 @@ const server=http.createServer((req,res)=>{
   assert.equal(lowScore.modalOpen,false,'direct manual invocation cannot bypass score Gate');
   // Real browser DOM: show the last observed permission loss on the ETF card.
   // A later observed recovery must not erase the original reason.
-  const latestExitPanel=await page.evaluate(()=>{
+  const latestExitPanel=await page.evaluate(async()=>{
    const day=dayKey(),iso=delta=>new Date(Date.now()-delta).toISOString();
    const lay=(status,allow)=>[
     {layer:1,status,executionAllowed:allow,confirmed:true,executionLow:99,executionHigh:101},
@@ -152,7 +152,9 @@ const server=http.createServer((req,res)=>{
     {code:'0050',day,at:iso(16000),fresh:false,hardVeto:false,noBuyToday:false,px:100,score:70,layers:lay('CONFIRMED_IN',false)},
     {code:'0050',day,at:iso(8000),fresh:true,hardVeto:false,noBuyToday:false,px:100,score:70,layers:lay('CONFIRMED_IN',true)}
    ];
-   localStorage.setItem(ENTRY_TRACE_KEY,JSON.stringify(entries));ENTRY_TRACE_PANEL_CACHE=null;
+   if(window.ResearchStore?.ready)await window.ResearchStore.save(ENTRY_TRACE_KEY,entries);
+   else localStorage.setItem(ENTRY_TRACE_KEY,JSON.stringify(entries));
+   ENTRY_TRACE_PANEL_CACHE=null;
    renderHomeRanking();renderBuyCards();
    const summary=entryTraceLastExitPanel('0050');
    const card=[...document.querySelectorAll('#buyCards .buycard')].find(n=>n.querySelector('.ticker')?.textContent?.startsWith('0050'));
