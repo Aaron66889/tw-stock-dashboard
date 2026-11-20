@@ -146,9 +146,9 @@
    const current=readLegacy(item.key),record=await read(item.key);
    if(current===null)continue;
    if(record?.legacyOriginal!==current)continue;
+   // The verified IndexedDB record remains untouched: concurrent model
+   // writes cannot be reverted by a stale post-cleanup snapshot.
    root.localStorage.removeItem(item.key);
-   // Drop redundant baseline only after original removal; current raw survives.
-   await put(item.key,{raw:record.raw,legacyOriginal:null});
   }
   const removed=verified.filter(x=>readLegacy(x.key)===null).map(x=>x.key);
   const bytes=verified.filter(x=>removed.includes(x.key)).reduce((n,x)=>n+x.bytes,0);
