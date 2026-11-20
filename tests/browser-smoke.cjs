@@ -140,7 +140,7 @@ const server=http.createServer((req,res)=>{
   assert.equal(lowScore.modalOpen,false,'direct manual invocation cannot bypass score Gate');
   // Real browser DOM: show the last observed permission loss on the ETF card.
   // A later observed recovery must not erase the original reason.
-  const latestExitPanel=await page.evaluate(()=>{
+  const latestExitPanel=await page.evaluate(async()=>{
    const day=dayKey(),iso=delta=>new Date(Date.now()-delta).toISOString();
    const lay=(status,allow)=>[
     {layer:1,status,executionAllowed:allow,confirmed:true,executionLow:99,executionHigh:101},
@@ -152,7 +152,9 @@ const server=http.createServer((req,res)=>{
     {code:'0050',day,at:iso(16000),fresh:false,hardVeto:false,noBuyToday:false,px:100,score:70,layers:lay('CONFIRMED_IN',false)},
     {code:'0050',day,at:iso(8000),fresh:true,hardVeto:false,noBuyToday:false,px:100,score:70,layers:lay('CONFIRMED_IN',true)}
    ];
-   localStorage.setItem(ENTRY_TRACE_KEY,JSON.stringify(entries));ENTRY_TRACE_PANEL_CACHE=null;
+   if(window.ResearchStore?.ready)await window.ResearchStore.save(ENTRY_TRACE_KEY,entries);
+   else localStorage.setItem(ENTRY_TRACE_KEY,JSON.stringify(entries));
+   ENTRY_TRACE_PANEL_CACHE=null;
    renderHomeRanking();renderBuyCards();
    const summary=entryTraceLastExitPanel('0050');
    const card=[...document.querySelectorAll('#buyCards .buycard')].find(n=>n.querySelector('.ticker')?.textContent?.startsWith('0050'));
@@ -491,11 +493,66 @@ const server=http.createServer((req,res)=>{
   ]);
   assert.match(download.suggestedFilename(),/^twstock-full-local-backup-.*\.json$/);
   const downloaded=JSON.parse(fs.readFileSync(await download.path(),'utf8'));
-  assert.equal(downloaded.format,'twstock-origin-backup-v1');
+  assert.equal(downloaded.format,'twstock-origin-backup-v2');
+  assert.equal(downloaded.indexedDBResearch.status,'READY');
+  assert.ok(downloaded.indexedDBResearch.data&&typeof downloaded.indexedDBResearch.data==='object');
   assert.ok(downloaded.localStorage&&typeof downloaded.localStorage==='object');
   assert.ok(downloaded.runtimeSnapshot&&Array.isArray(downloaded.runtimeSnapshot.trades),
    'live page memory snapshot must be present even during sync failure');
   assert.ok(Array.isArray(downloaded.runtimeSnapshot.pendingHoldingsTrades));
+  // Real Chromium migration: seed protected trades + three large legacy
+  // research datasets, migrate, export, then explicitly release duplicates.
+  const migrationContext=await browser.newContext({acceptDownloads:true});
+  const migrationPage=await migrationContext.newPage();
+  await migrationPage.addInitScript(()=>{
+   if(sessionStorage.getItem('research-migration-ci-seeded'))return;
+   sessionStorage.setItem('research-migration-ci-seeded','yes');
+   localStorage.setItem('v124_model_trades',JSON.stringify([{id:'ci-protected-trade-1',code:'0050',shares:10,_syncDirty:true}]));
+   localStorage.setItem('v124_holdings_pending_trade_ops_r3802',JSON.stringify([{id:'ci-protected-trade-1',shares:10}]));
+   localStorage.setItem('twStockHoldingsV12',JSON.stringify([{t:'0050',s:3760,c:81}]));
+   localStorage.setItem('v124_buy_history',JSON.stringify({'0050':[{from:'2026-11-20T09:00:00+08:00',count:2}]}));
+   localStorage.setItem('v124_shadow_replay',JSON.stringify([{day:'2026-11-20',at:'2026-11-20T09:00:00+08:00',code:'0050',score:40}]));
+   localStorage.setItem('v124_entry_evidence_research_v1',JSON.stringify([{day:'2026-11-20',at:'2026-11-20T09:00:00+08:00',code:'0050',layers:[]}]));
+  });
+  await migrationPage.goto('http://127.0.0.1:'+port+'/',{waitUntil:'domcontentloaded'});
+  await migrationPage.waitForFunction(()=>window.ResearchStore?.ready,{timeout:15000});
+  const migrated=await migrationPage.evaluate(async()=>{
+   const keys=['v124_buy_history','v124_shadow_replay','v124_entry_evidence_research_v1'];
+   const idb=await ResearchStore.exportRaw();
+   const legacy=Object.fromEntries(keys.map(k=>[k,localStorage.getItem(k)]));
+   return {same:keys.every(k=>idb.data[k]===legacy[k]),
+    count:keys.length,trade:JSON.parse(localStorage.getItem('v124_model_trades'))[0].id,
+    pending:JSON.parse(localStorage.getItem('v124_holdings_pending_trade_ops_r3802'))[0].id,
+    data:idb.data};
+  });
+  assert.equal(migrated.same,true,'IndexedDB must contain exact original JSON for all three datasets');
+  assert.equal(migrated.trade,'ci-protected-trade-1');
+  const [migrationBackup]=await Promise.all([
+   migrationPage.waitForEvent('download',{timeout:15000}),
+   migrationPage.locator('#emergencyStorageBar button').first().click()
+  ]);
+  const savedResearch=JSON.parse(fs.readFileSync(await migrationBackup.path(),'utf8'));
+  assert.equal(savedResearch.format,'twstock-origin-backup-v2');
+  assert.deepEqual(savedResearch.indexedDBResearch.data,migrated.data,
+   'complete backup must contain authoritative IndexedDB records');
+  migrationPage.on('dialog',dialog=>dialog.accept());
+  const release=await migrationPage.evaluate(async()=>StorageSafety.cleanup());
+  assert.equal(release.ok,true,'release requires verified migration and downloaded backup');
+  assert.equal(release.removed.length,3,'only verified legacy research copies may be released');
+  const persisted=await migrationPage.evaluate(async()=>{
+   const archived=await ResearchStore.exportRaw();
+   return{present:archived.data,legacy:[
+    localStorage.getItem('v124_buy_history'),
+    localStorage.getItem('v124_shadow_replay'),
+    localStorage.getItem('v124_entry_evidence_research_v1')],
+    trade:JSON.parse(localStorage.getItem('v124_model_trades'))[0].id,
+    pending:JSON.parse(localStorage.getItem('v124_holdings_pending_trade_ops_r3802'))[0].id};
+  });
+  assert.deepEqual(persisted.present,migrated.data,'release cannot destroy migrated archive');
+  assert.deepEqual(persisted.legacy,[null,null,null]);
+  assert.equal(persisted.trade,'ci-protected-trade-1');
+  assert.equal(persisted.pending,'ci-protected-trade-1');
+  await migrationContext.close();
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));

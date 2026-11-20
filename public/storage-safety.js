@@ -30,14 +30,21 @@
   const status=el('emergencyBackupStatus');
   if(status)status.textContent=message;
  }
- function download(){
+ async function download(){
   // Take an immediate snapshot, without any setItem, server request or cache cleanup.
   const local=exportRaw(root.localStorage);
   const session=exportRaw(root.sessionStorage);
-  const json=JSON.stringify({format:'twstock-origin-backup-v1',
+  // IndexedDB is now the authoritative home of research history. A full
+  // backup must contain it even after duplicate localStorage copies are gone.
+  const research=root.ResearchStore?.exportRaw?
+   await root.ResearchStore.exportRaw():{status:'UNAVAILABLE',data:{}};
+  if(research.status!=='READY'&&root.ResearchStore)
+   throw Error('IndexedDB 研究資料尚未完整載入，不能稱為完整備份。請保留原始備份檔。');
+  const json=JSON.stringify({format:'twstock-origin-backup-v2',
    createdAt:new Date().toISOString(),origin:root.location?.origin||null,
    description:'RAW browser storage snapshot; values preserved as strings; may contain sensitive portfolio data',
    localStorage:local,sessionStorage:session,
+   indexedDBResearch:research,
    runtimeSnapshot:typeof root.twStockEmergencyRuntimeSnapshot==='function'?
     root.twStockEmergencyRuntimeSnapshot():null},null,2);
   const blob=new Blob([json],{type:'application/json;charset=utf-8'});
@@ -50,18 +57,13 @@
   finally{a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000)}
   return {entries:Object.keys(local).length,bytes:blob.size};
  }
- function cleanup(){
-  if(!backupStarted){setStatus('請先按「下載完整備份」，並確認檔案已儲存。');return{ok:false,reason:'BACKUP_REQUIRED'}}
-  const entries=inventory(),candidates=entries.filter(e=>SAFE_REBUILDABLE_KEYS.includes(e.key));
-  const amount=candidates.reduce((n,e)=>n+e.bytes,0);
-  if(!candidates.length){setStatus('目前沒有可清理的研究快取；交易及持股資料均未刪除。');return{ok:true,removed:[],bytes:0}}
-  const names=candidates.map(e=>e.key).join('、');
-  const msg='確認已下載且檢查完整備份檔？\n\n只清理可重建的研究快取：'+names+
-   '\n預計釋放約 '+(amount/1024).toFixed(1)+' KiB。\n\n不會刪除持股、交易、待同步ID或刪除墓碑。此操作不會自動上傳或下載雲端資料。';
-  if(!root.confirm(msg))return{ok:false,reason:'CANCELLED'};
-  for(const e of candidates)root.localStorage.removeItem(e.key);
-  setStatus('已清理 '+candidates.length+' 項研究快取，約 '+(amount/1024).toFixed(1)+' KiB；原始資料保留在剛才的備份檔。請重新整理並檢查交易同步。');
-  return{ok:true,removed:candidates.map(e=>e.key),bytes:amount};
+ async function cleanup(){
+  if(!backupStarted){setStatus('請先按「下載完整備份」，確認電腦已存好檔案。');return{ok:false,reason:'BACKUP_REQUIRED'}}
+  if(!root.ResearchStore?.releaseLegacy){
+   setStatus('IndexedDB 研究儲存未載入，不可刪除任何研究資料。');
+   return{ok:false,reason:'ARCHIVE_UNAVAILABLE'};
+  }
+  return root.ResearchStore.releaseLegacy();
  }
  function warnQuota(key){
   warningKey=String(key||'unknown');
@@ -73,7 +75,7 @@
   const bar=el('emergencyStorageBar');if(bar)bar.hidden=false;
   const entries=inventory(),bytes=entries.reduce((sum,e)=>sum+e.bytes,0);
   setStatus('本裝置 localStorage 目前約 '+(bytes/1024/1024).toFixed(2)+' MiB；備份不需寫入儲存空間。');
-  try{const q=root.localStorage.getItem('v124_model_trades');if(q&&q.length>800000)warnQuota('v124_model_trades（占用較大）')}catch(_){}
+  // No automatic cleanup. Legacy research remains until verified in IndexedDB.
  }
  root.StorageSafety={download,cleanup,inventory,warnQuota,get backupStarted(){return backupStarted},get warningKey(){return warningKey}};
  if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',startup);
