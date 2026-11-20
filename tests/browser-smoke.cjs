@@ -481,6 +481,21 @@ const server=http.createServer((req,res)=>{
   assert.equal(staleReadback.recovered.status,'ready');
   assert.deepEqual(staleReadback.recovered.trades,[{id:'synthetic-lag-1',dirty:false}],
    'matching cloud readback confirms local trade without duplication');
+  // The emergency backup button must work as a real Chromium download without
+  // any cloud APIs, and must include in-memory rows not yet in localStorage.
+  const backupButton=page.locator('#emergencyStorageBar button').first();
+  assert.equal(await backupButton.isVisible(),true,'backup button must be visible even if the app has a sync error');
+  const [download]=await Promise.all([
+   page.waitForEvent('download',{timeout:10000}),
+   backupButton.click()
+  ]);
+  assert.match(download.suggestedFilename(),/^twstock-full-local-backup-.*\.json$/);
+  const downloaded=JSON.parse(fs.readFileSync(await download.path(),'utf8'));
+  assert.equal(downloaded.format,'twstock-origin-backup-v1');
+  assert.ok(downloaded.localStorage&&typeof downloaded.localStorage==='object');
+  assert.ok(downloaded.runtimeSnapshot&&Array.isArray(downloaded.runtimeSnapshot.trades),
+   'live page memory snapshot must be present even during sync failure');
+  assert.ok(Array.isArray(downloaded.runtimeSnapshot.pendingHoldingsTrades));
   // Model and account APIs are intentionally offline. Startup must degrade,
   // rather than causing uncaught JavaScript exceptions or writing trades.
   assert.deepEqual(errors,[],'Uncaught browser runtime errors: '+errors.join('\n'));
