@@ -491,7 +491,9 @@ const server=http.createServer((req,res)=>{
   ]);
   assert.match(download.suggestedFilename(),/^twstock-full-local-backup-.*\.json$/);
   const downloaded=JSON.parse(fs.readFileSync(await download.path(),'utf8'));
-  assert.equal(downloaded.format,'twstock-origin-backup-v1');
+  assert.equal(downloaded.format,'twstock-origin-backup-v2');
+  assert.equal(downloaded.indexedDBResearch.status,'READY');
+  assert.ok(downloaded.indexedDBResearch.data&&typeof downloaded.indexedDBResearch.data==='object');
   assert.ok(downloaded.localStorage&&typeof downloaded.localStorage==='object');
   assert.ok(downloaded.runtimeSnapshot&&Array.isArray(downloaded.runtimeSnapshot.trades),
    'live page memory snapshot must be present even during sync failure');
