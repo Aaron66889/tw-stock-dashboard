@@ -127,8 +127,17 @@ function migrate1689Existing0050Trade(){
  if(t&&h&&Number(h.s)===3150&&Math.abs(Number(h.c)-77.37)<.001){h.c=(3150*77.37+20*105.40)/3170;h.s=3170;saveHoldings()}
  localStorage.setItem(key,'1')
 }
-function loadJSON(k,d){try{const x=JSON.parse(localStorage.getItem(k));return x??d}catch{return d}}
+function loadJSON(k,d){
+ if(window.ResearchStore?.isKey(k))return window.ResearchStore.get(k,d);
+ try{const x=JSON.parse(localStorage.getItem(k));return x??d}catch{return d}
+}
 function saveJSON(k,v){
+ // Large observational research belongs in IndexedDB, never in the 10 MiB
+ // localStorage shared with holdings and unsynced transactions.
+ if(window.ResearchStore?.isKey(k)){
+  void window.ResearchStore.save(k,v).catch(e=>window.StorageSafety?.warnQuota?.('IndexedDB '+k+'：'+e.message));
+  return;
+ }
  try{localStorage.setItem(k,JSON.stringify(v))}
  catch(e){
   // Critical portfolio and pending-operation writes MUST fail loudly. Never
@@ -2358,4 +2367,22 @@ loadPublicDividendAnnouncements=apiSingleFlight(loadPublicDividendAnnouncements)
 loadTrendBuy=apiSingleFlight(loadTrendBuy);
 loadCommentary=apiSingleFlight(loadCommentary);
 setInterval(observeOfficialEntryPermissionTimeout,15000);
-setInterval(setMode,30000);boot();
+setInterval(setMode,30000);
+(async()=>{
+ // Research hydration must precede network/model polling and initial charts.
+ // Without it, the first model tick could overwrite a partially migrated archive.
+ try{
+  if(window.ResearchStore){
+   const success=await window.ResearchStore.init();
+   if(success){
+    HIST=loadJSON('v124_buy_history',{});
+    SHADOW_LOG=loadJSON('v124_shadow_replay',[]);
+    ENTRY_TRACE_LAST_KEYS={};
+    ENTRY_TRACE_PANEL_CACHE=null;
+   }else{
+    window.StorageSafety?.warnQuota?.('研究儲存遷移尚未完成，請保留原本備份');
+   }
+  }
+ }catch(e){window.StorageSafety?.warnQuota?.('研究儲存初始化：'+e.message)}
+ boot();
+})();
