@@ -46,7 +46,7 @@ function fixture({confirm=true}={}){
 test('emergency full backup downloads raw holdings, trades, pending operations, research and tombstones under quota',async()=>{
  const f=fixture();
  assert.equal(f.win.document.getElementById('emergencyStorageBar').hidden,false);
- const x=await await f.win.StorageSafety.download();
+ const x=await f.win.StorageSafety.download();
  assert.equal(f.writes.length,0,'backup must not call localStorage.setItem');
  assert.equal(f.removes.length,0,'backup must never erase data');
  assert.ok(x.entries>=7);
@@ -68,7 +68,7 @@ test('cache release refuses without backup and delegates only to verified resear
  const rejected=await f.win.StorageSafety.cleanup();
  assert.equal(rejected.reason,'BACKUP_REQUIRED');
  assert.equal(f.removes.length,0);
- f.win.StorageSafety.download();
+ await f.win.StorageSafety.download();
  const cleaned=await f.win.StorageSafety.cleanup();
  assert.equal(cleaned.ok,true);
  assert.deepEqual([...f.removes].sort(),[
@@ -85,7 +85,7 @@ test('canceling cleanup preserves every key and quota warning does not write sto
  const count=f.values.size;
  f.win.StorageSafety.warnQuota('v124_model_trades');
  assert.match(f.statuses.text,/v124_model_trades/);
- f.win.StorageSafety.download();
+ await f.win.StorageSafety.download();
  assert.equal((await f.win.StorageSafety.cleanup()).reason,'CANCELLED');
  assert.equal(f.values.size,count);
  assert.equal(f.removes.length,0);
