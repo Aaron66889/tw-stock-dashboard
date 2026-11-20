@@ -37,7 +37,9 @@
   const json=JSON.stringify({format:'twstock-origin-backup-v1',
    createdAt:new Date().toISOString(),origin:root.location?.origin||null,
    description:'RAW browser storage snapshot; values preserved as strings; may contain sensitive portfolio data',
-   localStorage:local,sessionStorage:session},null,2);
+   localStorage:local,sessionStorage:session,
+   runtimeSnapshot:typeof root.twStockEmergencyRuntimeSnapshot==='function'?
+    root.twStockEmergencyRuntimeSnapshot():null},null,2);
   const blob=new Blob([json],{type:'application/json;charset=utf-8'});
   const url=URL.createObjectURL(blob),a=root.document.createElement('a');
   const stamp=new Date().toISOString().replace(/[:.]/g,'-');
