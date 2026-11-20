@@ -108,6 +108,18 @@ let DIVIDEND_PUBLIC={busy:false,ready:false,lastAt:null,message:'正式配息公
  byCode:loadJSON('v124_public_dividend_announcements',{})||{},source:null};
 let MODEL_PENDING_DELETES=loadJSON('v124_model_trade_pending_deletes',[]);
 let MODEL_TRADE_FILTER='all',MODEL_TRADE_LIMIT=10,MODEL_TRADE_EXPANDED=null;
+ // Emergency read-only snapshot includes unsaved in-memory state during quota
+ // failure. It never mutates portfolio, pending ledgers, or cloud data.
+ window.twStockEmergencyRuntimeSnapshot=()=>JSON.parse(JSON.stringify({
+  trades:MODEL_TRADES,holdings:H,
+  pendingHoldingsTrades:HOLDINGS_PENDING_TRADES,
+  pendingTradeDeletes:MODEL_PENDING_DELETES,
+  holdingsManualDirty:HOLDINGS_MANUAL_DIRTY,
+  sync:{modelStatus:MODEL_SYNC.status,modelReady:MODEL_SYNC.ready,
+   holdingsReady:HOLDINGS_SYNC.ready,holdingsMessage:HOLDINGS_SYNC.message},
+  capturedAt:new Date().toISOString()
+ }));
+
 
 function migrate1689Existing0050Trade(){
  const key='v1689_0050_10540_20_migrated';if(localStorage.getItem(key))return;
