@@ -2368,7 +2368,9 @@ loadTrendBuy=apiSingleFlight(loadTrendBuy);
 loadCommentary=apiSingleFlight(loadCommentary);
 setInterval(observeOfficialEntryPermissionTimeout,15000);
 setInterval(setMode,30000);
-(async()=>{
+// Existing isolated test harness and legacy browsers without a research
+// adapter preserve synchronous boot order and established trade-sync semantics.
+if(!window.ResearchStore){boot()}else (async()=>{
  // Research hydration must precede network/model polling and initial charts.
  // Without it, the first model tick could overwrite a partially migrated archive.
  try{
