@@ -29,7 +29,9 @@ function fixture({confirm=true}={}){
  class BlobMock{constructor(data,opts){this.data=data.join('');this.size=this.data.length*2;this.opts=opts}}
  const url={createObjectURL:o=>{objects.push(o);return'blob:test'},revokeObjectURL:()=>{}};
  const win={localStorage:store,sessionStorage:{length:0,key:()=>null,getItem:()=>null},document:doc,
-  confirm:()=>confirm,location:{origin:'https://example.test'}};
+  confirm:()=>confirm,location:{origin:'https://example.test'},
+  twStockEmergencyRuntimeSnapshot:()=>({trades:[{id:'mt_unsaved_3',_syncDirty:true}],
+   holdings:[{t:'0050',s:3770}],pendingHoldingsTrades:[{id:'mt_unsaved_3'}]})};
  const ctx={window:win,Blob:BlobMock,URL:url,Date,setTimeout:()=>{},console};
  vm.runInNewContext(code,ctx,{timeout:1000});
  return{win,values,writes,removes,links,objects,clicked,statuses};
@@ -50,6 +52,8 @@ test('emergency full backup downloads raw holdings, trades, pending operations a
  assert.equal(payload.localStorage.v124_holdings_pending_trade_ops_r3802,f.values.get('v124_holdings_pending_trade_ops_r3802'));
  assert.equal(payload.localStorage.v124_model_trade_pending_deletes,f.values.get('v124_model_trade_pending_deletes'));
  assert.equal(payload.localStorage.twStockHoldingsV12,f.values.get('twStockHoldingsV12'));
+ assert.equal(payload.runtimeSnapshot.trades[0].id,'mt_unsaved_3','must export current memory even if no localStorage write succeeded');
+ assert.equal(payload.runtimeSnapshot.pendingHoldingsTrades[0].id,'mt_unsaved_3');
 });
 test('cache cleanup refuses without backup and only deletes explicit disposable research keys after confirmation',()=>{
  const f=fixture();
