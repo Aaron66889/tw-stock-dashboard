@@ -30,6 +30,12 @@ function fixture({confirm=true}={}){
  const url={createObjectURL:o=>{objects.push(o);return'blob:test'},revokeObjectURL:()=>{}};
  const win={localStorage:store,sessionStorage:{length:0,key:()=>null,getItem:()=>null},document:doc,
   confirm:()=>confirm,location:{origin:'https://example.test'},
+  ResearchStore:{exportRaw:async()=>({status:'READY',data:{v124_buy_history:'[{"verified":true}]'}}),
+   releaseLegacy:async()=>{
+    if(!confirm)return {ok:false,reason:'CANCELLED'};
+    for(const key of ['v124_buy_history','v124_entry_evidence_research_v1','v124_shadow_replay'])store.removeItem(key);
+    return {ok:true,removed:['v124_buy_history','v124_entry_evidence_research_v1','v124_shadow_replay']};
+   }},
   twStockEmergencyRuntimeSnapshot:()=>({trades:[{id:'mt_unsaved_3',_syncDirty:true}],
    holdings:[{t:'0050',s:3770}],pendingHoldingsTrades:[{id:'mt_unsaved_3'}]})};
  const ctx={window:win,Blob:BlobMock,URL:url,Date,setTimeout:()=>{},console};
@@ -37,17 +43,19 @@ function fixture({confirm=true}={}){
  return{win,values,writes,removes,links,objects,clicked,statuses};
 }
 
-test('emergency full backup downloads raw holdings, trades, pending operations and tombstones while writes always fail',()=>{
+test('emergency full backup downloads raw holdings, trades, pending operations, research and tombstones under quota',async()=>{
  const f=fixture();
  assert.equal(f.win.document.getElementById('emergencyStorageBar').hidden,false);
- const x=f.win.StorageSafety.download();
+ const x=await await f.win.StorageSafety.download();
  assert.equal(f.writes.length,0,'backup must not call localStorage.setItem');
  assert.equal(f.removes.length,0,'backup must never erase data');
  assert.ok(x.entries>=7);
  assert.equal(f.clicked.length,1);
  assert.match(f.clicked[0].download,/twstock-full-local-backup-.*\.json/);
  const payload=JSON.parse(f.objects[0].data);
- assert.equal(payload.format,'twstock-origin-backup-v1');
+ assert.equal(payload.format,'twstock-origin-backup-v2');
+ assert.equal(payload.indexedDBResearch.status,'READY');
+ assert.equal(payload.indexedDBResearch.data.v124_buy_history,'[{"verified":true}]');
  assert.equal(payload.localStorage.v124_model_trades,f.values.get('v124_model_trades'));
  assert.equal(payload.localStorage.v124_holdings_pending_trade_ops_r3802,f.values.get('v124_holdings_pending_trade_ops_r3802'));
  assert.equal(payload.localStorage.v124_model_trade_pending_deletes,f.values.get('v124_model_trade_pending_deletes'));
@@ -55,13 +63,13 @@ test('emergency full backup downloads raw holdings, trades, pending operations a
  assert.equal(payload.runtimeSnapshot.trades[0].id,'mt_unsaved_3','must export current memory even if no localStorage write succeeded');
  assert.equal(payload.runtimeSnapshot.pendingHoldingsTrades[0].id,'mt_unsaved_3');
 });
-test('cache cleanup refuses without backup and only deletes explicit disposable research keys after confirmation',()=>{
+test('cache release refuses without backup and delegates only to verified research archive',async()=>{
  const f=fixture();
- const rejected=f.win.StorageSafety.cleanup();
+ const rejected=await f.win.StorageSafety.cleanup();
  assert.equal(rejected.reason,'BACKUP_REQUIRED');
  assert.equal(f.removes.length,0);
  f.win.StorageSafety.download();
- const cleaned=f.win.StorageSafety.cleanup();
+ const cleaned=await f.win.StorageSafety.cleanup();
  assert.equal(cleaned.ok,true);
  assert.deepEqual([...f.removes].sort(),[
   'v124_buy_history','v124_entry_evidence_research_v1','v124_shadow_replay'
@@ -72,13 +80,13 @@ test('cache cleanup refuses without backup and only deletes explicit disposable 
  assert.equal(f.values.has('twStockHoldingsV12'),true);
  assert.equal(f.writes.length,0);
 });
-test('canceling cleanup preserves every key and quota warning does not write storage',()=>{
+test('canceling cleanup preserves every key and quota warning does not write storage',async()=>{
  const f=fixture({confirm:false});
  const count=f.values.size;
  f.win.StorageSafety.warnQuota('v124_model_trades');
  assert.match(f.statuses.text,/v124_model_trades/);
  f.win.StorageSafety.download();
- assert.equal(f.win.StorageSafety.cleanup().reason,'CANCELLED');
+ assert.equal((await f.win.StorageSafety.cleanup()).reason,'CANCELLED');
  assert.equal(f.values.size,count);
  assert.equal(f.removes.length,0);
  assert.equal(f.writes.length,0);
