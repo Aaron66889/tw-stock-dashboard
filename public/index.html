@@ -40,6 +40,15 @@
 <nav class="topnav">
 <button class="navb on" data-page="home">首頁</button><button class="navb" data-page="holdingsPage">我的持股</button><button class="navb" data-page="commentaryPage">今日點評</button><button class="navb" data-page="buy">ETF合理買點</button><button class="navb" data-page="trendBuyPage">ETF強勢加碼</button><button class="navb" data-page="constituentPage">ETF成分股</button><button class="navb" data-page="nightPage">🌙夜盤</button><button class="navb" data-page="tomorrow">明日環境</button><button class="navb" data-page="model">模型／驗證</button><button class="navb" data-page="logic">判斷說明</button><button class="navb" data-page="qa">💬問答</button>
 </nav>
+<section id="emergencyStorageBar" class="card" style="border:1px solid #a27a2e;padding:12px 16px">
+<div class="row" style="gap:10px;flex-wrap:wrap">
+<div><b>本機交易資料安全備份</b><div class="note" id="emergencyBackupStatus">正在讀取本機儲存狀態……</div></div>
+<div style="display:flex;flex-wrap:wrap;gap:8px">
+<button class="btn primary" type="button" onclick="try{StorageSafety.download()}catch(e){alert('備份失敗：'+e.message)}">下載完整備份（不覆蓋資料）</button>
+<button class="btn" type="button" onclick="try{StorageSafety.cleanup()}catch(e){alert('清理失敗：'+e.message)}">備份後清理研究快取</button>
+</div></div>
+<div class="note">備份只讀取這台瀏覽器的本機資料，不會上傳網路，也不等於確認雲端同步。備份檔可能包含個人持股與交易紀錄，請妥善保管；清理快取前務必確認備份已下載。</div>
+</section>
 <section id="signalAlertsCard" class="card">
 <div class="signal-alert-bar">
 <div><b>買點桌面提醒</b><div id="signalAlertStatus" class="note">通知功能載入中</div></div>
@@ -161,4 +170,4 @@
 <div class="field" id="mtLayerField"><label>依模型哪一層買入</label><select id="mtLayer" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:10px"><option value="1">第一層</option><option value="2">第二／理想層</option><option value="3">第三／強力層</option></select></div>
 <div id="mtSnapshot" class="reading"></div><button id="mtSaveBtn" class="btn primary" style="width:100%;margin-top:12px" onclick="saveModelTrade()">保存這筆模型實戰</button></div></div>
 
-<script src="/signal-alerts.js?v=20261014-a1"></script><script src="/dip-watch.js?v=20261015-a1"></script><script src="/gate-audit-core.js?v=20261101-oct-audit"></script><script src="/gate-blocked-ui.js?v=20261101-independent-forward-v2-final"></script><script src="/crash-gate-lab-ui.js?v=20261101-independent-gate-v2"></script><script src="/app.js?v=16.8.102-L1-DEPTH-V5-20261102"></script><script src="/model-ab.js?v=ab-20261013"></script><script src="/trend-shadow-b-ui.js?v=trend-b-20261013"></script><script src="/trend-forward-ui.js?v=ab-ledger-20261013"></script></body></html>
+<script src="/signal-alerts.js?v=20261014-a1"></script><script src="/dip-watch.js?v=20261015-a1"></script><script src="/gate-audit-core.js?v=20261101-oct-audit"></script><script src="/gate-blocked-ui.js?v=20261101-independent-forward-v2-final"></script><script src="/crash-gate-lab-ui.js?v=20261101-independent-gate-v2"></script><script src="/storage-safety.js?v=20261120-a"></script><script src="/app.js?v=16.8.102-STORAGE-20261120"></script><script src="/model-ab.js?v=ab-20261013"></script><script src="/trend-shadow-b-ui.js?v=trend-b-20261013"></script><script src="/trend-forward-ui.js?v=ab-ledger-20261013"></script></body></html>
