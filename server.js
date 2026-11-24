@@ -3491,6 +3491,28 @@ async function cloudDeleteTrade(id){
 }
 
 
+function holdingSales(p){
+ const legacy=(Array.isArray(p?.holdingsCorrectionLog)?p.holdingsCorrectionLog:[]).filter(x=>x.side==='SELL').map(x=>({id:'legacy-'+x.at,code:x.code,date:x.tradeDate,shares:x.soldShares,price:x.salePrice,cost:x.averageCostRetained,fee:null,tax:null}));
+ return [...legacy,...(Array.isArray(p?.sales)?p.sales:[])];
+}
+async function cloudRecordSale(b){
+ const code=String(b.code||''),id=String(b.id||''),date=String(b.date||''),shares=Number(b.shares),price=Number(b.price),fee=Number(b.fee),tax=Number(b.tax);
+ if(!ETF.includes(code)||!/^sale_[a-zA-Z0-9_-]{8,100}$/.test(id)||!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>ymdTaipei()||!Number.isSafeInteger(shares)||shares<=0||!Number.isFinite(price)||price<=0||price>1e7||b.fee==null||b.tax==null||!Number.isFinite(fee)||fee<0||!Number.isFinite(tax)||tax<0)throw Error('賣出資料不正確');
+ const r=(await cloudRowsById(HOLDINGS_SYNC_ID))[0],p=r?.payload;
+ if(!p)throw Error('雲端持股未初始化');
+ if(holdingSales(p).some(x=>x.id===id))return {ok:true,alreadyApplied:true};
+ if(r.updated_at!==b.expectedUpdatedAt)throw Error('持股已變更，請重新同步後核對');
+ const holdings=cleanHoldingsInput(p.holdings),h=holdings.find(x=>x.t===code);
+ if(!h||h.s<shares)throw Error('賣出股數超過持股');
+ const sale={id,code,date,shares,price,cost:h.c,fee,tax};
+ h.s-=shares;
+ const now=new Date(Math.max(Date.now(),Date.parse(r.updated_at)+1)).toISOString();
+ const payload={...p,holdings,sales:[...(p.sales||[]),sale],updatedAt:now};
+ const saved=await supabaseRest('model_trades?id=eq.'+encodeURIComponent(HOLDINGS_SYNC_ID)+'&updated_at=eq.'+encodeURIComponent(r.updated_at)+'&select=id',{method:'PATCH',headers:{Prefer:'return=representation'},body:{payload,updated_at:now}});
+ if(!Array.isArray(saved)||saved.length!==1)throw Error('持股已變更，請重新同步');
+ try{await recordDividendHoldingsSnapshot(holdings,ymdTaipei())}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),'sale-snapshot:'+e.message].slice(-20)}
+ return {ok:true,holdings,sales:holdingSales(payload),updatedAt:now};
+}
 async function cloudHoldingsState(){
  const rows=await cloudRowsById(HOLDINGS_SYNC_ID),r=rows[0];
  const p=r?.payload&&typeof r.payload==='object'?r.payload:null;
@@ -3506,7 +3528,7 @@ async function cloudHoldingsState(){
  if(corrected){
   try{const saved=await cloudUpsertHoldings(holdings,r.updated_at);holdings=saved.holdings||holdings;return{initialized:true,holdings,updatedAt:saved.updatedAt}}catch(e){RUNTIME.errors=[...(RUNTIME.errors||[]),`00919-cost-migration:${e.message}`].slice(-20)}
  }
- return{initialized:!!p,holdings,updatedAt:r?.updated_at||p?.updatedAt||null};
+ return{initialized:!!p,holdings,sales:holdingSales(p),updatedAt:r?.updated_at||p?.updatedAt||null};
 }
 function dividendHoldingMap(holdings){
  const out=Object.fromEntries(ETF.map(c=>[c,0]));
@@ -4057,6 +4079,11 @@ const server=http.createServer(async(req,res)=>{
   if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'持股雲端同步尚未解鎖'});
   try{const body=await readJSONBody(req,8192);return send(res,200,await cloudApplyHoldingsTrade(body.trade))}
   catch(e){return send(res,400,{ok:false,error:e.message||String(e)})}
+ }
+ if(u.pathname==='/api/holdings-sync/sale'&&req.method==='POST'){
+  if(!modelSyncConfigured())return send(res,503,{ok:false,error:'雲端未設定'});
+  if(!modelSyncAuthorized(req))return send(res,401,{ok:false,error:'尚未解鎖'});
+  try{return send(res,200,await cloudRecordSale(await readJSONBody(req,8192)))}catch(e){return send(res,400,{ok:false,error:e.message})}
  }
  if(u.pathname==='/api/holdings-sync'){
   if(!modelSyncConfigured())return send(res,503,{ok:false,error:'持股雲端同步尚未完成後端設定'});
