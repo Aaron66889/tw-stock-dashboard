@@ -1248,23 +1248,53 @@ function dividendTimelineMarkup(code,ds){
  '<div class="box"><span class="k">已除息待入帳（未計入報酬）</span><b>'+money0(ds.pending)+'元</b><small>'+(locked?money0(locked.shares)+'股 × '+fmt(locked.amount)+'元｜'+date(locked.payDate)+'發放':'沒有已鎖定的待入帳股息')+'</small></div>' +
  '<div class="box" style="grid-column:span 2"><span class="k">下一次配息預估（未計入報酬）</span>'+estimate+'</div></div>';
 }
+let HOLDING_SALES=[];
+let SALE_BUSY=false;
+let SALE_PENDING=null;
+function saleStats(code){
+ const rows=HOLDING_SALES.filter(x=>x.code===code);
+ return {rows,cost:rows.reduce((a,x)=>a+x.shares*x.cost,0),pnl:rows.reduce((a,x)=>a+x.shares*(x.price-x.cost)-(x.fee||0)-(x.tax||0),0),unknown:rows.some(x=>x.fee==null||x.tax==null)};
+}
+async function recordHoldingSale(code){
+ if(SALE_BUSY||!HOLDINGS_SYNC.ready||HOLDINGS_MANUAL_DIRTY||HOLDINGS_PENDING_TRADES.length)return alert('請先完成持股同步');
+ const h=H.find(x=>x.t===code);if(!h)return;
+ if(!SALE_PENDING){
+ const date=prompt('成交日期 YYYY-MM-DD',dayKey());if(date===null)return;
+ const qty=prompt('賣出股數（最多 '+h.s+' 股）');if(qty===null)return;
+ const px=prompt('成交均價');if(px===null)return;
+ const fee=prompt('實際手續費（元）');if(fee===null)return;
+ const tax=prompt('實際證交稅（元）');if(tax===null)return;
+ const shares=Number(qty),price=Number(px);
+ if(!Number.isSafeInteger(shares)||shares<=0||shares>h.s||!Number.isFinite(price)||price<=0||!fee.trim()||!tax.trim()||!Number.isFinite(Number(fee))||Number(fee)<0||!Number.isFinite(Number(tax))||Number(tax)<0)return alert('成交資料不正確');
+ if(!confirm(code+' 賣出 '+shares+' 股 @ '+price+'？'))return;
+ SALE_PENDING={id:'sale_'+Date.now()+'_'+Math.random().toString(36).slice(2),code,date,shares,price,fee:Number(fee),tax:Number(tax),expectedUpdatedAt:HOLDINGS_SYNC.cloudUpdatedAt};
+ }
+ if(SALE_PENDING.code!==code)return alert('請先確認上一筆賣出');
+ SALE_BUSY=true;
+ try{
+ const d=await modelSyncFetch('/api/holdings-sync/sale',{method:'POST',body:JSON.stringify(SALE_PENDING)});
+ if(!d.ok)throw Error(d.error||'賣出未確認');
+ SALE_PENDING=null;await syncHoldingsCloud(true);renderHoldings();
+ }catch(e){alert('賣出尚未確認，請先同步核對；再次按同一標的賣出將重試原筆：'+e.message)}
+ finally{SALE_BUSY=false}
+}
 function renderHoldings(){
- let val=0,cost=0,dividendTotal=0,pendingDividendTotal=0,estimatedDividendTotal=0;
+ let val=0,cost=0,dividendTotal=0,pendingDividendTotal=0,estimatedDividendTotal=0,realized=0,soldCost=0,unknownFees=false;
  $('holdingManager').innerHTML=H.length?H.map(h=>`<div class="historyrow row"><span><b>${h.t}</b> ${Number(h.s).toLocaleString()}股｜均價 ${fmt(h.c)}</span><span><button class="btn" onclick="editHolding('${h.t}')">編輯</button> <button class="btn danger" onclick="deleteHolding('${h.t}')">刪除</button></span></div>`).join(''):'<div class="notice">目前沒有持股。這是刻意的：公開程式不預載任何人的股數與成本。</div>';
  let cards='';
  for(const h of H){
   const q=lastLive?.quotes?.[h.t],px=q?.last,v=px?px*h.s:null,c=h.c*h.s,p=v!=null?v-c:null,r=p!=null&&c?p/c*100:null;
   const ds=ETF.includes(h.t)?dividendStats(h.t,h):{received:0,pending:0,lastPaid:null,nextPending:null,estimatedUpcoming:null};
-  const withDivPnl=p!=null?p+ds.received:null,withDivRet=withDivPnl!=null&&c?withDivPnl/c*100:null;
+  const sale=saleStats(h.t);realized+=sale.pnl;soldCost+=sale.cost;unknownFees||=sale.unknown;const withDivPnl=p!=null?p+ds.received+sale.pnl:null,withDivRet=withDivPnl!=null&&(c+sale.cost)?withDivPnl/(c+sale.cost)*100:null;
   cost+=c;if(v!=null)val+=v;dividendTotal+=ds.received;pendingDividendTotal+=ds.pending;estimatedDividendTotal+=Number(ds.nextForecast?.cashEstimate)||0;
   const est=ds.estimatedUpcoming;
   const divNote=ds.automatic?(ds.pending>0?`全自動｜已鎖定待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:ds.upcoming?`全自動｜正式配息 ${fmt(ds.upcoming.amount)}/股｜${String(ds.upcoming.exDate||'').replaceAll('-','/')} 除息｜目前股數估 ${money0(ds.upcoming.cashEstimate)}`:est?`${est.status==='actual'?'正式公告':'預估公告'}｜${fmt(est.amount)}/股｜${String(est.exDate||'').replaceAll('-','/')} 除息｜目前股數估 ${money0(est.cashEstimate)}${est.confirmDate?'｜'+String(est.confirmDate).replaceAll('-','/')+' 確認':''}`:`全自動｜TWSE配息＋持股快照 ${String(ds.snapshotDay||DIVIDEND_AUTO.snapshotDay||'').replaceAll('-','/')}`):(ds.nextForecast?`正式配息公告｜${fmt(ds.nextForecast.amount)}元／股｜${ds.nextForecast.exDate.replaceAll('-','/')} 除息｜目前股數估 ${money0(ds.nextForecast.cashEstimate)}元`:(ds.pending>0?`自動資料載入中｜待入帳 ${money0(ds.pending)}${ds.nextPending?.payDate?'（'+ds.nextPending.payDate.replaceAll('-','/')+'）':''}`:`自動資料載入中｜基準截至 ${String(ds.asOf||DIVIDEND_SEED_ASOF).replaceAll('-','/')}`));
-  cards+=`<div class="card"><div class="row"><b>${h.t}</b><b class="${cls(withDivRet)}">含息 ${pct(withDivRet)}</b></div><div class="grid6"><div class="box"><span class="k">持有</span><b>${Number(h.s).toLocaleString()}股</b></div><div class="box"><span class="k">平均成本</span><b>${fmt(h.c)}</b></div><div class="box"><span class="k">現價</span><b class="${etfPriceClass(h.t,px)}">${fmt(px)}${ETF.includes(h.t)?` <span class="etf-daily-pct">${etfDailyChangeText(h.t,px)}</span>`:''}</b></div><div class="box"><span class="k">未實現</span><b class="${cls(p)}">${p==null?'—':money0(p)}</b><small>${pct(r)}</small></div><div class="box"><span class="k">累積已領股息</span><b class="upc">${money0(ds.received)}</b><small>${divNote}</small></div><div class="box"><span class="k">含息總報酬</span><b class="${cls(withDivPnl)}">${withDivPnl==null?'—':money0(withDivPnl)}</b><small>${pct(withDivRet)}</small></div></div>${dividendTimelineMarkup(h.t,ds)}</div>`;
+  cards+=`<div class="card"><div class="row"><b>${h.t}</b><b class="${cls(withDivRet)}">含息 ${pct(withDivRet)}</b></div><div class="grid6"><div class="box"><span class="k">持有</span><b>${Number(h.s).toLocaleString()}股</b></div><div class="box"><span class="k">平均成本</span><b>${fmt(h.c)}</b></div><div class="box"><span class="k">現價</span><b class="${etfPriceClass(h.t,px)}">${fmt(px)}${ETF.includes(h.t)?` <span class="etf-daily-pct">${etfDailyChangeText(h.t,px)}</span>`:''}</b></div><div class="box"><span class="k">未實現</span><b class="${cls(p)}">${p==null?'—':money0(p)}</b><small>${pct(r)}</small></div><div class="box"><span class="k">已實現損益</span><b class="${cls(sale.pnl)}">${money0(sale.pnl)}</b><small>${sale.unknown?'部分稅費未填，含毛利':'已扣已填稅費'}</small></div><div class="box"><span class="k">累積已領股息</span><b class="upc">${money0(ds.received)}</b><small>${divNote}</small></div><div class="box"><span class="k">含息總報酬</span><b class="${cls(withDivPnl)}">${withDivPnl==null?'—':money0(withDivPnl)}</b><small>${pct(withDivRet)}</small></div></div>${dividendTimelineMarkup(h.t,ds)}${ETF.includes(h.t)?`<button class="btn" onclick="recordHoldingSale(\'${h.t}\')">記錄自主賣出</button>`:'' }${sale.rows.map(x=>`<div class="note">${String(x.date).replace(/[^0-9-]/g,'')}｜賣出 ${Number(x.shares)}股 @ ${fmt(x.price)}｜成本 ${fmt(x.cost)}｜損益 ${money0(x.shares*(x.price-x.cost)-(x.fee||0)-(x.tax||0))}${x.fee==null||x.tax==null?'（稅費未填）':''}</div>`).join('')}</div>`;
  }
  $('holdings').innerHTML=cards;
- const p=val-cost,withDivPnl=p+dividendTotal,withDivRet=cost?withDivPnl/cost*100:null;
+ const p=val-cost,withDivPnl=p+dividendTotal+realized,withDivRet=cost+soldCost?withDivPnl/(cost+soldCost)*100:null;
  $('holdingTotals').className='grid6';
- $('holdingTotals').innerHTML=`<div class="box"><span class="k">市值</span><b>${money0(val)}</b></div><div class="box"><span class="k">成本</span><b>${money0(cost)}</b></div><div class="box"><span class="k">價差損益</span><b class="${cls(p)}">${money0(p)}</b></div><div class="box"><span class="k">累積已領股息</span><b class="upc">${money0(dividendTotal)}</b><small>${DIVIDEND_AUTO.ready?'未含待入帳 '+money0(pendingDividendTotal)+' 元；下一次配息估算 '+money0(estimatedDividendTotal)+' 元':'股息資料自動同步載入中'}</small></div><div class="box"><span class="k">含息總損益</span><b class="${cls(withDivPnl)}">${money0(withDivPnl)}</b></div><div class="box"><span class="k">含息總報酬率</span><b class="${cls(withDivRet)}">${pct(withDivRet)}</b><small>價差＋已入帳股息</small></div>`;
+ $('holdingTotals').innerHTML=`<div class="box"><span class="k">市值</span><b>${money0(val)}</b></div><div class="box"><span class="k">成本</span><b>${money0(cost)}</b></div><div class="box"><span class="k">未實現價差損益</span><b class="${cls(p)}">${money0(p)}</b></div><div class="box"><span class="k">已實現損益</span><b class="${cls(realized)}">${money0(realized)}</b><small>${unknownFees?'部分稅費未填':'已扣已填稅費'}</small></div><div class="box"><span class="k">累積已領股息</span><b class="upc">${money0(dividendTotal)}</b><small>${DIVIDEND_AUTO.ready?'未含待入帳 '+money0(pendingDividendTotal)+' 元；下一次配息估算 '+money0(estimatedDividendTotal)+' 元':'股息資料自動同步載入中'}</small></div><div class="box"><span class="k">含息總損益</span><b class="${cls(withDivPnl)}">${money0(withDivPnl)}</b></div><div class="box"><span class="k">含息總報酬率</span><b class="${cls(withDivRet)}">${pct(withDivRet)}</b><small>已實現＋未實現＋已入帳股息</small></div>`;
 }
 function setDividendEditorMode(code){
  const isAuto=ETF.includes(String(code||'').trim().toUpperCase()),inp=$('hDividend'),note=$('hDividendNote');if(!inp)return;
@@ -1663,7 +1693,7 @@ async function syncHoldingsCloud(force=false){
    HOLDINGS_SYNC.ready=false;
    HOLDINGS_SYNC.message='雲端尚無持股；請在持股正確的裝置按「上傳此裝置持股」';
   }else{
-   H=(Array.isArray(d.holdings)?d.holdings:[]).map(normalizeHoldingRecord);
+   H=(Array.isArray(d.holdings)?d.holdings:[]).map(normalizeHoldingRecord);HOLDING_SALES=Array.isArray(d.sales)?d.sales:[];
    persistHoldingsLocal();renderHoldings();HOLDINGS_SYNC.ready=true;HOLDINGS_SYNC.cloudUpdatedAt=d.updatedAt||null;HOLDINGS_REMOTE_REV++;
    const h50=H.find(x=>x.t==='0050');
    HOLDINGS_SYNC.message='持股已從雲端載入'+(h50?`｜0050 ${Number(h50.s).toLocaleString()}股`:'');
